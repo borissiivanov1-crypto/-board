@@ -27,6 +27,8 @@ data class Service(
     val label: String,
     override val onWidget: Boolean,
     val group: String? = null,
+    // the ZimaOS app this button was added from ("Pick from ZimaOS apps"); others are linked by port
+    val zima: String = "",
 ) : Entry
 
 data class Stack(
@@ -284,6 +286,7 @@ object Store {
                 logo = s.optString("logo", ""), url = url, custom = s.optBoolean("custom"),
                 scheme = u.scheme, addr = u.host + u.path, label = if (port.isNotEmpty()) ":$port" else u.host,
                 onWidget = s.getString("id") !in d.widgetHidden,
+                zima = s.optString("zima", ""),
             )
         }
         return if (forDashboard) sortByOrder(list, d.order) else list
@@ -438,6 +441,20 @@ object Store {
         if (!onWidget && id != null) data.widgetHidden.add(id)
         saveData(data)
         Logos.clearFail(logo.trim())
+    }
+
+    // ZimaOS: add installed apps as buttons, with their real address and icon
+    fun addZimaApps(apps: List<ZApp>, host: String) {
+        if (apps.isEmpty()) return
+        val data = loadData()
+        var t = System.currentTimeMillis()
+        for (a in apps) {
+            val item = makeCustom(a.title, a.scheme, (a.host.ifEmpty { host }) + a.path, a.port, a.icon)
+            item.put("id", "c:" + t++).put("zima", a.id)
+            data.custom.add(item)
+            Logos.clearFail(a.icon)
+        }
+        saveData(data)
     }
 
     fun deleteService(id: String) {

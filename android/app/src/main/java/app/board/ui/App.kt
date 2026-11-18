@@ -73,8 +73,11 @@ fun BoardApp(vm: BoardVM) {
                 Dashboard(vm, onSettings = { settings = true }, dlg = dlg, setDlg = { dlg = it })
             }
             when (val d = dlg) {
-                is Dlg.AddService -> AddServiceDialog(vm, d.sv) { dlg = null }
-                is Dlg.Menu -> MenuDialog(d.sv, { dlg = null }, onStack = { dlg = Dlg.Pick(d.sv) }, onEdit = { dlg = Dlg.AddService(d.sv) }, onDelete = { dlg = null; vm.deleteService(d.sv.id) })
+                is Dlg.AddService -> AddServiceDialog(vm, d.sv, { dlg = null }) { dlg = Dlg.ZimaPick }
+                is Dlg.Menu -> MenuDialog(vm, d.sv, { dlg = null }, onStack = { dlg = Dlg.Pick(d.sv) }, onEdit = { dlg = Dlg.AddService(d.sv) }, onDelete = { dlg = null; vm.deleteService(d.sv.id) }) { dlg = Dlg.Logs(it) }
+                is Dlg.Logs -> LogsDialog(vm, d.app) { dlg = null }
+                Dlg.Updates -> UpdatesDialog(vm) { dlg = null }
+                Dlg.ZimaPick -> ZimaPickDialog(vm) { dlg = null }
                 is Dlg.Pick -> PickDialog(vm, d.sv, { dlg = null }) { dlg = Dlg.StackEdit(null, d.sv) }
                 is Dlg.StackEdit -> StackDialog(vm, d.g, d.member) { dlg = null }
                 Dlg.Rename -> RenameDialog(vm) { dlg = null }

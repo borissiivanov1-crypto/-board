@@ -119,6 +119,10 @@ sealed class Dlg {
     object Rename : Dlg()
     data class PowerConfirm(val a: String, val err: String = "", val needLogin: Boolean = false) : Dlg()
     object AddServer : Dlg()
+    // ZimaOS servers only
+    data class Logs(val app: app.board.ZApp) : Dlg()
+    object Updates : Dlg()
+    object ZimaPick : Dlg()
 }
 
 // ---------- Drag and drop ----------
@@ -317,6 +321,12 @@ fun Dashboard(vm: BoardVM, onSettings: () -> Unit, dlg: Dlg?, setDlg: (Dlg?) -> 
             // section head
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp).padding(top = 6.dp).enter(4, vm.switchSeq), verticalAlignment = Alignment.CenterVertically) {
                 Caps(if (wide) "WIDGET LAYOUT" else "SERVICES", 12.sp, .6f, Modifier.weight(1f))
+                // ZimaOS: app updates waiting in the App Store (hidden when there are none)
+                val nUp = if (vm.zimaReady) vm.zUpdates.size else 0
+                if (!wide && nUp > 0) {
+                    LayButton("↑ $nUp ${if (nUp == 1) "update" else "updates"}", false) { setDlg(Dlg.Updates) }
+                    Spacer(Modifier.width(8.dp))
+                }
                 LayButton(if (wide) "Done" else "Widget layout", wide) { vm.mode = if (wide) "dash" else "widget" }
             }
             ServicesGrid(vm, drag, lists, byId, wide, "svc")
@@ -668,6 +678,8 @@ fun Detail(vm: BoardVM, id: String) {
     val d = vm.details[id]
     val st = vm.stats ?: return
     val limits = vm.set.tempLimits
+    val z = if (vm.zimaReady) vm.zSys else null
+    val zd = if (vm.zimaReady) vm.zDrives else null
     fun tcol(t: Double, k: String): Color? { val l = limits[k] ?: return null; return if (t >= l.hot) RED else if (t >= l.warm) ORANGE else null }
     fun pc(v: Double?) = if (v == null) "-" else "${Math.round(v * 10) / 10.0}%"
     fun sz(b: Double) = formatBytes(b)
@@ -681,7 +693,9 @@ fun Detail(vm: BoardVM, id: String) {
                     if (c.iowait != null) stats.add(Triple(pc(c.iowait), "IO WAIT", null))
                     c.load?.let { stats.add(Triple("%.2f".format(it[0]), "LOAD 1M", null)); stats.add(Triple("%.2f".format(it[1]), "LOAD 5M", null)); stats.add(Triple("%.2f".format(it[2]), "LOAD 15M", null)) }
                     stats.add(Triple("${c.nCores}", "CORES", null))
-                    c.temp?.let { stats.add(Triple("${Math.round(it)} °C", "TEMP", tcol(it, "cpu"))) }
+                    // ZimaOS: its CPU temperature when Glances has none, and the CPU power draw
+                    (c.temp ?: z?.cpuTemp)?.let { stats.add(Triple("${Math.round(it)} °C", "TEMP", tcol(it, "cpu"))) }
+                    z?.watts?.let { stats.add(Triple(if (it >= 100) "${Math.round(it)} W" else "%.1f W".format(it), "POWER", null)) }
                     if (c.hot != null && c.nCoreTemps > 1) stats.add(Triple("${Math.round(c.hot)} °C", "HOTTEST CORE", tcol(c.hot, "cpu")))
                     StatGrid(stats)
                     if (c.cores.isNotEmpty()) Column {
@@ -724,8 +738,30 @@ fun Detail(vm: BoardVM, id: String) {
                         StatGrid(dd.nvme.mapIndexed { j, t -> Triple("${Math.round(t.value)} °C", "NVME ${j + 1}", tcol(t.value, "nvme")) } +
                             dd.hdd.mapIndexed { j, t -> Triple("${Math.round(t.value)} °C", Regex("(sd[a-z]+)", RegexOption.IGNORE_CASE).find(t.label)?.value?.uppercase() ?: "HDD ${j + 1}", tcol(t.value, "hdd")) })
                     }
-                } else if (dd != null) {
+                } else if (dd != null && zd.isNullOrEmpty()) {
                     Caps("NO DRIVE TEMPERATURES REPORTED BY GLANCES", 10.sp, .35f, Modifier.fillMaxWidth())
+                }
+                // ZimaOS: each drive's health check and temperature (no drivetemp module needed)
+                if (!zd.isNullOrEmpty()) Column {
+                    Dh("DRIVE HEALTH")
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (x in zd) Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .05f)).padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                T(x.name.ifEmpty { x.path }, 14.sp, FontWeight.Bold, maxLines = 1)
+                                val sub = listOf(x.model, x.type).filter { it.isNotEmpty() }.joinToString(" · ")
+                                if (sub.isNotEmpty()) T(sub, 11.sp, alpha = .5f, maxLines = 1)
+                            }
+                            x.temp?.let { t ->
+                                val k = if (x.type.equals("SSD", true) || x.path.contains("nvme")) "nvme" else "hdd"
+                                T("${Math.round(t)} °C", 14.sp, FontWeight.Bold, tcol(t, k) ?: Color.White)
+                                Spacer(Modifier.width(12.dp))
+                            }
+                            T(when (x.health) { true -> "OK"; false -> "FAILING"; null -> "-" }, 12.sp, FontWeight.ExtraBold, when (x.health) { true -> GREEN; false -> RED; null -> Color.White.copy(alpha = .5f) }, spacing = 1.sp)
+                        }
+                    }
                 }
                 if (st.disks.isNotEmpty()) Column {
                     Dh("DRIVES")
@@ -735,9 +771,13 @@ fun Detail(vm: BoardVM, id: String) {
                         ds.add(Triple(dk.device.ifEmpty { "-" }.split("/").last(), "DEVICE", null))
                         ds.add(Triple(dk.fstype.ifEmpty { "-" }, "TYPE", null))
                         dd?.io?.getOrNull(i)?.let { io -> ds.add(Triple(sz(io.read) + "/s", "READ", null)); ds.add(Triple(sz(io.write) + "/s", "WRITE", null)) }
-                        dd?.temps?.getOrNull(i)?.let { tp ->
+                        val tp = dd?.temps?.getOrNull(i)
+                        if (tp != null) {
                             val mx = tp.values.max()
                             ds.add(Triple("${Math.round(mx)} °C", if (tp.kind == "nvme") "NVME TEMP" else if (tp.values.size > 1) "HOTTEST HDD" else "HDD TEMP", tcol(mx, tp.kind)))
+                        } else if (zd != null) app.board.Zima.driveFor(dk.device, zd)?.temp?.let { t ->
+                            val k = if (dk.device.contains("nvme")) "nvme" else "hdd"
+                            ds.add(Triple("${Math.round(t)} °C", "TEMP", tcol(t, k)))
                         }
                         Column(Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(verticalAlignment = Alignment.Bottom) {

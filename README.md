@@ -126,6 +126,24 @@ and Settings with Test connection.
 
 Full guide: the [Android user manual](board_User_Manual_Android.docx) (Word document).
 
+### ZimaOS integration (Android, ZimaOS servers only)
+
+Only on servers whose type is **ZimaOS**, and only with the ZimaOS login saved (*Settings > Server > Enter login*).
+Other server types don't show any of this.
+
+- **Start, stop and restart apps:** hold a button that points at a ZimaOS app. The menu shows whether it's running and
+  gives **Start** or **Stop** (Stop asks for a second tap), plus **Restart**, **Logs** and **Update**. Buttons are linked
+  to apps automatically by port, so Jellyfin, Immich and the others work with no setup.
+- **App logs:** the last 300 lines in a scrollable popup with a **Refresh** button.
+- **App updates:** when the App Store has newer versions, a **↑ 2 updates** chip appears next to *Widget layout*.
+  It opens a list with an **Update** button per app. With nothing to update it stays hidden.
+- **Add apps from ZimaOS:** the **+** popup has **Pick from ZimaOS apps**, which lists everything installed. Apps that
+  already have a button are greyed out; the rest are added with their real address and icon.
+- **CPU power draw:** the enlarged CPU card shows watts (the same figure ZimaOS shows; it needs a CPU with Intel RAPL
+  and appears from the second reading on). If Glances has no CPU temperature, ZimaOS's is used.
+- **Drive health:** the enlarged storage card shows each drive's health check (**OK** / **FAILING**) and temperature
+  from ZimaOS, and drives without a Glances temperature get ZimaOS's, so no `drivetemp` module is needed.
+
 **Install:** copy [`android/dist/board.apk`](android/dist/board.apk) to the phone and open it (allow installing from
 that source when asked). Android 8.0 or newer. The APK is signed with a development key, so it installs
 directly but isn't from the Play Store.
