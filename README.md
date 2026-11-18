@@ -46,7 +46,8 @@ order (name, server type, server address, and the login if the type uses one, ch
   (shown under "Shared by all servers" in every settings window).
 - A **widget** shows one server: long-press it, **Edit Widget**, and type the server's name or number (`1`, `2` ...)
   under **Parameter**. Empty = the first server. Tapping the widget opens the dashboard on that server.
-- **Remove this server** is at the bottom of its Server settings. Export / import covers every server.
+- **Delete server** is at the very bottom of each server's settings and asks to confirm first (your only server can't be deleted).
+  Export / import covers every server.
 
 Existing setups become server 1 with everything kept, including saved logins.
 

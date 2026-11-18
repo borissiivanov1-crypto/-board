@@ -2465,6 +2465,9 @@ h1{font-size:22px;font-weight:800;letter-spacing:.12em}
 .dot.wait{background:rgba(255,255,255,.35);box-shadow:none}
 #monst{flex:1;text-align:right;margin-right:10px;font-size:10px;letter-spacing:.1em;color:#ffb454;opacity:.9}
 body.nomon .monwrap{display:none}
+html body #dv{z-index:14} /* above the Settings sheet (#sv is 12) */
+.sbtns button.del{background:rgba(255,93,115,.16);color:#ff5d73}
+.sbtns button:disabled{opacity:.4}
 /* server dots under the name (swipe the name to change server; the + adds one) */
 .sdots{display:flex;align-items:center;gap:7px;margin:-8px 2px 0;min-height:16px}
 .sdots i{display:block;width:7px;height:7px;border-radius:4px;background:rgba(255,255,255,.28);transition:width .3s,background .3s;cursor:pointer}
@@ -2610,8 +2613,8 @@ img.ic{width:26px;height:26px;object-fit:contain;display:block;pointer-events:no
 .cnote{font-size:13px;opacity:.65;line-height:1.4;text-align:center;padding:0 4px}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 24px);z-index:30;max-width:86vw;padding:10px 16px;border-radius:18px;background:rgba(30,38,64,.96);border:1px solid rgba(255,255,255,.14);box-shadow:0 10px 30px rgba(0,0,0,.4);font-size:13px;font-weight:600;text-align:center;opacity:0;transform:translate(-50%,20px);transition:opacity .25s,transform .25s;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
-#ov,#mv,#rv,#gv,#pv,#cv,#av{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
-#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show,#av.show{display:flex}
+#ov,#mv,#rv,#gv,#pv,#cv,#av,#dv{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
+#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show,#av.show,#dv.show{display:flex}
 .modal{width:min(86vw,340px);padding:22px 18px 18px;border-radius:30px;background:rgba(30,38,64,.94);border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:12px;animation:pop .22s cubic-bezier(.22,1,.36,1)}
 @keyframes pop{from{transform:scale(.9);opacity:0}}
 .modal h2{font-size:17px;font-weight:800;letter-spacing:.06em;text-align:center}
@@ -2799,10 +2802,10 @@ body:where(.glass).noanim .b3{animation:none}
 :where(body.glass) .sw.on:active i{transform:translateX(10px)}
 :where(body.glass) .swt{transition:transform .5s var(--spring),box-shadow .3s,border-color .3s}
 :where(body.glass) .swt.on{transform:scale(1.08)}
-:where(body.glass) #ov,:where(body.glass) #mv,:where(body.glass) #rv,:where(body.glass) #gv,:where(body.glass) #pv,:where(body.glass) #cv,:where(body.glass) #av,:where(body.glass) #sv{display:flex!important;visibility:hidden;opacity:0;pointer-events:none;background:rgba(0,0,0,.28);
+:where(body.glass) #ov,:where(body.glass) #mv,:where(body.glass) #rv,:where(body.glass) #gv,:where(body.glass) #pv,:where(body.glass) #cv,:where(body.glass) #av,:where(body.glass) #dv,:where(body.glass) #sv{display:flex!important;visibility:hidden;opacity:0;pointer-events:none;background:rgba(0,0,0,.28);
   -webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
   transition:opacity .3s var(--soft),visibility 0s linear .35s,-webkit-backdrop-filter .35s,backdrop-filter .35s;}
-:where(body.glass) #ov.show,:where(body.glass) #mv.show,:where(body.glass) #rv.show,:where(body.glass) #gv.show,:where(body.glass) #pv.show,:where(body.glass) #cv.show,:where(body.glass) #av.show,:where(body.glass) #sv.show{visibility:visible;opacity:1;pointer-events:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+:where(body.glass) #ov.show,:where(body.glass) #mv.show,:where(body.glass) #rv.show,:where(body.glass) #gv.show,:where(body.glass) #pv.show,:where(body.glass) #cv.show,:where(body.glass) #av.show,:where(body.glass) #dv.show,:where(body.glass) #sv.show{visibility:visible;opacity:1;pointer-events:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   transition:opacity .25s var(--soft),visibility 0s,-webkit-backdrop-filter .4s,backdrop-filter .4s;}
 :where(body.glass) .modal{animation:none;transform:scale(.84) translateY(18px);opacity:0;transition:transform .3s var(--soft),opacity .22s}
 :where(body.glass) .show>.modal{transform:none;opacity:1;transition:transform .6s var(--spring),opacity .25s}
@@ -2931,6 +2934,13 @@ body:not(.splashon) #splash{display:none}
 </div>
 <div id="av" onclick="if(event.target===this&&Date.now()>=ign)closeAddServer()">
 <div class="modal" id="avm"></div>
+</div>
+<div id="dv" onclick="if(event.target===this&&Date.now()>=ign)closeDelServer()">
+<div class="modal">
+<h2 id="dvt">DELETE SERVER?</h2>
+<div class="cnote" id="dvn"></div>
+<div class="btns"><button onclick="closeDelServer()">Cancel</button><button class="del" onclick="confirmDelServer()">Delete</button></div>
+</div>
 </div>
 <div id="rv" onclick="if(event.target===this&&Date.now()>=ign)closeRename()">
 <div class="modal">
@@ -3644,6 +3654,27 @@ function switchServer(t, p, dir){
 }
 // Add server: the same questions in the same order as its Settings (name, type, address, login)
 var AS = null;
+// Delete server: a confirmation popup over the Settings sheet
+var delId = null;
+function openDelServer(name){
+  delId = st.cur;
+  document.getElementById("dvt").textContent = "DELETE " + String(name || "SERVER").toUpperCase() + "?";
+  document.getElementById("dvn").textContent = "Its settings, saved logins, buttons, stacks and layout are deleted from this phone. Your other servers stay. This can't be undone (unless you exported your settings).";
+  ign = Date.now() + 350; // the tap that opened it doesn't press Delete
+  document.getElementById("dv").className = "show";
+}
+function closeDelServer(){
+  document.getElementById("dv").className = "";
+}
+function confirmDelServer(){
+  if (Date.now() < ign || !delId) return;
+  var id = delId;
+  delId = null;
+  closeDelServer();
+  S.saved = true;
+  closeSettings();
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "remove", id: id, dir: -1 }));
+}
 function openAddServer(){
   togglePmenu(false);
   AS = { name: "", platform: "none", host: "", scheme: "", port: "", u: "", p: "", err: "", busy: false };
@@ -4577,21 +4608,6 @@ function sRender(){
   tb.style.alignSelf = "flex-start";
   c.appendChild(res);
   sHint(c, "Tests the server, Glances (below) and Reboot / Shut down with the values in this form, even before you save them.");
-  if ((st.servers || []).length > 1) {
-    var rbx = document.createElement("div");
-    rbx.className = "sbtns";
-    c.appendChild(rbx);
-    var rb = document.createElement("button");
-    rb.className = "rtxt";
-    sArmed(rb, "Remove this server", "Tap again to remove " + document.getElementById("title").textContent, function(){
-      var id = st.cur;
-      S.saved = true;
-      closeSettings();
-      location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "remove", id: id, dir: -1 }));
-    });
-    rbx.appendChild(rb);
-    sHint(c, "Removes this server's settings, logins, buttons and layout from the phone. Your other servers stay.");
-  }
 
   // ---------- MONITORING ----------
   c = sSec(b, "MONITORING");
@@ -4768,6 +4784,23 @@ function sRender(){
   });
   bx.appendChild(b4);
   sHint(c, "Export copies all settings, buttons, stacks and layout to the clipboard (passwords stay on the phone). Import reads them back from the clipboard. Reset layout clears the button order and stacks but keeps your own buttons.");
+
+  // ---------- DELETE SERVER (the very bottom, asks to confirm) ----------
+  var dname = document.getElementById("title").textContent;
+  c = sSec(b, "DELETE SERVER");
+  var dbx = document.createElement("div");
+  dbx.className = "sbtns";
+  c.appendChild(dbx);
+  var dbt = document.createElement("button");
+  dbt.className = "del";
+  dbt.textContent = "Delete " + dname;
+  var only = (st.servers || []).length < 2;
+  dbt.disabled = only;
+  dbt.onclick = function(){ if (!S.busy && !only) openDelServer(dname); };
+  dbx.appendChild(dbt);
+  sHint(c, only
+    ? "This is your only server, so it can't be deleted. Add another server first (swipe the server name left)."
+    : "Deletes this server's settings, logins, buttons, stacks and layout from the phone. Your other servers stay. Asks to confirm.");
   if (!S.animated) { S.animated = true; restagger(b.children); }
 }
 
@@ -5129,7 +5162,7 @@ async function showLiveDashboard(openStackId) {
           if (d.act === "add") {
             await wv.evaluateJavaScript(d.next === "settings" ? "setTimeout(openSettings, 450)" : `toast(${JSON.stringify(d.next)}, 3000)`, false);
           }
-          if (d.act === "remove") await wv.evaluateJavaScript(`toast("Server removed", 2500)`, false);
+          if (d.act === "remove") await wv.evaluateJavaScript(`toast("Server deleted", 2500)`, false);
         } catch (e) {}
       })();
       return false;
