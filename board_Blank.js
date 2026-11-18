@@ -1,0 +1,3358 @@
+// Variables used by Scriptable.
+// These must be at the very top of the file. Do not edit.
+// icon-color: deep-green; icon-glyph: magic;
+// -board: a live server dashboard and home screen widget for Scriptable (iOS)
+//
+// WHAT YOU NEED
+// - The free Scriptable app on your iPhone.
+// - Glances running on your server with its web server / API turned on (default port 61208).
+//   For example the Docker image "nicolargo/glances" with GLANCES_OPT="-w".
+//   Glances only sees the drives you give its container, so mount each drive you want to watch.
+// - Optional: ZimaOS, for the Reboot / Shut down menu (it uses your ZimaOS login).
+//
+// SET UP
+// 1. In Scriptable, tap +, paste this whole script and give it a name.
+// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208),
+//    tap "Test connection", then Save.
+// 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
+// 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
+//    choose Edit Widget and pick this script.
+//
+// HOW TO USE
+// - Tap the widget to open the live dashboard. The CPU / RAM / storage cards and network speed sit in
+//   the "Monitoring" panel; tap a card for details, temperatures and a history graph.
+// - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack.
+// - Stacks group related services into one collapsible card with a combined status dot.
+// - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
+// - Hold the server name to rename it. Tap it for Reboot / Shut down (ZimaOS only, asks to confirm).
+// - The gear icon opens Settings: server, monitoring, widget, buttons, theme & look, export / import.
+//   The values in CONFIG below are only the starting defaults; Settings saves your choices on the phone.
+// - Live polling only runs while the dashboard is open, so the widget stays light on battery.
+
+// ---------- Default settings (change them here or in the dashboard's Settings) ----------
+const CONFIG = {
+  title: "MY SERVER",
+  baseUrl: "",                          // your Glances address, e.g. "http://192.168.1.10:61208" (empty = asked on first run)
+  apiVersion: 4,                        // Glances 4.x = 4, Glances 3.x = 3
+  username: "",                         // only if you enabled Glances auth
+  password: "",
+  diskMounts: [],                       // drives to add up, as Glances sees them (e.g. "/", "/DATA"); empty = auto-detect
+  maxDisks: 3,
+  networkInterface: "",                 // e.g. "eth0"; empty = busiest interface
+  refreshMinutes: 5,
+  widgetStatusDots: true,               // up/down dots on the large widget buttons (adds ~2s of checking per widget refresh)
+  linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS page); empty = no button
+  zimaUrl: "",                          // ZimaOS address for Reboot / Shut down; empty = same server, port 80
+};
+
+// Temperatures (°C) where the number turns orange (warm) and red (hot) in the enlarged cards.
+// Typical limits: most desktop CPUs throttle around 95-100°C, NVMe drives around 70-85°C,
+// and hard drives are usually rated to about 55-60°C. Adjust them in Settings for your hardware.
+const TEMP_DEFAULTS = {
+  cpu: { warm: 70, hot: 85 },
+  nvme: { warm: 60, hot: 70 },
+  hdd: { warm: 45, hot: 55 },
+};
+
+// In-memory copy of the data file (declared before anything reads the settings)
+let dataRaw = null;
+
+// ---------- Themes (Settings > Theme & look) ----------
+// g1 / g2: the two background glows (r,g,b). panel / panel2: popup and dropdown backgrounds.
+const THEMES = {
+  aurora: { name: "Aurora", bg: "#0b1220", g1: "18,194,165", g2: "106,92,255", acc: "#34e0a1", ink: "#06281d", panel: "rgba(30,38,64,.94)", panel2: "#1e2640" },
+  ocean: { name: "Ocean", bg: "#07111f", g1: "0,132,255", g2: "0,206,209", acc: "#4fc3ff", ink: "#04203a", panel: "rgba(20,40,68,.94)", panel2: "#142844" },
+  sunset: { name: "Sunset", bg: "#150d12", g1: "255,122,69", g2: "214,51,132", acc: "#ff9f6b", ink: "#3a1606", panel: "rgba(54,30,40,.94)", panel2: "#361e28" },
+  forest: { name: "Forest", bg: "#09140f", g1: "46,160,67", g2: "18,120,140", acc: "#7ddc6f", ink: "#0d2a0a", panel: "rgba(24,44,36,.94)", panel2: "#182c24" },
+  rose: { name: "Rose", bg: "#140b18", g1: "255,92,160", g2: "124,77,255", acc: "#ff7eb6", ink: "#3a0b22", panel: "rgba(48,28,58,.94)", panel2: "#301c3a" },
+  graphite: { name: "Graphite", bg: "#111317", g1: "120,130,150", g2: "70,80,100", acc: "#d6dbe4", ink: "#15181e", panel: "rgba(36,38,44,.95)", panel2: "#24262c" },
+  oled: { name: "OLED black", bg: "#000000", g1: "0,0,0", g2: "0,0,0", acc: "#34e0a1", ink: "#06281d", panel: "rgba(22,22,26,.97)", panel2: "#16161a", noGlow: true },
+};
+// "" = the theme's own accent
+const ACCENTS = {
+  "": { name: "Theme", c: null },
+  green: { name: "Green", c: "#34e0a1", ink: "#06281d" },
+  blue: { name: "Blue", c: "#4fc3ff", ink: "#04203a" },
+  purple: { name: "Purple", c: "#a78bfa", ink: "#1e1240" },
+  orange: { name: "Orange", c: "#ff9f6b", ink: "#3a1606" },
+  pink: { name: "Pink", c: "#ff7eb6", ink: "#3a0b22" },
+  white: { name: "White", c: "#e8ecf3", ink: "#15181e" },
+};
+const GLOW_LEVELS = { off: 0, soft: 0.3, normal: 0.5, strong: 0.75 };
+
+// ---------- Settings (gear icon in the live dashboard) ----------
+const DEFAULTS = {
+  baseUrl: CONFIG.baseUrl,
+  apiVersion: CONFIG.apiVersion,
+  username: CONFIG.username,
+  zimaUrl: CONFIG.zimaUrl,
+  showPower: true,                 // Reboot / Shut down under the server name
+  diskMounts: CONFIG.diskMounts,
+  maxDisks: CONFIG.maxDisks,       // used when no drives are picked (auto-detect)
+  networkInterface: CONFIG.networkInterface,
+  monitoringOpen: false,           // Monitoring panel open when the dashboard starts
+  monitoringFixed: false,          // Monitoring panel always open (no button to fold it away)
+  tempLimits: TEMP_DEFAULTS,
+  liveSeconds: 3,                  // dashboard update interval
+  refreshMinutes: CONFIG.refreshMinutes,
+  linkUrl: CONFIG.linkUrl,
+  widgetStatusDots: CONFIG.widgetStatusDots,
+  widgetTitle: "",                 // empty = same as the dashboard name
+  widgetRows: 6,                   // rows of 4 buttons on the large widget
+  useLogos: true,
+  columns: 2,                      // dashboard button columns
+  statusSeconds: 30,               // how often the up/down dots are checked in the dashboard
+  pingTimeout: 3,                  // seconds without an answer before a service counts as down
+  theme: "aurora",
+  accent: "",                      // "" = the theme's accent
+  glow: "normal",                  // background glow: off / soft / normal / strong
+  movingBg: true,                  // drifting background glow in the dashboard
+  cardStyle: "normal",             // card glass: subtle / normal / strong
+  corners: "round",                // round / sharp
+  font: "system",                  // system / rounded / serif
+  buttonSize: "normal",            // normal / compact
+};
+
+function clampNum(v, lo, hi, def) {
+  const n = Number(v);
+  return v !== "" && v != null && isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : def;
+}
+
+function cleanSettings(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const out = {};
+  const str = (k, max) => (out[k] = typeof r[k] === "string" ? r[k].trim().slice(0, max || 300) : DEFAULTS[k]);
+  const bool = (k) => (out[k] = typeof r[k] === "boolean" ? r[k] : DEFAULTS[k]);
+  const num = (k, lo, hi) => (out[k] = clampNum(r[k], lo, hi, DEFAULTS[k]));
+  str("baseUrl");
+  if (!/^https?:\/\/[^\/:]+/i.test(out.baseUrl)) out.baseUrl = "";
+  out.baseUrl = out.baseUrl.replace(/\/+$/, "");
+  num("apiVersion", 3, 4);
+  str("username", 100);
+  str("zimaUrl");
+  if (out.zimaUrl && !/^https?:\/\//i.test(out.zimaUrl)) out.zimaUrl = "";
+  bool("showPower");
+  out.diskMounts = Array.isArray(r.diskMounts)
+    ? r.diskMounts.filter((x) => typeof x === "string" && x).slice(0, 12)
+    : DEFAULTS.diskMounts;
+  num("maxDisks", 1, 12);
+  str("networkInterface", 60);
+  bool("monitoringOpen");
+  bool("monitoringFixed");
+  const t = r.tempLimits && typeof r.tempLimits === "object" ? r.tempLimits : {};
+  out.tempLimits = {};
+  for (const k of ["cpu", "nvme", "hdd"]) {
+    const d = TEMP_DEFAULTS[k];
+    const x = t[k] || {};
+    const warm = clampNum(x.warm, 20, 120, d.warm);
+    out.tempLimits[k] = { warm, hot: Math.max(clampNum(x.hot, 21, 130, d.hot), warm + 1) };
+  }
+  num("liveSeconds", 1, 30);
+  num("refreshMinutes", 1, 120);
+  str("linkUrl");
+  bool("widgetStatusDots");
+  str("widgetTitle", 20);
+  num("widgetRows", 1, 6);
+  bool("useLogos");
+  num("columns", 2, 3);
+  num("statusSeconds", 10, 600);
+  num("pingTimeout", 1, 15);
+  const pick = (k, allowed) => (out[k] = allowed.includes(r[k]) ? r[k] : DEFAULTS[k]);
+  pick("theme", Object.keys(THEMES));
+  pick("accent", Object.keys(ACCENTS));
+  pick("glow", Object.keys(GLOW_LEVELS));
+  bool("movingBg");
+  pick("cardStyle", ["subtle", "normal", "strong"]);
+  pick("corners", ["round", "sharp"]);
+  pick("font", ["system", "rounded", "serif"]);
+  pick("buttonSize", ["normal", "compact"]);
+  return out;
+}
+
+function loadSettings() {
+  return cleanSettings(loadData().settings);
+}
+
+function lookSettings(s) {
+  const o = {};
+  for (const k of ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize"]) o[k] = s[k];
+  return o;
+}
+
+function hostOf(url) {
+  const m = String(url).match(/^https?:\/\/([^:\/]+)/i);
+  return m ? m[1] : "localhost";
+}
+
+const GLANCES_PASS_KEY = "board-glances-pass";
+let SET = loadSettings();
+
+// Services shown as buttons in the live dashboard.
+// Ports are defaults; edit any that differ on your server.
+// Optional fields: path ("/admin"), https (true)
+// logo: image URL for the button (emoji "icon" is the fallback). Logos come from
+// the free dashboard-icons set: https://github.com/homarr-labs/dashboard-icons
+let HOST = hostOf(SET.baseUrl); // buttons use the same server address as Glances
+const LOGO_CDN = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
+// Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
+// You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "🎬", logo: LOGO_CDN + "jellyfin.png" }
+// (optional: path: "/admin", https: true). They use the same server address as Glances.
+const BUILTIN = [];
+function buildServices() {
+  return BUILTIN.map((s) => ({
+    ...s,
+    id: "b:" + s.name,
+    url: `${s.https ? "https" : "http"}://${HOST}:${s.port}${s.path || ""}`,
+  }));
+}
+let SERVICES = buildServices();
+
+// After Settings are saved (or imported): use the new values right away
+function applySettings() {
+  SET = loadSettings();
+  HOST = hostOf(SET.baseUrl);
+  SERVICES = buildServices();
+}
+
+
+// ---------- Saved button changes (made in the live dashboard, stored on the phone) ----------
+// custom: buttons you added; edits: changes to built-in buttons; hidden: deleted built-in buttons
+function dataPath() {
+  const fm = FileManager.local();
+  return fm.joinPath(fm.documentsDirectory(), "board-data.json");
+}
+
+// The data file is read from storage once per run and kept in memory (saveData updates the copy).
+// loadData still returns a fresh object every time, so callers can change it freely.
+function readDataFile() {
+  if (dataRaw === null) {
+    const fm = FileManager.local();
+    const p = dataPath();
+    dataRaw = fm.fileExists(p) ? fm.readString(p) || "" : "";
+  }
+  return dataRaw;
+}
+
+function loadData() {
+  const empty = { custom: [], edits: {}, hidden: [], order: [], widgetOrder: [], widgetHidden: [], title: "", groups: [] };
+  try {
+    const raw = readDataFile();
+    if (!raw) return empty;
+    let d = JSON.parse(raw);
+    if (Array.isArray(d)) d = { custom: d };
+    d.custom = (d.custom || []).map((c, i) => (c.id ? c : { ...c, id: "c:legacy" + i }));
+    d.edits = d.edits || {};
+    d.hidden = d.hidden || [];
+    d.order = Array.isArray(d.order) ? d.order : [];
+    d.widgetOrder = Array.isArray(d.widgetOrder) ? d.widgetOrder : [];
+    d.widgetHidden = Array.isArray(d.widgetHidden) ? d.widgetHidden : [];
+    d.title = typeof d.title === "string" ? d.title : "";
+    d.settings = d.settings && typeof d.settings === "object" && !Array.isArray(d.settings) ? d.settings : {};
+    // stacks: { id: "g:…", name, logo, expand (show members on the widget), members: [button ids] }
+    d.groups = (Array.isArray(d.groups) ? d.groups : [])
+      .filter((g) => g && typeof g.id === "string")
+      .map((g) => ({
+        id: g.id,
+        name: String(g.name || "Stack").slice(0, 24),
+        logo: String(g.logo || ""),
+        expand: !!g.expand,
+        members: Array.isArray(g.members) ? g.members.filter((x) => typeof x === "string") : [],
+      }));
+    return d;
+  } catch (e) {
+    return empty;
+  }
+}
+
+// Dashboard / widget name (renamed by holding the header in the live dashboard)
+function getTitle() {
+  return loadData().title || CONFIG.title;
+}
+
+function saveData(d) {
+  const raw = JSON.stringify(d);
+  FileManager.local().writeString(dataPath(), raw);
+  dataRaw = raw;
+}
+
+function splitUrl(url) {
+  const m = String(url).match(/^(https?):\/\/([^\/:]+)(?::(\d+))?(.*)$/i);
+  return m
+    ? { scheme: m[1].toLowerCase(), host: m[2], port: m[3] || "", path: m[4] || "" }
+    : { scheme: "http", host: String(url), port: "", path: "" };
+}
+
+function sortByOrder(list, order) {
+  if (!order.length) return list;
+  const idx = (s) => {
+    const i = order.indexOf(s.id);
+    return i < 0 ? 1e9 : i;
+  };
+  return list
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => idx(a.s) - idx(b.s) || a.i - b.i)
+    .map((x) => x.s);
+}
+
+// All buttons: built-in (minus deleted, with edits applied), then custom.
+// forDashboard = true applies your dashboard drag-and-drop order.
+function getServices(forDashboard) {
+  const d = loadData();
+  const base = SERVICES.filter((s) => !d.hidden.includes(s.id)).map((s) =>
+    d.edits[s.id] ? { ...s, ...d.edits[s.id] } : s
+  );
+  const list = base.concat(d.custom).map((s) => {
+    const u = splitUrl(s.url);
+    return {
+      ...s,
+      scheme: u.scheme,
+      addr: u.host + u.path,
+      label: s.port ? ":" + s.port : u.host,
+      onWidget: !d.widgetHidden.includes(s.id),
+    };
+  });
+  return forDashboard ? sortByOrder(list, d.order) : list;
+}
+
+// ---------- Stacks (groups of connected services) ----------
+const STACK_ICON = "🗂️";
+
+// Top level = buttons not in a stack, plus stacks (each stack carries its member buttons).
+// dash: dashboard order. widget / hidden: large widget order and the entries hidden from it.
+function getLayout() {
+  const d = loadData();
+  const all = getServices(false);
+  const byId = {};
+  for (const s of all) byId[s.id] = s;
+  const inStack = new Set();
+  const groups = d.groups.map((g) => {
+    const members = g.members.map((id) => byId[id]).filter((s) => s && !inStack.has(s.id));
+    for (const s of members) {
+      inStack.add(s.id);
+      s.group = g.id;
+    }
+    return {
+      id: g.id,
+      kind: "group",
+      name: g.name,
+      logo: g.logo,
+      icon: STACK_ICON,
+      expand: g.expand,
+      members,
+      onWidget: !d.widgetHidden.includes(g.id),
+    };
+  });
+  const top = all.filter((s) => !inStack.has(s.id)).concat(groups);
+  return {
+    all,
+    groups,
+    dash: sortByOrder(top, d.order),
+    widget: sortByOrder(top.filter((x) => x.onWidget), d.widgetOrder),
+    hidden: top.filter((x) => !x.onWidget),
+  };
+}
+
+// What the large widget actually draws: stacks become one pill, or their members if "show members" is on
+function widgetCells(layout) {
+  const cells = [];
+  for (const x of layout.widget) {
+    if (x.kind !== "group") cells.push(x);
+    else if (x.expand) cells.push(...x.members);
+    else if (x.members.length) cells.push(x);
+  }
+  return cells.slice(0, SET.widgetRows * 4);
+}
+
+// Create / edit / ungroup stacks and move buttons in or out of them
+function stackAction(a) {
+  const L = getLayout();
+  const data = loadData();
+  // freeze the current order so a new stack lands where its first button was
+  data.order = L.dash.map((x) => x.id);
+  data.widgetOrder = L.widget.map((x) => x.id);
+  const strip = (id) => data.groups.forEach((g) => (g.members = g.members.filter((x) => x !== id)));
+  const holder = (id) => data.groups.find((g) => g.members.includes(id));
+  const insertAt = (list, anchor, ids, after) => {
+    const out = list.filter((x) => !ids.includes(x));
+    let i = anchor ? out.indexOf(anchor) : -1;
+    if (i < 0) return out.concat(ids);
+    if (after) i++;
+    out.splice(i, 0, ...ids);
+    return out;
+  };
+  const replaceIn = (list, oldId, ids) => insertAt(list, oldId, ids, false).filter((x) => x !== oldId);
+
+  if (a.act === "save") {
+    const name = String(a.name || "").trim().slice(0, 24) || "Stack";
+    const logo = String(a.logo || "").trim();
+    let g = data.groups.find((x) => x.id === a.gid);
+    if (g) {
+      g.name = name;
+      g.logo = logo;
+      g.expand = !!a.expand;
+    } else {
+      g = { id: "g:" + Date.now(), name, logo, expand: !!a.expand, members: [] };
+      if (a.member) {
+        const old = holder(a.member);
+        strip(a.member);
+        if (old) {
+          data.order = insertAt(data.order, old.id, [g.id], true);
+          data.widgetOrder = insertAt(data.widgetOrder, old.id, [g.id], true);
+        } else {
+          data.order = replaceIn(data.order, a.member, [g.id]);
+          data.widgetOrder = replaceIn(data.widgetOrder, a.member, [g.id]);
+        }
+        g.members.push(a.member);
+      } else {
+        data.order.push(g.id);
+        data.widgetOrder.push(g.id);
+      }
+      data.groups.push(g);
+    }
+    clearLogoFail(logo);
+  } else if (a.act === "move") {
+    const old = holder(a.id);
+    strip(a.id);
+    const to = a.to ? data.groups.find((x) => x.id === a.to) : null;
+    if (to) {
+      to.members.push(a.id);
+      data.order = data.order.filter((x) => x !== a.id);
+      data.widgetOrder = data.widgetOrder.filter((x) => x !== a.id);
+    } else {
+      // out of the stack: placed right after it
+      data.order = insertAt(data.order, old ? old.id : null, [a.id], true);
+      data.widgetOrder = insertAt(data.widgetOrder, old ? old.id : null, [a.id], true);
+    }
+  } else if (a.act === "del") {
+    // ungroup: the buttons go back where the stack was
+    const g = data.groups.find((x) => x.id === a.gid);
+    if (g) {
+      data.order = replaceIn(data.order, g.id, g.members);
+      data.widgetOrder = replaceIn(data.widgetOrder, g.id, g.members);
+      if (data.widgetHidden.includes(g.id)) {
+        data.widgetHidden = data.widgetHidden.filter((x) => x !== g.id).concat(g.members);
+      }
+      data.groups = data.groups.filter((x) => x.id !== g.id);
+    }
+  }
+  saveData(data);
+}
+
+function getPayload() {
+  const L = getLayout();
+  // cached logos as base64, sent once per button / stack id (only ones already downloaded)
+  const logos = {};
+  for (const s of SET.useLogos ? L.all.concat(L.groups) : []) {
+    const b = logoBase64(s.logo);
+    if (b) logos[s.id] = b;
+  }
+  return {
+    dash: L.dash,
+    widget: L.widget,
+    hidden: L.hidden,
+    limits: SET.tempLimits,
+    logos,
+    cdn: LOGO_CDN,
+    hasLogin: hasZimaLogin(),
+    title: getTitle(),
+    host: SET.baseUrl ? HOST : "",
+    ui: {
+      cols: SET.columns,
+      power: SET.showPower,
+      widgetMax: SET.widgetRows * 4,
+      monOpen: SET.monitoringOpen,
+      monFixed: SET.monitoringFixed,
+      look: lookSettings(SET),
+      themes: THEMES,
+      accents: ACCENTS,
+      glows: GLOW_LEVELS,
+    },
+  };
+}
+
+// ---------- Reboot / shut down (ZimaOS API: log in, then PUT /v1/sys/state/restart or /off) ----------
+const ZIMA_KEYS = { user: "board-zima-user", pass: "board-zima-pass" };
+
+function hasZimaLogin() {
+  try {
+    return Keychain.contains(ZIMA_KEYS.user) && Keychain.contains(ZIMA_KEYS.pass);
+  } catch (e) {
+    return false;
+  }
+}
+
+function forgetZimaLogin() {
+  for (const k of Object.values(ZIMA_KEYS)) {
+    try {
+      if (Keychain.contains(k)) Keychain.remove(k);
+    } catch (e) {}
+  }
+}
+
+async function zimaLogin(user, pass, base) {
+  const login = new Request(base + "/v1/users/login");
+  login.method = "POST";
+  login.headers = { "Content-Type": "application/json" };
+  login.body = JSON.stringify({ username: user, password: pass });
+  login.timeoutInterval = 8;
+  let r;
+  try {
+    r = await login.loadJSON();
+  } catch (e) {
+    return { error: "Can't reach ZimaOS at " + base };
+  }
+  const token = r && r.data && r.data.token && r.data.token.access_token;
+  if (!token) return { auth: true, error: "Login failed: " + ((r && r.message) || "wrong username or password") };
+  return { token };
+}
+
+async function zimaPower(action, user, pass) {
+  const base = (SET.zimaUrl || `http://${HOST}`).replace(/\/+$/, "");
+  const lg = await zimaLogin(user, pass, base);
+  if (!lg.token) return { ok: false, auth: !!lg.auth, msg: lg.error };
+  const token = lg.token;
+
+  const req = new Request(`${base}/v1/sys/state/${action === "off" ? "off" : "restart"}`);
+  req.method = "PUT";
+  req.headers = { Authorization: token };
+  req.timeoutInterval = 8;
+  const sent = action === "off"
+    ? "Shutdown sent. Switch the server on by hand to bring it back."
+    : "Reboot sent. The server should be back in a minute or two.";
+  try {
+    await req.loadString();
+  } catch (e) {
+    // the server may drop the connection as it goes down
+    return { ok: true, msg: sent };
+  }
+  const code = req.response && req.response.statusCode;
+  if (code === 401 || code === 403) return { ok: false, auth: true, msg: "ZimaOS refused the login. Enter it again." };
+  if (code && code >= 300) return { ok: false, msg: `ZimaOS didn't accept the command (HTTP ${code}).` };
+  return { ok: true, msg: sent };
+}
+
+// d: { a: "restart" | "off", u, p } (u/p only when typed in the popup; otherwise the saved login is used)
+async function handlePower(d) {
+  const a = d.a === "off" ? "off" : "restart";
+  let user = d.u;
+  let pass = d.p;
+  let saved = false;
+  if ((!user || !pass) && hasZimaLogin()) {
+    user = Keychain.get(ZIMA_KEYS.user);
+    pass = Keychain.get(ZIMA_KEYS.pass);
+    saved = true;
+  }
+  let r;
+  if (!user || !pass) r = { ok: false, auth: true, msg: "" };
+  else r = await zimaPower(a, user, pass);
+  if (r.auth && saved) forgetZimaLogin();
+  if (!r.auth && !saved && user && pass && !/Can't reach/.test(r.msg)) {
+    Keychain.set(ZIMA_KEYS.user, user);
+    Keychain.set(ZIMA_KEYS.pass, pass);
+  }
+  r.a = a;
+  r.hasLogin = hasZimaLogin();
+  return r;
+}
+
+// ---------- Settings sheet (gear icon): load / save / test / maintenance ----------
+// d: { op, s (settings from the form), gpass (new Glances password), clearGpass, id }
+async function settingsOp(d) {
+  const data = loadData();
+  if (d.op === "load") {
+    const [fs, net] = await Promise.all([api("fs").catch(() => null), api("network").catch(() => null)]);
+    const skipPath = /^\/(etc|run|dev|sys|proc|boot|snap|var\/lib\/docker)/;
+    const skipType = /^(overlay|tmpfs|squashfs|devtmpfs)$/;
+    const mounts = Array.isArray(fs)
+      ? fs
+          .filter((x) => x && x.mnt_point && !skipPath.test(x.mnt_point) && !skipType.test(x.fs_type || ""))
+          .map((x) => ({ mnt: x.mnt_point, size: x.size || 0, used: x.used || 0, dev: String(x.device_name || "").split("/").pop() }))
+      : null;
+    const ifaces = Array.isArray(net)
+      ? net.map((n) => n.interface_name).filter((n) => n && !/^(lo|docker|veth|br-|virbr)/.test(n))
+      : null;
+    let hasGpass = false;
+    try {
+      hasGpass = Keychain.contains(GLANCES_PASS_KEY);
+    } catch (e) {}
+    return {
+      ok: true,
+      s: SET,
+      defaults: DEFAULTS,
+      host: SET.baseUrl ? HOST : "",
+      hasBuiltin: BUILTIN.length > 0,
+      firstRun: !SET.baseUrl,
+      mounts,
+      ifaces,
+      hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
+      hasZimaLogin: hasZimaLogin(),
+      hasGpass,
+    };
+  }
+  if (d.op === "save") {
+    data.settings = cleanSettings(d.s);
+    saveData(data);
+    try {
+      if (d.clearGpass && Keychain.contains(GLANCES_PASS_KEY)) Keychain.remove(GLANCES_PASS_KEY);
+      if (d.gpass) Keychain.set(GLANCES_PASS_KEY, d.gpass);
+    } catch (e) {}
+    applySettings();
+    statusDirty = true;
+    return { ok: true, msg: "Settings saved" };
+  }
+  if (d.op === "test") {
+    // tests the values in the form, saved or not
+    const s = cleanSettings(d.s);
+    const lines = [];
+    if (!s.baseUrl) return { ok: true, lines: [{ ok: false, t: "Enter your Glances address first, e.g. http://192.168.1.10:61208" }] };
+    const t0 = Date.now();
+    try {
+      const q = await glancesRequest(s, "quicklook", d.gpass || null);
+      lines.push({ ok: true, t: `Glances: OK (${Date.now() - t0} ms${q && q.cpu_name ? ", " + q.cpu_name : ""})` });
+    } catch (e) {
+      lines.push({ ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, the API version, and your VPN if you're away from home)" });
+    }
+    const zbase = (s.zimaUrl || `http://${hostOf(s.baseUrl)}`).replace(/\/+$/, "");
+    if (hasZimaLogin()) {
+      const r = await zimaLogin(Keychain.get(ZIMA_KEYS.user), Keychain.get(ZIMA_KEYS.pass), zbase);
+      lines.push(
+        r.token
+          ? { ok: true, t: "ZimaOS: OK, saved login works" }
+          : { ok: false, t: "ZimaOS: " + (r.auth ? "saved login was refused" : "no answer at " + zbase) }
+      );
+    } else {
+      try {
+        const req = new Request(zbase);
+        req.timeoutInterval = 6;
+        await req.load();
+        lines.push({ ok: true, t: "ZimaOS: reachable at " + zbase + " (no login saved yet)" });
+      } catch (e) {
+        lines.push({ ok: false, t: "ZimaOS: no answer at " + zbase });
+      }
+    }
+    return { ok: true, lines };
+  }
+  if (d.op === "forget") {
+    forgetZimaLogin();
+    return { ok: true, msg: "ZimaOS login forgotten" };
+  }
+  if (d.op === "restore") {
+    data.hidden = d.id ? data.hidden.filter((x) => x !== d.id) : [];
+    saveData(data);
+    statusDirty = true;
+    return { ok: true, msg: d.id ? "Button restored" : "All buttons restored" };
+  }
+  if (d.op === "clearlogos") {
+    const fm = FileManager.local();
+    const dir = logoDir();
+    for (const f of fm.listContents(dir)) fm.remove(fm.joinPath(dir, f));
+    for (const k of Object.keys(logoB64)) delete logoB64[k];
+    return { ok: true, msg: "Logo cache cleared. Logos download again now." };
+  }
+  if (d.op === "export") {
+    Pasteboard.copy(JSON.stringify({ board: 1, exported: new Date().toISOString(), data }, null, 2));
+    return { ok: true, msg: "Settings copied to the clipboard. Passwords are not included." };
+  }
+  if (d.op === "import") {
+    let obj;
+    try {
+      obj = JSON.parse(Pasteboard.paste() || "");
+    } catch (e) {
+      return { ok: false, error: "The clipboard doesn't contain exported settings." };
+    }
+    const imp = obj && obj.board && obj.data && typeof obj.data === "object" ? obj.data : null;
+    if (!imp) return { ok: false, error: "The clipboard doesn't contain exported settings." };
+    saveData(imp);
+    saveData(loadData()); // store it in the normal, cleaned-up form
+    applySettings();
+    statusDirty = true;
+    return { ok: true, msg: "Settings imported", reload: true };
+  }
+  if (d.op === "reset") {
+    data.order = [];
+    data.widgetOrder = [];
+    data.widgetHidden = [];
+    data.groups = [];
+    saveData(data);
+    return { ok: true, msg: "Layout reset. Your own buttons are kept." };
+  }
+  return { ok: false, error: "Unknown request" };
+}
+
+// ---------- Service logos (downloaded once, shrunk, stored on the phone) ----------
+const LOGO_SIZE = 96;          // stored size in pixels (small = light on memory and fast)
+const LOGO_RETRY_HOURS = 12;   // a logo that failed to download is retried after this long
+
+function logoDir() {
+  const fm = FileManager.local();
+  const dir = fm.joinPath(fm.documentsDirectory(), "board-logos");
+  if (!fm.fileExists(dir)) fm.createDirectory(dir, true);
+  return dir;
+}
+
+function logoKey(url) {
+  let h = 5381;
+  for (let i = 0; i < url.length; i++) h = ((h * 33) ^ url.charCodeAt(i)) >>> 0;
+  return h.toString(36) + "-" + url.length.toString(36);
+}
+
+function logoPath(url) {
+  return FileManager.local().joinPath(logoDir(), logoKey(url) + ".png");
+}
+
+function cachedLogo(url) {
+  if (!url) return null;
+  try {
+    const fm = FileManager.local();
+    const p = logoPath(url);
+    return fm.fileExists(p) ? Image.fromFile(p) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// base64 of saved logos, kept in memory once read (every button update sends them to the dashboard)
+const logoB64 = {};
+function logoBase64(url) {
+  if (!url) return null;
+  if (logoB64[url]) return logoB64[url];
+  try {
+    const fm = FileManager.local();
+    const p = logoPath(url);
+    if (!fm.fileExists(p)) return null;
+    return (logoB64[url] = fm.read(p).toBase64String());
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearLogoFail(url) {
+  if (!url) return;
+  try {
+    const fm = FileManager.local();
+    const f = logoPath(url) + ".fail";
+    if (fm.fileExists(f)) fm.remove(f);
+  } catch (e) {}
+}
+
+// Fit the logo inside a LOGO_SIZE square, keeping its shape and transparency
+function shrinkLogo(img) {
+  const w0 = img.size.width;
+  const h0 = img.size.height;
+  const scale = Math.min(1, LOGO_SIZE / Math.max(w0, h0));
+  const w = Math.max(1, Math.round(w0 * scale));
+  const h = Math.max(1, Math.round(h0 * scale));
+  const side = Math.max(w, h);
+  const dc = new DrawContext();
+  dc.size = new Size(side, side);
+  dc.opaque = false;
+  dc.respectScreenScale = false;
+  dc.drawImageInRect(img, new Rect((side - w) / 2, (side - h) / 2, w, h));
+  return dc.getImage();
+}
+
+// Downloads a logo if it isn't saved yet. Returns true only when something new was saved.
+async function fetchLogo(url, timeout) {
+  if (!/^https?:\/\//i.test(url || "")) return false;
+  const fm = FileManager.local();
+  const p = logoPath(url);
+  const fail = p + ".fail";
+  if (fm.fileExists(p)) return false;
+  if (fm.fileExists(fail)) {
+    const age = Date.now() - fm.modificationDate(fail).getTime();
+    if (age < LOGO_RETRY_HOURS * 3600 * 1000) return false;
+  }
+  try {
+    const req = new Request(url);
+    req.timeoutInterval = timeout;
+    const img = await req.loadImage();
+    fm.write(p, Data.fromPNG(shrinkLogo(img)));
+    if (fm.fileExists(fail)) fm.remove(fail);
+    return true;
+  } catch (e) {
+    try {
+      fm.writeString(fail, String(Date.now()));
+    } catch (err) {}
+    return false;
+  }
+}
+
+async function ensureLogos(list, timeout) {
+  const urls = [...new Set(list.map((s) => s.logo).filter(Boolean))];
+  const got = await Promise.all(urls.map((u) => fetchLogo(u, timeout)));
+  return got.some(Boolean);
+}
+
+// Removes saved logos that no button uses any more (after a logo URL was changed)
+function pruneLogos() {
+  try {
+    const fm = FileManager.local();
+    const dir = logoDir();
+    const keep = new Set(
+      getServices(false).concat(loadData().groups).filter((s) => s.logo).map((s) => logoKey(s.logo))
+    );
+    for (const f of fm.listContents(dir)) {
+      if (!keep.has(f.split(".")[0])) fm.remove(fm.joinPath(dir, f));
+    }
+  } catch (e) {}
+}
+
+let logoBusy = false;
+async function refreshLogos(wv) {
+  if (logoBusy || !SET.useLogos) return;
+  logoBusy = true;
+  try {
+    if (await ensureLogos(getServices(false).concat(loadData().groups), 8)) await pushServices(wv);
+    pruneLogos();
+  } catch (e) {}
+  logoBusy = false;
+}
+
+function makeCustom(d) {
+  let addr = String(d.addr).trim();
+  const m = addr.match(/^(https?):\/\//i);
+  const scheme = m ? m[1].toLowerCase() : d.scheme === "https" ? "https" : "http";
+  addr = addr.replace(/^https?:\/\//i, "");
+  let path = "";
+  const slash = addr.indexOf("/");
+  if (slash >= 0) {
+    path = addr.slice(slash);
+    addr = addr.slice(0, slash);
+  }
+  const port = String(d.port || "").replace(/[^0-9]/g, "");
+  return {
+    name: String(d.name).trim().slice(0, 24),
+    port,
+    icon: "🔗",
+    logo: String(d.logo || "").trim(),
+    custom: true,
+    url: `${scheme}://${addr}${port ? ":" + port : ""}${path}`,
+  };
+}
+
+function pushServices(wv) {
+  return wv.evaluateJavaScript(`renderServices(${JSON.stringify(getPayload())})`, false);
+}
+
+// Set to true to see the home screen widget when running inside Scriptable
+// (instead of the live dashboard).
+const PREVIEW_WIDGET_IN_APP = false;
+
+// ---------- API ----------
+async function api(path) {
+  return glancesRequest(SET, path);
+}
+
+function glancesPass() {
+  try {
+    if (Keychain.contains(GLANCES_PASS_KEY)) return Keychain.get(GLANCES_PASS_KEY);
+  } catch (e) {}
+  return CONFIG.password;
+}
+
+async function glancesRequest(set, path, pass) {
+  const req = new Request(`${set.baseUrl}/api/${set.apiVersion}/${path}`);
+  req.timeoutInterval = 5;
+  if (set.username) {
+    const token = Data.fromString(`${set.username}:${pass != null ? pass : glancesPass()}`).toBase64String();
+    req.headers = { Authorization: `Basic ${token}` };
+  }
+  return await req.loadJSON();
+}
+
+// opts.disks / opts.net = false skip what a view doesn't show (the small widget only has CPU and RAM).
+// opts.fsMaxAge (ms) reuses the last drive list for that long (drive usage changes slowly).
+let fsCache = null;
+let fsTime = 0;
+async function getStats(opts = {}) {
+  const wantDisks = opts.disks !== false;
+  const wantNet = opts.net !== false;
+  const fsFresh = wantDisks && opts.fsMaxAge && fsCache && Date.now() - fsTime < opts.fsMaxAge;
+  // quicklook returns CPU and RAM together (3 requests instead of 4)
+  const [quick, fs, net] = await Promise.all([
+    api("quicklook").catch(() => null),
+    !wantDisks ? null : fsFresh ? fsCache : api("fs"),
+    wantNet ? api("network") : null,
+  ]);
+  if (wantDisks && !fsFresh) {
+    fsCache = fs;
+    fsTime = Date.now();
+  }
+  let cpu, ram;
+  if (quick && typeof quick.cpu === "number" && typeof quick.mem === "number") {
+    cpu = quick.cpu;
+    ram = quick.mem;
+  } else {
+    // fallback if quicklook is unavailable on your Glances
+    const [c, m] = await Promise.all([api("cpu"), api("mem")]);
+    cpu = c.total;
+    ram = m.percent;
+  }
+  const disks = wantDisks ? pickDisks(fs) : [];
+  return { cpu, ram, disks, storage: sumStorage(disks), net: wantNet ? pickNetwork(net) : { down: 0, up: 0 } };
+}
+
+// Total across all drives (drives that are the same filesystem are only counted once)
+function sumStorage(disks) {
+  if (!disks.length) return null;
+  const seen = new Set();
+  let used = 0;
+  let size = 0;
+  let free = 0;
+  for (const d of disks) {
+    const k = `${d.device}|${d.size}|${d.used}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    used += d.used || 0;
+    size += d.size || 0;
+    free += d.free ?? (d.size || 0) - (d.used || 0);
+  }
+  return { percent: size ? (used / size) * 100 : 0, used, size, free, count: seen.size };
+}
+
+function pickDisks(fs) {
+  let list = fs;
+  if (SET.diskMounts.length) {
+    list = SET.diskMounts
+      .map((m) => fs.find((d) => d.mnt_point === m))
+      .filter(Boolean);
+  } else {
+    const skipPath = /^\/(etc|run|dev|sys|proc|boot|snap|var\/lib\/docker)/;
+    const skipType = /^(overlay|tmpfs|squashfs|devtmpfs)$/;
+    const seen = new Set();
+    list = fs
+      .filter((d) => !skipPath.test(d.mnt_point) && !skipType.test(d.fs_type || ""))
+      .filter((d) => (seen.has(d.device_name) ? false : seen.add(d.device_name)))
+      .sort((a, b) => b.size - a.size);
+  }
+  return list.slice(0, SET.diskMounts.length ? 12 : SET.maxDisks).map((d) => ({
+    name: d.mnt_point === "/" ? "Root" : d.mnt_point.split("/").filter(Boolean).pop(),
+    percent: d.percent,
+    used: d.used,
+    size: d.size,
+    free: d.free,
+    mnt: d.mnt_point,
+    device: d.device_name,
+    fstype: d.fs_type,
+  }));
+}
+
+function pickNetwork(net) {
+  const skip = /^(lo|docker|veth|br-|virbr)/;
+  const total = (n) => (n.bytes_recv || n.rx || 0) + (n.bytes_sent || n.tx || 0);
+  let iface = SET.networkInterface
+    ? net.find((n) => n.interface_name === SET.networkInterface)
+    : net.filter((n) => !skip.test(n.interface_name)).sort((a, b) => total(b) - total(a))[0];
+  if (!iface) return { down: 0, up: 0 };
+  const dt = iface.time_since_update || 1;
+  return {
+    down: iface.bytes_recv_rate_per_sec ?? (iface.rx || 0) / dt,
+    up: iface.bytes_sent_rate_per_sec ?? (iface.tx || 0) / dt,
+  };
+}
+
+// ---------- Details for the expanded CPU / RAM / storage cards (fetched only while a card is open) ----------
+let expanded = null;
+let lastStats = null;
+
+async function getDetail(key, stats) {
+  const list = (x) => (Array.isArray(x) ? x : []);
+  if (key === "cpu") {
+    const [cpu, per, load, procs, sens] = await Promise.all([
+      api("cpu").catch(() => ({})),
+      api("percpu").catch(() => []),
+      api("load").catch(() => null),
+      api("processlist").catch(() => []),
+      api("sensors").catch(() => []),
+    ]);
+    const cores = (load && load.cpucore) || list(per).length || 1;
+    const agg = {};
+    for (const p of list(procs)) {
+      const n = p.name || "?";
+      agg[n] = (agg[n] || 0) + (p.cpu_percent || 0);
+    }
+    const top = Object.keys(agg)
+      .map((n) => ({ name: n, pct: agg[n] / cores }))
+      .sort((a, b) => b.pct - a.pct)
+      .slice(0, 5);
+    const ct = cpuTemp(parseTemps(sens));
+    return {
+      kind: "cpu",
+      user: cpu.user,
+      system: cpu.system,
+      iowait: cpu.iowait,
+      load: load ? [load.min1, load.min5, load.min15] : null,
+      cores: list(per).map((c) => c.total),
+      nCores: cores,
+      temp: ct.pkg,
+      hot: ct.hot,
+      nCoreTemps: ct.cores.length,
+      top,
+    };
+  }
+  if (key === "ram") {
+    const [mem, swap, procs] = await Promise.all([
+      api("mem"),
+      api("memswap").catch(() => null),
+      api("processlist").catch(() => []),
+    ]);
+    const rssOf = (p) => {
+      const mi = p.memory_info;
+      let r = 0;
+      if (Array.isArray(mi)) r = mi[0] || 0;
+      else if (mi && typeof mi === "object") r = mi.rss || 0;
+      if (!r && p.memory_percent) r = (p.memory_percent / 100) * mem.total;
+      return r;
+    };
+    const agg = {};
+    for (const p of list(procs)) {
+      const n = p.name || "?";
+      agg[n] = (agg[n] || 0) + rssOf(p);
+    }
+    const top = Object.keys(agg)
+      .map((n) => ({ name: n, bytes: agg[n], pct: (agg[n] / mem.total) * 100 }))
+      .sort((a, b) => b.bytes - a.bytes)
+      .slice(0, 5);
+    return {
+      kind: "ram",
+      total: mem.total,
+      used: mem.used,
+      available: mem.available,
+      cached: mem.cached,
+      swapUsed: swap ? swap.used : null,
+      swapTotal: swap ? swap.total : null,
+      top,
+    };
+  }
+  if (key === "disk") {
+    let rows = [];
+    try {
+      rows = list(await api("diskio"));
+    } catch (err) {}
+    const io = stats.disks.map((disk) => {
+      const base = String(disk.device || "").split("/").pop();
+      const row = rows.find((x) => x.disk_name === base);
+      if (!row) return null;
+      const dt = row.time_since_update || 1;
+      return {
+        read: row.read_bytes_rate_per_sec ?? (row.read_bytes || 0) / dt,
+        write: row.write_bytes_rate_per_sec ?? (row.write_bytes || 0) / dt,
+      };
+    });
+    let t = null;
+    try {
+      t = parseTemps(await api("sensors"));
+    } catch (err) {}
+    const temps = stats.disks.map((disk) => (t ? driveTemp(disk, t) : null));
+    return { kind: "disk", io, temps, nvme: t ? t.nvme : [], hdd: t ? t.hdd : [] };
+  }
+  return null;
+}
+
+async function pushDetail(wv) {
+  if (!expanded || !lastStats) return;
+  const key = expanded;
+  const det = await getDetail(key, lastStats);
+  if (det) await wv.evaluateJavaScript(`detail(${JSON.stringify(key)}, ${JSON.stringify(det)})`, false);
+}
+
+// ---------- Service status (up/down dots) ----------
+// Any HTTP answer (even an error page) counts as up. Refused or timed-out connections count as down.
+async function pingUrl(url, timeout) {
+  try {
+    const req = new Request(url);
+    req.method = "HEAD";
+    req.timeoutInterval = timeout;
+    await req.load();
+    return true;
+  } catch (e) {
+    // self-signed https or a non-web port (like SSH) still means something is listening
+    return /certificate|secure connection|ssl|tls|bad response|bad server|malformed|could not be parsed/i.test(
+      String((e && e.message) || e)
+    );
+  }
+}
+
+async function checkServices(list, timeout) {
+  const out = {};
+  const byUrl = {}; // buttons with the same address are only checked once
+  await Promise.all(
+    list.map(async (s) => {
+      if (!byUrl[s.url]) byUrl[s.url] = pingUrl(s.url, timeout);
+      out[s.id] = await byUrl[s.url];
+    })
+  );
+  return out;
+}
+
+let statusBusy = false;
+let statusDirty = false;
+let lastStatus = 0;
+
+// ---------- Temperatures (from the Glances sensors plugin) ----------
+function parseTemps(sens) {
+  const all = (Array.isArray(sens) ? sens : []).filter(
+    (x) => x && typeof x.value === "number" && (x.unit === "C" || /temp/i.test(x.type || ""))
+  );
+  const lb = (x) => String(x.label || "");
+  const isHdd = (x) => x.type === "temperature_hdd" || /^(drivetemp|hddtemp)|^\/dev\/sd|^sd[a-z]/i.test(lb(x));
+  const isNvme = (x) => /composite/i.test(lb(x)) || /^nvme/i.test(lb(x));
+  const hdd = all.filter(isHdd);
+  const nvme = all.filter((x) => !isHdd(x) && isNvme(x));
+  const rest = all.filter((x) => !isHdd(x) && !isNvme(x));
+  const pkg = rest.find((x) => /package|tdie|tctl|^cpu/i.test(lb(x)));
+  return {
+    pkg: pkg ? pkg.value : null,
+    cores: rest.filter((x) => /^core/i.test(lb(x))).map((x) => x.value),
+    nvme: nvme.map((x) => ({ label: lb(x), value: x.value })),
+    hdd: hdd.map((x) => ({ label: lb(x), value: x.value })),
+    other: rest.filter((x) => !/^sensor/i.test(lb(x))).map((x) => x.value),
+  };
+}
+
+function cpuTemp(t) {
+  const hottest = t.cores.length ? Math.max(...t.cores) : null;
+  const pkg =
+    t.pkg != null ? t.pkg : hottest != null ? hottest : t.other.length ? Math.max(...t.other) : null;
+  return { pkg, hot: hottest, cores: t.cores };
+}
+
+// Match a mounted drive to its temperature sensor(s) by device name (nvme0n1 = first NVMe sensor, md0 = all HDD sensors)
+function driveTemp(disk, t) {
+  const dev = String(disk.device || "").split("/").pop();
+  let m = dev.match(/^nvme(\d+)n/);
+  if (m) {
+    const x = t.nvme[Number(m[1])];
+    return x ? { kind: "nvme", values: [x.value] } : null;
+  }
+  m = dev.match(/^sd([a-z])/);
+  if (m) {
+    const x = t.hdd[m[1].charCodeAt(0) - 97];
+    return x ? { kind: "hdd", values: [x.value] } : null;
+  }
+  if (/^md/.test(dev) && t.hdd.length) return { kind: "hdd", values: t.hdd.map((x) => x.value) };
+  return null;
+}
+
+// ---------- Helpers ----------
+function formatBytes(b) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (b >= 1024 && i < units.length - 1) {
+    b /= 1024;
+    i++;
+  }
+  return `${b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)} ${units[i]}`;
+}
+
+function colorFor(pct) {
+  if (pct >= 85) return new Color("#ff5d73");
+  if (pct >= 60) return new Color("#ffb454");
+  return new Color("#34e0a1");
+}
+
+// ---------- Drawing ----------
+function glow(dc, x, y, r, hex, strength = 1) {
+  const steps = 28;
+  for (let i = 0; i < steps; i++) {
+    const rr = r * (1 - i / steps);
+    dc.setFillColor(new Color(hex, 0.014 * strength));
+    dc.fillEllipse(new Rect(x - rr, y - rr, rr * 2, rr * 2));
+  }
+}
+
+// "18,194,165" -> "#12c2a5"
+function rgbHex(rgb) {
+  return "#" + String(rgb).split(",").map((n) => Math.max(0, Math.min(255, Number(n) || 0)).toString(16).padStart(2, "0")).join("");
+}
+
+function widgetLook() {
+  const t = THEMES[SET.theme] || THEMES.aurora;
+  const strength = t.noGlow ? 0 : GLOW_LEVELS[SET.glow] / GLOW_LEVELS.normal;
+  return { bg: t.bg, g1: rgbHex(t.g1), g2: rgbHex(t.g2), strength };
+}
+
+function backgroundImage() {
+  const fm = FileManager.local();
+  const L = widgetLook();
+  // one cached picture per theme / glow combination
+  const key = [L.bg, L.g1, L.g2, L.strength].join("-").replace(/[^a-z0-9.-]/gi, "");
+  const path = fm.joinPath(fm.cacheDirectory(), `board-bg-${key}.png`);
+  try {
+    if (fm.fileExists(path)) return Image.fromFile(path);
+  } catch (e) {}
+  const img = drawBackground();
+  try {
+    fm.writeImage(path, img);
+  } catch (e) {}
+  return img;
+}
+
+function drawBackground() {
+  const W = 660;
+  const H = 310;
+  const dc = new DrawContext();
+  dc.size = new Size(W, H);
+  dc.opaque = true;
+  dc.respectScreenScale = false;
+  const L = widgetLook();
+  dc.setFillColor(new Color(L.bg));
+  dc.fillRect(new Rect(0, 0, W, H));
+  if (L.strength > 0) {
+    glow(dc, 90, 20, 280, L.g1, L.strength);
+    glow(dc, W - 40, H + 20, 320, L.g2, L.strength);
+  }
+  return dc.getImage();
+}
+
+function ringImage(pct, color, size = 140) {
+  const dc = new DrawContext();
+  dc.size = new Size(size, size);
+  dc.opaque = false;
+  dc.respectScreenScale = true;
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const lw = size * 0.115;
+  const r = size / 2 - lw * 1.1;
+
+  // track
+  dc.setStrokeColor(new Color("#ffffff", 0.12));
+  dc.setLineWidth(lw);
+  dc.strokeEllipse(new Rect(cx - r, cy - r, r * 2, r * 2));
+
+  // arc as a polyline, starting at 12 o'clock
+  const p = Math.max(0.01, Math.min(pct, 100) / 100);
+  const steps = Math.max(2, Math.ceil(90 * p));
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = -Math.PI / 2 + 2 * Math.PI * p * (i / steps);
+    pts.push(new Point(cx + r * Math.cos(a), cy + r * Math.sin(a)));
+  }
+  const path = new Path();
+  path.addLines(pts);
+
+  // soft glow layers, then the solid arc
+  const layers = [
+    [lw * 1.9, 0.1],
+    [lw * 1.45, 0.16],
+    [lw, 1],
+  ];
+  for (const [width, alpha] of layers) {
+    dc.addPath(path);
+    dc.setStrokeColor(new Color(color.hex, alpha));
+    dc.setLineWidth(width);
+    dc.strokePath();
+  }
+
+  // rounded caps
+  dc.setFillColor(color);
+  for (const pt of [pts[0], pts[pts.length - 1]]) {
+    dc.fillEllipse(new Rect(pt.x - lw / 2, pt.y - lw / 2, lw, lw));
+  }
+
+  // value in the middle
+  dc.setFont(Font.boldRoundedSystemFont(size * 0.25));
+  dc.setTextColor(Color.white());
+  dc.setTextAlignedCenter();
+  dc.drawTextInRect(`${Math.round(pct)}%`, new Rect(0, cy - size * 0.16, size, size * 0.32));
+
+  return dc.getImage();
+}
+
+function addSymbolText(parent, symbol, text, color) {
+  const sf = SFSymbol.named(symbol);
+  sf.applyFont(Font.boldSystemFont(10));
+  const img = parent.addImage(sf.image);
+  img.imageSize = new Size(10, 10);
+  img.tintColor = color;
+  parent.addSpacer(4);
+  const t = parent.addText(text);
+  t.font = Font.mediumMonospacedSystemFont(11);
+  t.textColor = Color.white();
+}
+
+// The slow part of the button grid (status checks, logo downloads). The widget starts it at the same
+// time as the stats request, so the two run side by side.
+async function prepareGrid() {
+  // Uses your widget layout (set in the live dashboard: Widget layout)
+  const list = widgetCells(getLayout());
+  // a stack pill needs the status of every button inside it
+  const toCheck = [];
+  for (const c of list) toCheck.push(...(c.kind === "group" ? c.members : [c]));
+  // status checks and any missing logo downloads run together (logos are only downloaded once)
+  const [status] = await Promise.all([
+    SET.widgetStatusDots ? checkServices(toCheck, Math.min(SET.pingTimeout, 3)) : {},
+    SET.useLogos ? ensureLogos(list, 4).catch(() => false) : false,
+  ]);
+  // stack dot: green = all up, orange = some down, red = all down
+  const dotColor = (s) => {
+    if (s.kind !== "group") return status[s.id] ? "#34e0a1" : "#ff5d73";
+    const up = s.members.filter((m) => status[m.id]).length;
+    return up === s.members.length ? "#34e0a1" : up === 0 ? "#ff5d73" : "#ffb454";
+  };
+  return { list, dotColor };
+}
+
+// Service buttons grid for the large widget (tap = open in Safari)
+function addServiceGrid(w, prep) {
+  const { list, dotColor } = prep;
+  const cols = 4;
+  const gap = 5;
+  const inner = Device.screenSize().width * 0.84 - 28;
+  const pw = Math.floor((inner - gap * (cols - 1)) / cols);
+  for (let i = 0; i < list.length; i += cols) {
+    if (i > 0) w.addSpacer(gap);
+    const row = w.addStack();
+    row.layoutHorizontally();
+    for (let j = 0; j < cols; j++) {
+      if (j > 0) row.addSpacer();
+      const s = list[i + j];
+      const pill = row.addStack();
+      pill.size = new Size(pw, 26);
+      if (!s) continue;
+      pill.centerAlignContent();
+      pill.backgroundColor = new Color("#ffffff", 0.1);
+      pill.cornerRadius = 8;
+      pill.setPadding(0, 4, 0, 4);
+      // a stack pill opens the live dashboard with that stack open
+      pill.url =
+        s.kind === "group"
+          ? URLScheme.forRunningScript() + "?stack=" + encodeURIComponent(s.id)
+          : s.url;
+      if (SET.widgetStatusDots) {
+        const dot = pill.addText("●");
+        dot.font = Font.systemFont(6);
+        dot.textColor = new Color(dotColor(s));
+        pill.addSpacer(2);
+      }
+      const logo = SET.useLogos ? cachedLogo(s.logo) : null;
+      if (logo) {
+        const li = pill.addImage(logo);
+        li.imageSize = new Size(12, 12);
+      } else {
+        const ic = pill.addText(s.icon);
+        ic.font = Font.systemFont(10);
+      }
+      pill.addSpacer(3);
+      const t = pill.addText(s.name);
+      t.font = Font.semiboldSystemFont(9);
+      t.textColor = Color.white();
+      t.lineLimit = 1;
+      t.minimumScaleFactor = 0.6;
+    }
+  }
+}
+
+// ---------- Widget ----------
+async function buildWidget() {
+  const family = config.widgetFamily || "medium";
+  const small = family === "small";
+  const large = family === "large";
+
+  const w = new ListWidget();
+  w.backgroundImage = backgroundImage();
+  w.setPadding(12, 14, 12, 14);
+  w.refreshAfterDate = new Date(Date.now() + SET.refreshMinutes * 60 * 1000);
+  w.url = URLScheme.forRunningScript(); // tap = live dashboard
+
+  // not set up yet: ask to open the app
+  if (!SET.baseUrl) {
+    const t = w.addText(getTitle());
+    t.font = Font.heavyRoundedSystemFont(12);
+    t.textColor = Color.white();
+    w.addSpacer();
+    const m = w.addText("Tap to set up -board:\nenter your Glances address in Settings.");
+    m.font = Font.systemFont(12);
+    m.textColor = new Color("#ffffff", 0.75);
+    w.addSpacer();
+    return w;
+  }
+
+  // header
+  const header = w.addStack();
+  header.centerAlignContent();
+  const title = header.addText(SET.widgetTitle || getTitle());
+  title.font = Font.heavyRoundedSystemFont(12);
+  title.textColor = Color.white();
+  header.addSpacer();
+
+  // the large widget's button checks run while the stats load
+  const gridPrep = large ? prepareGrid().catch(() => null) : null;
+  let stats;
+  try {
+    // the small widget only shows CPU and RAM
+    stats = await getStats(small ? { disks: false, net: false } : {});
+  } catch (e) {
+    stats = null;
+  }
+
+  // status pill
+  const pill = header.addStack();
+  pill.centerAlignContent();
+  pill.backgroundColor = new Color("#ffffff", 0.1);
+  pill.cornerRadius = 9;
+  pill.setPadding(3, 8, 3, 8);
+  const time = new DateFormatter();
+  time.dateFormat = "HH:mm";
+  const dot = pill.addText("●");
+  dot.font = Font.systemFont(8);
+  dot.textColor = stats ? new Color("#34e0a1") : new Color("#ff5d73");
+  pill.addSpacer(4);
+  const pillText = pill.addText(stats ? time.string(new Date()) : "OFFLINE");
+  pillText.font = Font.boldMonospacedSystemFont(10);
+  pillText.textColor = Color.white();
+
+  // corner button (only works in medium and large widgets; only when a link is set)
+  if (!small && SET.linkUrl) {
+    header.addSpacer(6);
+    const btn = header.addStack();
+    btn.size = new Size(24, 24);
+    btn.centerAlignContent();
+    btn.backgroundColor = new Color("#ffffff", 0.14);
+    btn.cornerRadius = 12;
+    btn.url = SET.linkUrl;
+    btn.addSpacer();
+    const sf = SFSymbol.named("arrow.up.right");
+    sf.applyFont(Font.boldSystemFont(11));
+    const icon = btn.addImage(sf.image);
+    icon.imageSize = new Size(11, 11);
+    icon.tintColor = Color.white();
+    btn.addSpacer();
+  }
+
+  if (!stats) {
+    w.addSpacer();
+    const msg = w.addText("Can't reach the server.\nCheck the address in Settings, and your VPN if you're away from home.");
+    msg.font = Font.systemFont(11);
+    msg.textColor = new Color("#ffffff", 0.7);
+    w.addSpacer();
+    return w;
+  }
+
+  w.addSpacer(6);
+
+  // ring gauges
+  const items = [
+    { label: "CPU", pct: stats.cpu },
+    { label: "RAM", pct: stats.ram },
+    ...(stats.storage ? [{ label: "STORAGE", pct: stats.storage.percent }] : []),
+  ];
+  const shown = small ? items.slice(0, 2) : items;
+
+  const row = w.addStack();
+  row.centerAlignContent();
+  shown.forEach((it, i) => {
+    if (i > 0) row.addSpacer();
+    const col = row.addStack();
+    col.layoutVertically();
+    col.centerAlignContent();
+    const img = col.addImage(ringImage(it.pct, colorFor(it.pct)));
+    img.imageSize = new Size(54, 54);
+    col.addSpacer(2);
+    const lbl = col.addText(it.label);
+    lbl.font = Font.boldRoundedSystemFont(9);
+    lbl.textColor = new Color("#ffffff", 0.7);
+    lbl.centerAlignText();
+  });
+
+  // network
+  if (!small) {
+    if (large) {
+      w.addSpacer(10);
+      const prep = await gridPrep;
+      if (prep) addServiceGrid(w, prep);
+    }
+    w.addSpacer();
+    const net = w.addStack();
+    net.centerAlignContent();
+    net.backgroundColor = new Color("#ffffff", 0.08);
+    net.cornerRadius = 9;
+    net.setPadding(4, 10, 4, 10);
+    addSymbolText(net, "arrow.down", `${formatBytes(stats.net.down)}/s`, new Color("#5ac8fa"));
+    net.addSpacer();
+    addSymbolText(net, "arrow.up", `${formatBytes(stats.net.up)}/s`, new Color("#ff9f6b"));
+  }
+
+  return w;
+}
+
+// ---------- Live animated dashboard (shown when you tap the widget) ----------
+const LIVE_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{min-height:100%;background:#0b1220;color:#fff;font-family:-apple-system,"SF Pro Rounded",system-ui,sans-serif}
+body{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.bg{position:fixed;inset:0;overflow:hidden;pointer-events:none}
+.blob{position:absolute;width:95vmax;height:95vmax;border-radius:50%;opacity:.5;will-change:transform;animation:drift 14s ease-in-out infinite alternate}
+.b1{background:radial-gradient(circle,rgba(18,194,165,.75) 0%,rgba(18,194,165,0) 68%);top:-40vmax;left:-35vmax}
+.b2{background:radial-gradient(circle,rgba(106,92,255,.75) 0%,rgba(106,92,255,0) 68%);bottom:-45vmax;right:-40vmax;animation-delay:-7s}
+@keyframes drift{to{transform:translate(14vmax,10vmax) scale(1.2)}}
+main{position:relative;min-height:100vh;padding:calc(env(safe-area-inset-top,0px) + 56px) 18px calc(env(safe-area-inset-bottom,0px) + 40px);display:flex;flex-direction:column;gap:16px}
+header{display:flex;align-items:center;justify-content:space-between}
+h1{font-size:22px;font-weight:800;letter-spacing:.12em}
+.live{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.1)}
+.dot{width:8px;height:8px;border-radius:50%;background:#34e0a1;animation:pulse 1.6s ease-in-out infinite}
+.dot.off{background:#ff5d73;animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,224,161,.7)}70%{box-shadow:0 0 0 9px rgba(52,224,161,0)}100%{box-shadow:0 0 0 0 rgba(52,224,161,0)}}
+#grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:18px 12px 14px;display:flex;flex-direction:column;align-items:center;gap:10px}
+.ringwrap{position:relative;width:min(34vw,150px);aspect-ratio:1}
+svg{width:100%;height:100%;overflow:visible}
+circle{fill:none;stroke-width:10;stroke-linecap:round}
+.track{stroke:rgba(255,255,255,.12)}
+.arc{stroke-dasharray:326.7;stroke-dashoffset:326.7;transform:rotate(-90deg);transform-origin:60px 60px;transition:stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1),stroke .6s;filter:drop-shadow(0 0 7px var(--c,#34e0a1))}
+.num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:800;font-variant-numeric:tabular-nums}
+.num small{font-size:15px;font-weight:700;opacity:.7;margin-left:1px}
+.lbl{font-size:12px;font-weight:700;letter-spacing:.14em;opacity:.7}
+.netcard{display:flex;justify-content:space-around;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:18px 10px}
+.net{display:flex;flex-direction:column;align-items:center;gap:6px}
+.net b{font-size:20px;font-variant-numeric:tabular-nums}
+.net span{font-size:11px;letter-spacing:.14em;opacity:.65;font-weight:700}
+.arrow{font-size:20px;display:inline-block}
+.dn{color:#5ac8fa}
+.up{color:#ff9f6b}
+.sec{font-size:12px;font-weight:700;letter-spacing:.14em;opacity:.6;margin:6px 4px -4px}
+#svc{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.svc{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;min-width:0;display:flex;flex-direction:column;gap:4px;padding:14px;border-radius:20px;text-decoration:none;color:#fff;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}
+.svc:active{background:rgba(255,255,255,.18)}
+.ic{font-size:22px}
+img.ic{width:26px;height:26px;object-fit:contain;display:block;pointer-events:none;-webkit-user-drag:none;-webkit-touch-callout:none}
+.wide img.ic{width:14px;height:14px;flex:none}
+.in img.lp{width:26px;height:26px;object-fit:contain;margin-left:8px;display:none;flex:none}
+.in img.lp.ok{display:block}
+.chip{flex:none;margin-left:8px;font-size:12px;font-weight:700;color:#fff;background:rgba(255,255,255,.14);border:0;border-radius:99px;padding:5px 10px;font-family:inherit}
+.chip:active{background:rgba(255,255,255,.26)}
+.fh{font-size:11px;opacity:.45;margin:0 4px}
+.grp{grid-column:1/-1;min-width:0;scroll-margin-top:70px}
+.grp.lifted{opacity:.25}
+.grph{text-decoration:none;gap:10px;cursor:pointer;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.grph .gt{display:flex;align-items:center;gap:10px;min-width:0}
+.grph .gt b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grph .gc{font-size:11px;opacity:.5;font-weight:700}
+.grph .gr{display:flex;align-items:center;gap:10px;flex:none}
+.grph .ic{font-size:18px;letter-spacing:0}
+.grph img.ic{width:22px;height:22px}
+.grph .sd{position:static}
+.grph.ghost{position:fixed;z-index:20;margin:0;pointer-events:none;transform:scale(1.03);background:rgba(70,84,128,.96);box-shadow:0 14px 34px rgba(0,0,0,.5)}
+.gbody{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding-top:12px}
+.gbody:empty{display:flex;align-items:center;justify-content:center;min-height:58px;font-size:12px;opacity:.5}
+.gbody:empty::before{content:"Drag buttons here"}
+.sd.part{background:#ffb454;box-shadow:0 0 6px rgba(255,180,84,.8)}
+#pl:empty{display:none}
+#mv .btns button{flex:none}
+#mv .btns button.gtxt{color:#34e0a1}
+#mv .btns button.rtxt{color:#ff5d73}
+#pv .btns button,#gdw button{flex:none}
+.nm{font-size:15px;font-weight:700}
+.pt{font-size:11px;opacity:.55;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.svc.lifted{opacity:.25}
+.svc.ghost{position:fixed;z-index:20;margin:0;pointer-events:none;transform:scale(1.07);background:rgba(70,84,128,.96);box-shadow:0 14px 34px rgba(0,0,0,.5);-webkit-backdrop-filter:none;backdrop-filter:none}
+.card{cursor:pointer}
+.card{scroll-margin-top:70px}
+.card.big{grid-column:1/-1;order:-1}
+.card.big .ringwrap{width:min(40vw,160px)}
+.detail{display:none;width:100%;flex-direction:column;gap:16px;padding:6px 4px 2px}
+.card.big .detail{display:flex;animation:fade .3s ease}
+@keyframes fade{from{opacity:0;transform:translateY(-6px)}}
+.bigval{font-size:24px;font-weight:800;text-align:center;font-variant-numeric:tabular-nums}
+.bigval small{font-size:14px;opacity:.6;font-weight:700}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(92px,1fr));gap:8px}
+.ds{background:rgba(255,255,255,.06);border-radius:14px;padding:10px 6px;text-align:center;display:flex;flex-direction:column;gap:4px;min-width:0}
+.ds b{font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds span{font-size:10px;letter-spacing:.12em;opacity:.55;font-weight:700}
+.dh{font-size:11px;font-weight:700;letter-spacing:.14em;opacity:.6;margin:0 2px 8px}
+.gbox{background:rgba(255,255,255,.05);border-radius:16px;padding:10px}
+.gbox svg{width:100%;height:80px;display:block}
+.gcap{display:flex;justify-content:space-between;font-size:10px;opacity:.5;margin-top:6px;letter-spacing:.06em}
+.gwait{height:80px;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:.5}
+.prow{display:flex;align-items:center;gap:8px;font-size:13px;padding:5px 2px}
+.pn{flex:0 0 36%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.pb{flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}
+.pb i{display:block;height:100%;border-radius:3px}
+.pv{flex:0 0 auto;min-width:84px;text-align:right;font-variant-numeric:tabular-nums;opacity:.85;font-size:12px}
+.cores{display:flex;gap:6px;height:46px}
+.cores div{flex:1;background:rgba(255,255,255,.08);border-radius:6px;position:relative;overflow:hidden}
+.cores i{position:absolute;left:0;right:0;bottom:0;border-radius:6px;transition:height .6s}
+.drv{background:rgba(255,255,255,.05);border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.drvh{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.drvh b{font-size:15px}
+.drvh span{font-size:12px;opacity:.7;font-variant-numeric:tabular-nums;white-space:nowrap}
+.drv .pb{flex:none;width:100%;height:8px;border-radius:4px}
+.svc{position:relative}
+.sd{position:absolute;top:14px;right:14px;width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.25)}
+.sd.up{background:#34e0a1;box-shadow:0 0 6px rgba(52,224,161,.8)}
+.sd.dn{background:#ff5d73;box-shadow:0 0 6px rgba(255,93,115,.8)}
+#svc.wide .svc,#hid.wide .svc{padding-right:15px}
+.wide .sd{top:50%;right:6px;width:6px;height:6px;margin-top:-3px;box-shadow:none}
+.hint{text-align:center;font-size:10px;letter-spacing:.14em;opacity:.35;font-weight:700}
+.monbtn{display:flex;align-items:center;justify-content:space-between;width:100%;padding:14px 18px;border-radius:20px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.07);color:#fff;font-family:inherit;font-size:13px;font-weight:800;letter-spacing:.14em}
+.monbtn:active{background:rgba(255,255,255,.14)}
+.monbtn svg{width:18px;height:18px;opacity:.8;transition:transform .35s}
+.monbtn.open svg{transform:rotate(180deg)}
+.mon{display:grid;grid-template-rows:0fr;transition:grid-template-rows .4s cubic-bezier(.22,1,.36,1)}
+.mon.open{grid-template-rows:1fr}
+.moninner{min-height:0;overflow:hidden}
+.monpad{display:flex;flex-direction:column;gap:16px;padding-top:16px}
+.sechead{display:flex;align-items:center;justify-content:space-between;margin:6px 4px -4px}
+.sechead .sec{margin:0}
+.lay{font-size:12px;font-weight:700;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.14);border-radius:99px;padding:6px 12px;font-family:inherit}
+.lay.on{background:#34e0a1;color:#06281d;border-color:transparent}
+#svc.wide,#hid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.wide .svc{flex-direction:row;align-items:center;gap:4px;padding:0 6px;height:34px;border-radius:10px}
+.wide .ic{font-size:13px}
+.wide .nm{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.wide .pt{display:none}
+#hid{min-height:46px;padding:6px;border:1px dashed rgba(255,255,255,.16);border-radius:14px}
+#hid:empty{display:flex;align-items:center;justify-content:center;font-size:12px;opacity:.5}
+#hid:empty::before{content:"Drag buttons here to hide them from the widget"}
+#svc:empty{display:flex;align-items:center;justify-content:center;min-height:90px;padding:16px;border:1px dashed rgba(255,255,255,.16);border-radius:20px;font-size:13px;opacity:.6;text-align:center}
+#svc:not(.wide):empty::before{content:"No buttons yet. Tap + below to add your first service."}
+#svc.wide:empty::before{content:"Nothing on the widget yet. Drag buttons up from the panel below."}
+#hid .svc{opacity:.7}
+.svc.over{opacity:.4;border-style:dashed}
+#wextra{flex-direction:column;gap:14px}
+.wnote{font-size:12px;opacity:.55;line-height:1.4;padding:0 4px}
+.addwrap{display:flex;justify-content:center;margin-top:2px}
+.addbtn{width:52px;height:52px;border-radius:16px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.1);color:#fff;font-size:28px;font-weight:300;display:flex;align-items:center;justify-content:center;font-family:inherit}
+.addbtn:active{background:rgba(255,255,255,.22)}
+#title{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.tw{position:relative;display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.tchev{width:14px;height:14px;flex:none;opacity:.6;transition:transform .3s cubic-bezier(.22,1,.36,1)}
+.tw.open .tchev{transform:rotate(180deg)}
+.pmenu{position:absolute;top:calc(100% + 10px);left:0;z-index:9;min-width:190px;padding:6px;border-radius:18px;background:#1e2640;border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 60px rgba(0,0,0,.5);display:none;flex-direction:column;gap:2px;transform-origin:top left}
+.tw.open .pmenu{display:flex;animation:pop .2s cubic-bezier(.22,1,.36,1)}
+.pmenu button{display:flex;align-items:center;gap:10px;height:42px;padding:0 12px;border:0;border-radius:12px;background:none;color:#fff;font-family:inherit;font-size:15px;font-weight:700;text-align:left}
+.pmenu button:active{background:rgba(255,255,255,.12)}
+.pmenu button.red{color:#ff5d73}
+.pmenu svg{width:18px;height:18px;flex:none}
+#cvl{display:none;flex-direction:column;gap:12px}
+.cnote{font-size:13px;opacity:.65;line-height:1.4;text-align:center;padding:0 4px}
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 24px);z-index:30;max-width:86vw;padding:10px 16px;border-radius:18px;background:rgba(30,38,64,.96);border:1px solid rgba(255,255,255,.14);box-shadow:0 10px 30px rgba(0,0,0,.4);font-size:13px;font-weight:600;text-align:center;opacity:0;transform:translate(-50%,20px);transition:opacity .25s,transform .25s;pointer-events:none}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+#ov,#mv,#rv,#gv,#pv,#cv{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
+#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show{display:flex}
+.modal{width:min(86vw,340px);padding:22px 18px 18px;border-radius:30px;background:rgba(30,38,64,.94);border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:12px;animation:pop .22s cubic-bezier(.22,1,.36,1)}
+@keyframes pop{from{transform:scale(.9);opacity:0}}
+.modal h2{font-size:17px;font-weight:800;letter-spacing:.06em;text-align:center}
+.f{display:flex;flex-direction:column;gap:5px}
+.f label{font-size:11px;font-weight:700;letter-spacing:.12em;opacity:.6;margin-left:4px}
+.in{display:flex;align-items:center;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:0 12px;height:44px}
+.in span{opacity:.55;font-size:16px;margin-right:2px}
+.in input{flex:1;min-width:0;background:none;border:0;outline:0;color:#fff;font-size:16px;font-family:inherit;height:100%}
+.in input::placeholder{color:rgba(255,255,255,.3)}
+.in select{background:none;border:0;outline:0;color:#fff;font-size:16px;font-family:inherit;opacity:.85;-webkit-appearance:none;appearance:none;padding:0;margin:0}
+.in .chev{font-size:11px;opacity:.5;margin:0 8px 0 3px}
+.tg{display:flex;align-items:center;justify-content:space-between;padding:0 4px}
+.tg label{font-size:11px;font-weight:700;letter-spacing:.12em;opacity:.6}
+.sw{position:relative;width:46px;height:28px;border-radius:14px;background:rgba(255,255,255,.18);transition:background .2s}
+.sw i{position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.sw.on{background:#34e0a1}
+.sw.on i{transform:translateX(18px)}
+.err{font-size:12px;color:#ff5d73;text-align:center;min-height:14px}
+.btns{display:flex;gap:10px}
+.btns button{flex:1;height:44px;border:0;border-radius:14px;font-size:15px;font-weight:700;font-family:inherit;color:#fff;background:rgba(255,255,255,.12)}
+.btns button.ok{background:#34e0a1;color:#06281d}
+.btns button.del{background:#ff5d73;color:#fff}
+.btns.col{flex-direction:column}
+.hr{display:flex;align-items:center;gap:8px;flex:none}
+.gear{width:32px;height:32px;border-radius:50%;border:0;padding:0;background:rgba(255,255,255,.1);color:#fff;display:flex;align-items:center;justify-content:center}
+.gear:active{background:rgba(255,255,255,.2)}
+.gear svg{width:17px;height:17px;opacity:.85}
+body.monfixed #monb{display:none}
+body.monfixed .monpad{padding-top:0}
+.tw.nop{cursor:default}
+.tw.nop .tchev{display:none}
+body.c3 #svc:not(.wide),body.c3 .gbody{grid-template-columns:repeat(3,1fr);gap:10px}
+body.c3 #svc:not(.wide) .svc,body.c3 .gbody .svc{padding:12px}
+body.c3 #svc:not(.wide) .nm,body.c3 .gbody .nm{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+body.c3 #svc:not(.wide) .sd,body.c3 .gbody .sd{top:12px;right:12px}
+#sv{position:fixed;inset:0;z-index:12;display:none;align-items:flex-start;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:calc(env(safe-area-inset-top,0px) + 16px) 12px calc(env(safe-area-inset-bottom,0px) + 24px);overflow:auto;-webkit-overflow-scrolling:touch}
+#sv.show{display:flex}
+.smod{width:min(94vw,460px);gap:18px;padding-top:14px}
+.shd{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.shd h2{flex:1}
+.shd button{height:36px;padding:0 14px;border:0;border-radius:12px;font-size:15px;font-weight:700;font-family:inherit;color:#fff;background:rgba(255,255,255,.12)}
+.shd button.ok{background:#34e0a1;color:#06281d}
+#sbody{display:flex;flex-direction:column;gap:20px}
+.ssec{display:flex;flex-direction:column;gap:10px}
+.ssec>.sec{margin:0 4px}
+.scard{display:flex;flex-direction:column;gap:14px;padding:14px;border-radius:18px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}
+.shint{font-size:11px;opacity:.45;margin:-6px 4px 0;line-height:1.4}
+.srow{display:flex;align-items:center;gap:10px;min-width:0}
+.srow .st{flex:1;min-width:0}
+.srow .st b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .st span{display:block;font-size:11px;opacity:.5;margin-top:2px}
+.srow .chip{margin-left:0}
+.trow{display:grid;grid-template-columns:60px 1fr 1fr;gap:8px;align-items:center}
+.trow b{font-size:13px;opacity:.8;margin-left:4px}
+.trow .in{height:40px;min-width:0}
+.trow>*{min-width:0}
+.trow.th span{font-size:10px;font-weight:700;letter-spacing:.12em;opacity:.5;text-align:center}
+.sres{display:flex;flex-direction:column;gap:6px;font-size:12px}
+.sres div{display:flex;gap:8px;align-items:flex-start;line-height:1.35}
+.sres i{flex:none;width:8px;height:8px;border-radius:50%;margin-top:4px;background:#34e0a1}
+.sres .bad i{background:#ff5d73}
+.sbtns{display:flex;flex-direction:column;gap:8px}
+.sbtns button{height:44px;border:0;border-radius:14px;font-size:15px;font-weight:700;font-family:inherit;color:#fff;background:rgba(255,255,255,.12)}
+.sbtns button:active{background:rgba(255,255,255,.2)}
+.sbtns button.rtxt{color:#ff5d73}
+.swait{text-align:center;font-size:13px;opacity:.6;padding:18px 0}
+.sbusy{opacity:.5;pointer-events:none}
+.serr{font-size:12px;color:#ff5d73;text-align:center;min-height:14px}
+/* ---- Theme & look (Settings). Defaults match the original look. ---- */
+:root{--bg:#0b1220;--g1:18,194,165;--g2:106,92,255;--acc:#34e0a1;--acc-ink:#06281d;--panel:rgba(30,38,64,.94);--panel2:#1e2640;--glass:.07;--glowop:.5}
+html,body{background:var(--bg)}
+.b1{background:radial-gradient(circle,rgba(var(--g1),.75) 0%,rgba(var(--g1),0) 68%)}
+.b2{background:radial-gradient(circle,rgba(var(--g2),.75) 0%,rgba(var(--g2),0) 68%)}
+.blob{opacity:var(--glowop);transition:opacity .4s}
+body.noanim .blob{animation:none;will-change:auto}
+.sw.on{background:var(--acc)}
+.btns button.ok,.shd button.ok,.lay.on{background:var(--acc);color:var(--acc-ink)}
+.modal{background:var(--panel)}
+.pmenu{background:var(--panel2)}
+.card,.svc,.monbtn,.netcard{background:rgba(255,255,255,var(--glass))}
+body.sharp .card,body.sharp .netcard{border-radius:12px}
+body.sharp .svc,body.sharp .monbtn,body.sharp .scard{border-radius:10px}
+body.sharp .wide .svc{border-radius:6px}
+body.sharp .modal{border-radius:16px}
+body.sharp .in,body.sharp .btns button,body.sharp .sbtns button,body.sharp .addbtn{border-radius:8px}
+body.frnd{font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif}
+body.fserif{font-family:ui-serif,"New York",Georgia,serif}
+body.compact #svc:not(.wide) .svc,body.compact .gbody .svc{padding:10px 12px;gap:2px}
+body.compact #svc:not(.wide) .ic,body.compact .gbody .ic{font-size:18px}
+body.compact #svc:not(.wide) img.ic,body.compact .gbody img.ic{width:22px;height:22px}
+body.compact #svc:not(.wide) .nm,body.compact .gbody .nm{font-size:13px}
+body.compact #svc:not(.wide) .sd,body.compact .gbody .sd{top:10px;right:10px}
+body.compact #svc:not(.wide),body.compact .gbody{gap:8px}
+/* swatches in Settings */
+.swl{display:flex;flex-wrap:wrap;gap:10px}
+.swt{width:44px;height:44px;border-radius:50%;border:2px solid rgba(255,255,255,.15);padding:0;position:relative}
+.swt.on{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.18)}
+.swn{font-size:12px;opacity:.6;margin:2px 4px 0}
+</style></head><body>
+<div class="bg"><div class="blob b1"></div><div class="blob b2"></div></div>
+<main>
+<header><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot" id="dot"></div><span id="st">LIVE</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<div class="monwrap"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
+<div id="grid"></div>
+<div class="netcard">
+<div class="net"><span class="arrow dn">&#8595;</span><b id="down">0 B/s</b><span>DOWNLOAD</span></div>
+<div class="net"><span class="arrow up">&#8593;</span><b id="up">0 B/s</b><span>UPLOAD</span></div>
+</div>
+</div></div></div></div>
+<div class="sechead"><div class="sec" id="sect">SERVICES</div><button class="lay" id="layb" onclick="toggleMode()">Widget layout</button></div>
+<div id="svc"></div>
+<div id="wextra" style="display:none"><div class="wnote" id="wnote">The large widget fits 24 buttons. Dimmed ones will not show. Press, hold and drag to reorder, or drag a button between the two panels to show or hide it.</div><div id="hidwrap" style="display:none"><div class="sec" style="margin:0 4px 8px">NOT ON WIDGET</div><div id="hid" class="wide"></div></div></div>
+<div class="addwrap" id="addwrap"><button class="addbtn" onclick="openAdd()">+</button></div>
+</main>
+<div id="cv" onclick="if(event.target===this&&Date.now()>=ign)closePower()">
+<div class="modal">
+<h2 id="cvt">REBOOT SERVER?</h2>
+<div class="cnote" id="cvn"></div>
+<div id="cvl">
+<div class="f"><label>ZIMAOS USERNAME</label><div class="in"><input id="cu" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username"></div></div>
+<div class="f"><label>ZIMAOS PASSWORD</label><div class="in"><input id="cp" type="password" autocomplete="current-password"></div></div>
+<div class="fh">Asked once, then saved in the iOS Keychain.</div>
+</div>
+<div class="err" id="cer"></div>
+<div class="btns"><button onclick="closePower()">Cancel</button><button class="del" id="cok" onclick="confirmPower()">Reboot</button></div>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+<div id="sv" onclick="if(event.target===this&&Date.now()>=ign)closeSettings()">
+<div class="modal smod">
+<div class="shd"><button onclick="closeSettings()">Cancel</button><h2>SETTINGS</h2><button class="ok" id="ssave" onclick="saveSettings()">Save</button></div>
+<div class="serr" id="serr"></div>
+<div id="sbody"><div class="swait">Loading...</div></div>
+</div>
+</div>
+<div id="ov" onclick="if(event.target===this&&Date.now()>=ign)closeAdd()">
+<div class="modal">
+<h2 id="at">ADD SERVICE</h2>
+<div class="f"><label>SERVICE NAME</label><div class="in"><input id="fn" type="text" placeholder="e.g. Jellyfin" maxlength="24" autocomplete="off"></div></div>
+<div class="f"><label>ADDRESS</label><div class="in"><select id="fs"><option value="http">http://</option><option value="https">https://</option></select><span class="chev">&#9662;</span><input id="fa" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="tg"><label>USE PORT</label><div class="sw on" id="sw" onclick="togglePort()"><i></i></div></div>
+<div class="f" id="pf"><label>PORT</label><div class="in"><input id="fp" type="text" inputmode="numeric" placeholder="8080" maxlength="5"></div></div>
+<div class="f"><label>LOGO URL (OPTIONAL)</label><div class="in"><input id="fl" type="text" inputmode="url" placeholder="https://.../logo.png" autocapitalize="none" autocorrect="off" spellcheck="false" oninput="previewLogo('fl','flp')"><img id="flp" class="lp" alt="" onload="this.className='lp ok'" onerror="this.className='lp'"><button class="chip" type="button" onclick="guessLogo('fn','fl','flp','flh')">Auto</button></div><div class="fh" id="flh">Empty = emoji. Auto guesses from the name.</div></div>
+<div class="tg" id="wtg"><label>SHOW ON WIDGET</label><div class="sw on" id="sw2" onclick="toggleWidget()"><i></i></div></div>
+<div class="err" id="er"></div>
+<div class="btns"><button onclick="closeAdd()">Cancel</button><button class="ok" id="okb" onclick="submitAdd()">Add</button></div>
+</div>
+</div>
+<div id="rv" onclick="if(event.target===this&&Date.now()>=ign)closeRename()">
+<div class="modal">
+<h2>RENAME</h2>
+<div class="f"><label>DASHBOARD NAME</label><div class="in"><input id="rn" type="text" maxlength="20" autocomplete="off"></div></div>
+<div class="err" id="rer"></div>
+<div class="btns"><button onclick="closeRename()">Cancel</button><button class="ok" onclick="saveRename()">Save</button></div>
+</div>
+</div>
+<div id="mv" onclick="if(event.target===this&&Date.now()>=ign)closeMenu()">
+<div class="modal">
+<h2 id="mt"></h2>
+<div class="btns col"><button id="sbtn" onclick="menuStack()">Add to stack</button><button class="gtxt" onclick="menuEdit()">Edit</button><button class="rtxt" id="dbtn" onclick="menuDel()">Delete</button><button onclick="closeMenu()">Cancel</button></div>
+</div>
+</div>
+<div id="pv" onclick="if(event.target===this&&Date.now()>=ign)closePick()">
+<div class="modal">
+<h2 id="pvt">ADD TO STACK</h2>
+<div class="btns col" id="pl"></div>
+<div class="btns col"><button class="ok" onclick="pickNew()">New stack</button><button class="del" id="prm" onclick="pickRemove()">Remove from stack</button><button onclick="closePick()">Cancel</button></div>
+</div>
+</div>
+<div id="gv" onclick="if(event.target===this&&Date.now()>=ign)closeStack()">
+<div class="modal">
+<h2 id="gvt">NEW STACK</h2>
+<div class="f"><label>STACK NAME</label><div class="in"><input id="gnm" type="text" placeholder="e.g. Media" maxlength="24" autocomplete="off"></div></div>
+<div class="f"><label>LOGO URL (OPTIONAL)</label><div class="in"><input id="gl" type="text" inputmode="url" placeholder="https://.../logo.png" autocapitalize="none" autocorrect="off" spellcheck="false" oninput="previewLogo('gl','glp')"><img id="glp" class="lp" alt="" onload="this.className='lp ok'" onerror="this.className='lp'"><button class="chip" type="button" onclick="guessLogo('gnm','gl','glp','glh')">Auto</button></div><div class="fh" id="glh"></div></div>
+<div class="tg"><label>SHOW MEMBERS ON WIDGET</label><div class="sw" id="sw3" onclick="toggleExp()"><i></i></div></div>
+<div class="err" id="ger"></div>
+<div class="btns"><button onclick="closeStack()">Cancel</button><button class="ok" id="gok" onclick="saveStack()">Create</button></div>
+<div class="btns col" id="gdw"><button class="del" id="gdel" onclick="ungroup()">Ungroup</button></div>
+</div>
+</div>
+<script>
+var C = 326.7;
+var cards = {};
+function col(p){ return p >= 85 ? "#ff5d73" : p >= 60 ? "#ffb454" : "#34e0a1"; }
+function fmt(b){
+  var u = ["B","KB","MB","GB","TB"], i = 0;
+  while (b >= 1024 && i < 4) { b /= 1024; i++; }
+  return (b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)) + " " + u[i] + "/s";
+}
+function card(id, label){
+  if (cards[id]) { cards[id].l.textContent = label; return cards[id]; }
+  var el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = '<div class="ringwrap"><svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="arc" cx="60" cy="60" r="52"/></svg><div class="num">0<small>%</small></div></div><div class="lbl"></div><div class="detail"></div>';
+  el.addEventListener("click", function(){ toggleCard(id); });
+  document.getElementById("grid").appendChild(el);
+  var o = { el: el, arc: el.querySelector(".arc"), num: el.querySelector(".num"), l: el.querySelector(".lbl"), det: el.querySelector(".detail"), cur: 0, target: 0 };
+  o.l.textContent = label;
+  cards[id] = o;
+  return o;
+}
+function put(id, label, p){
+  var o = card(id, label);
+  var c = col(p);
+  o.target = p;
+  o.arc.style.stroke = c;
+  o.el.style.setProperty("--c", c);
+  // panel closed: nothing is visible, so skip the animation (opening the panel replays it from the latest value)
+  if (!monOpen) { o.cur = p; o.num.firstChild.nodeValue = Math.round(p); return; }
+  o.arc.style.strokeDashoffset = C * (1 - Math.min(p, 100) / 100);
+  kick();
+}
+var running = false;
+function kick(){
+  if (!running) { running = true; requestAnimationFrame(tick); }
+}
+function tick(){
+  var busy = false;
+  for (var k in cards) {
+    var o = cards[k];
+    o.cur += (o.target - o.cur) * 0.12;
+    if (Math.abs(o.target - o.cur) < 0.05) o.cur = o.target; else busy = true;
+    o.num.firstChild.nodeValue = Math.round(o.cur);
+  }
+  if (busy) requestAnimationFrame(tick); else running = false;
+}
+function setStatus(ok){
+  document.getElementById("dot").className = ok ? "dot" : "dot off";
+  document.getElementById("st").textContent = ok ? "LIVE" : "OFFLINE";
+}
+var HMAX = 100, hist = { t: [] }, last = null, dets = {}, expanded = null;
+function esc(t){ var d = document.createElement("div"); d.textContent = String(t); return d.innerHTML; }
+function sz(b){
+  var u = ["B","KB","MB","GB","TB"], i = 0;
+  while (b >= 1024 && i < 4) { b /= 1024; i++; }
+  return (b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)) + " " + u[i];
+}
+function pc(v){ return v == null ? "-" : (Math.round(v * 10) / 10) + "%"; }
+function pushHist(key, v){
+  if (!hist[key]) hist[key] = [];
+  hist[key].push(v);
+  if (hist[key].length > HMAX) hist[key].shift();
+}
+function stat(v, l){ return '<div class="ds"><b>' + v + '</b><span>' + l + '</span></div>'; }
+function tcol(t, k){
+  var l = (st.limits || {})[k];
+  if (!l) return "";
+  return t >= l.hot ? "#ff5d73" : t >= l.warm ? "#ffb454" : "";
+}
+function tstat(v, label, k){
+  var c = tcol(v, k);
+  return '<div class="ds"><b' + (c ? ' style="color:' + c + '"' : '') + '>' + Math.round(v) + ' &deg;C</b><span>' + label + '</span></div>';
+}
+function hlabel(l, j){ var m = /(sd[a-z]+)/i.exec(l); return m ? m[1].toUpperCase() : "HDD " + (j + 1); }
+function graph(key){
+  var v = hist[key] || [], n = v.length, tl = hist.t;
+  if (n < 2) return '<div class="gbox"><div class="gwait">Collecting history...</div></div>';
+  var w = 300, h = 80, mx = 0, i;
+  for (i = 0; i < n; i++) if (v[i] > mx) mx = v[i];
+  var top = Math.min(100, Math.max(20, Math.ceil(mx / 10) * 10 + 10));
+  var pts = "";
+  for (i = 0; i < n; i++) {
+    var x = (i / (n - 1)) * w, y = h - Math.min(v[i], top) / top * (h - 4) - 2;
+    pts += (i ? " L" : "M") + x.toFixed(1) + "," + y.toFixed(1);
+  }
+  var c = col(v[n - 1]);
+  var span = Math.round((tl[tl.length - 1] - tl[0]) / 1000);
+  var ago = span >= 90 ? Math.round(span / 60) + " min ago" : span + " s ago";
+  return '<div class="gbox"><svg viewBox="0 0 300 80" preserveAspectRatio="none"><line x1="0" y1="40" x2="300" y2="40" stroke="rgba(255,255,255,.08)" stroke-dasharray="3 4"/><path d="' + pts + ' L300,80 L0,80 Z" fill="' + c + '" fill-opacity=".16"/><path d="' + pts + '" fill="none" stroke="' + c + '" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg><div class="gcap"><span>' + ago + '</span><span>scale 0-' + top + '%</span><span>now</span></div></div>';
+}
+function toplist(title, rows){
+  if (!rows || !rows.length) return "";
+  var mx = 0, h = '<div><div class="dh">' + title + '</div>', i;
+  for (i = 0; i < rows.length; i++) if (rows[i].v > mx) mx = rows[i].v;
+  for (i = 0; i < rows.length; i++) {
+    var r = rows[i], wd = mx > 0 ? Math.max(3, r.v / mx * 100) : 0;
+    h += '<div class="prow"><div class="pn">' + esc(r.name) + '</div><div class="pb"><i style="width:' + wd.toFixed(0) + '%;background:#34e0a1"></i></div><div class="pv">' + r.txt + '</div></div>';
+  }
+  return h + '</div>';
+}
+function renderDetail(id){
+  var o = cards[id];
+  if (!o || !last) return;
+  var d = dets[id], h = "", i;
+  var stats = [];
+  if (id === "cpu") {
+    if (d) {
+      stats.push(stat(pc(d.user), "USER"), stat(pc(d.system), "SYSTEM"));
+      if (d.iowait != null) stats.push(stat(pc(d.iowait), "IO WAIT"));
+      if (d.load) stats.push(stat(d.load[0].toFixed(2), "LOAD 1M"), stat(d.load[1].toFixed(2), "LOAD 5M"), stat(d.load[2].toFixed(2), "LOAD 15M"));
+      stats.push(stat(d.nCores, "CORES"));
+      if (d.temp != null) stats.push(tstat(d.temp, "TEMP", "cpu"));
+      if (d.hot != null && d.nCoreTemps > 1) stats.push(tstat(d.hot, "HOTTEST CORE", "cpu"));
+      h += '<div class="dgrid">' + stats.join("") + '</div>';
+      if (d.cores && d.cores.length) {
+        h += '<div><div class="dh">PER CORE</div><div class="cores">';
+        for (i = 0; i < d.cores.length; i++) h += '<div><i style="height:' + Math.min(100, d.cores[i]) + '%;background:' + col(d.cores[i]) + '"></i></div>';
+        h += '</div></div>';
+      }
+    }
+    h += '<div><div class="dh">HISTORY</div>' + graph("cpu") + '</div>';
+    if (d) h += toplist("TOP CPU USERS", d.top.map(function(t){ return { name: t.name, v: t.pct, txt: t.pct.toFixed(1) + "%" }; }));
+  } else if (id === "ram") {
+    if (d) {
+      h += '<div class="bigval">' + sz(d.used) + ' <small>/ ' + sz(d.total) + '</small></div>';
+      stats.push(stat(sz(d.available), "AVAILABLE"));
+      if (d.cached != null) stats.push(stat(sz(d.cached), "CACHED"));
+      if (d.swapTotal) stats.push(stat(sz(d.swapUsed) + " / " + sz(d.swapTotal), "SWAP"));
+      h += '<div class="dgrid">' + stats.join("") + '</div>';
+    }
+    h += '<div><div class="dh">HISTORY</div>' + graph("ram") + '</div>';
+    if (d) h += toplist("TOP MEMORY USERS", d.top.map(function(t){ return { name: t.name, v: t.bytes, txt: sz(t.bytes) + " · " + t.pct.toFixed(1) + "%" }; }));
+  } else {
+    var sm = last.storage, drv = last.disks || [];
+    if (sm) {
+      h += '<div class="bigval">' + sz(sm.used) + ' <small>/ ' + sz(sm.size) + ' &middot; ' + sm.count + (sm.count === 1 ? ' drive' : ' drives') + '</small></div>';
+      stats.push(stat(sz(sm.free), "FREE"), stat(pc(sm.percent), "USED"));
+      h += '<div class="dgrid">' + stats.join("") + '</div>';
+    }
+    h += '<div><div class="dh">HISTORY</div>' + graph("disk") + '</div>';
+    if (d && (d.nvme.length || d.hdd.length)) {
+      var ts = [], j;
+      for (j = 0; j < d.nvme.length; j++) ts.push(tstat(d.nvme[j].value, "NVME " + (j + 1), "nvme"));
+      for (j = 0; j < d.hdd.length; j++) ts.push(tstat(d.hdd[j].value, hlabel(d.hdd[j].label, j), "hdd"));
+      h += '<div><div class="dh">TEMPERATURES</div><div class="dgrid">' + ts.join("") + '</div></div>';
+    } else if (d) {
+      h += '<div class="hint">NO DRIVE TEMPERATURES REPORTED BY GLANCES</div>';
+    }
+    if (drv.length) {
+      h += '<div><div class="dh">DRIVES</div>';
+      for (i = 0; i < drv.length; i++) {
+        var dk = drv[i], io = d && d.io ? d.io[i] : null, ds = [];
+        ds.push(stat(sz(dk.free != null ? dk.free : dk.size - dk.used), "FREE"));
+        ds.push(stat(esc(String(dk.device || "-").split("/").pop()), "DEVICE"));
+        ds.push(stat(esc(dk.fstype || "-"), "TYPE"));
+        if (io) ds.push(stat(sz(io.read) + "/s", "READ"), stat(sz(io.write) + "/s", "WRITE"));
+        var tp = d && d.temps ? d.temps[i] : null;
+        if (tp) ds.push(tstat(Math.max.apply(null, tp.values), tp.kind === "nvme" ? "NVME TEMP" : tp.values.length > 1 ? "HOTTEST HDD" : "HDD TEMP", tp.kind));
+        h += '<div class="drv"><div class="drvh"><b>' + esc(dk.name) + '</b><span>' + sz(dk.used) + ' / ' + sz(dk.size) + ' &middot; ' + pc(dk.percent) + '</span></div>';
+        h += '<div class="pb"><i style="width:' + Math.min(100, dk.percent) + '%;background:' + col(dk.percent) + '"></i></div>';
+        h += '<div class="dgrid">' + ds.join("") + '</div></div>';
+      }
+      h += '</div>';
+    }
+  }
+  o.det.innerHTML = h + '<div class="hint">TAP TO CLOSE</div>';
+}
+function detail(key, d){
+  dets[key] = d;
+  if (expanded === key) renderDetail(key);
+}
+var monOpen = false;
+function replay(){
+  for (var k in cards) {
+    var o = cards[k];
+    o.cur = 0;
+    o.arc.style.transition = "none";
+    o.arc.style.strokeDashoffset = C;
+    void o.arc.getBoundingClientRect();
+    o.arc.style.transition = "";
+    o.arc.style.strokeDashoffset = C * (1 - Math.min(o.target, 100) / 100);
+  }
+  kick();
+}
+function toggleMon(){
+  if (monOpen && UI.monFixed) return; // can't be folded away while "always open" is on
+  monOpen = !monOpen;
+  document.getElementById("mon").className = monOpen ? "mon open" : "mon";
+  document.getElementById("monb").className = monOpen ? "monbtn open" : "monbtn";
+  if (monOpen) replay();
+  // an enlarged card's details are only fetched while the panel is open
+  if (expanded) location.href = "exp://go?k=" + (monOpen ? expanded : "");
+}
+function openRename(){
+  var i = document.getElementById("rn");
+  i.value = document.getElementById("title").textContent;
+  document.getElementById("rer").textContent = "";
+  document.getElementById("rv").className = "show";
+  setTimeout(function(){ i.focus(); i.select(); }, 80);
+}
+function closeRename(){
+  document.getElementById("rv").className = "";
+  document.activeElement.blur();
+}
+function saveRename(){
+  if (Date.now() < ign) return;
+  var v = document.getElementById("rn").value.trim();
+  if (!v) { document.getElementById("rer").textContent = "Enter a name"; return; }
+  document.getElementById("title").textContent = v;
+  closeRename();
+  location.href = "ttl://go?t=" + encodeURIComponent(v);
+}
+(function(){
+  var t = null, fired = false, el = document.getElementById("title");
+  el.addEventListener("touchstart", function(){
+    fired = false;
+    clearTimeout(t);
+    t = setTimeout(function(){ t = null; fired = true; openRename(); }, 600);
+  }, { passive: true });
+  ["touchmove", "touchcancel"].forEach(function(n){
+    el.addEventListener(n, function(){ clearTimeout(t); }, { passive: true });
+  });
+  el.addEventListener("touchend", function(){
+    clearTimeout(t);
+    if (fired) ign = Date.now() + 450;
+  });
+  el.addEventListener("contextmenu", function(e){ e.preventDefault(); });
+})();
+function toggleCard(id){
+  var o = cards[id];
+  if (!o) return;
+  if (expanded === id) {
+    expanded = null;
+    o.el.classList.remove("big");
+    o.det.innerHTML = "";
+    location.href = "exp://go?k=";
+    return;
+  }
+  if (expanded && cards[expanded]) {
+    cards[expanded].el.classList.remove("big");
+    cards[expanded].det.innerHTML = "";
+  }
+  expanded = id;
+  o.el.classList.add("big");
+  renderDetail(id);
+  setTimeout(function(){ o.el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 60);
+  location.href = "exp://go?k=" + id;
+}
+function update(s){
+  last = s;
+  hist.t.push(Date.now());
+  if (hist.t.length > HMAX) hist.t.shift();
+  pushHist("cpu", s.cpu);
+  pushHist("ram", s.ram);
+  if (s.storage) pushHist("disk", s.storage.percent);
+  setStatus(true);
+  put("cpu", "CPU", s.cpu);
+  put("ram", "RAM", s.ram);
+  if (s.storage) put("disk", "STORAGE", s.storage.percent);
+  document.getElementById("down").textContent = fmt(s.net.down);
+  document.getElementById("up").textContent = fmt(s.net.up);
+  if (expanded) renderDetail(expanded);
+}
+function offline(setup){
+  setStatus(false);
+  if (setup) document.getElementById("st").textContent = "SETUP";
+}
+var ign = 0, editId = null, cur = null, delArmed = false;
+var pTimer = null, sx = 0, sy = 0, lastX = 0, lastY = 0, pEl = null, pSv = null;
+var pDrag = true, dragging = false, moved = false, fired = false, ghost = null, ox = 0, oy = 0, edge = null, startOrder = "";
+function idsOf(el){
+  var r = [], k = el.children;
+  for (var i = 0; i < k.length; i++) r.push(k[i].dataset.id);
+  return r;
+}
+function ids(b){ return idsOf(document.getElementById(b)); }
+function order(){ return ids("svc"); }
+// every stack's buttons, by stack id
+function bodyMap(){
+  var m = {}, k = document.querySelectorAll(".gbody");
+  for (var i = 0; i < k.length; i++) m[k[i].dataset.gid] = idsOf(k[i]);
+  return m;
+}
+function sig(){ return JSON.stringify([ids("svc"), ids("hid"), bodyMap()]); }
+function commitWidget(){
+  var all = st.widget.concat(st.hidden), byId = {}, i;
+  for (i = 0; i < all.length; i++) byId[all[i].id] = all[i];
+  var sh = ids("svc"), hi = ids("hid"), ns = [], nh = [];
+  for (i = 0; i < sh.length; i++) if (byId[sh[i]]) { byId[sh[i]].onWidget = true; ns.push(byId[sh[i]]); }
+  for (i = 0; i < hi.length; i++) if (byId[hi[i]]) { byId[hi[i]].onWidget = false; nh.push(byId[hi[i]]); }
+  st.widget = ns;
+  st.hidden = nh;
+  for (i = 0; i < st.dash.length; i++) if (byId[st.dash[i].id]) st.dash[i].onWidget = byId[st.dash[i].id].onWidget;
+}
+// moveEl: the element that moves when dragged (a whole stack card when you hold its header)
+var pH = null;
+function bindPress(a, sv, drag, moveEl){
+  a.addEventListener("touchstart", function(e){
+    var t = e.touches[0];
+    sx = lastX = t.clientX; sy = lastY = t.clientY;
+    pEl = moveEl || a; pH = a; pSv = sv; pDrag = drag; fired = false; dragging = false; moved = false;
+    clearTimeout(pTimer);
+    pTimer = setTimeout(startDrag, 500);
+  }, { passive: true });
+  a.addEventListener("contextmenu", function(e){ e.preventDefault(); });
+  a.addEventListener("click", function(e){
+    if (fired) { e.preventDefault(); fired = false; }
+  });
+}
+function startDrag(){
+  pTimer = null;
+  fired = true;
+  if (!pDrag) { ign = Date.now() + 450; showMenu(pSv); return; }
+  dragging = true;
+  moved = false;
+  startOrder = sig();
+  var r = pH.getBoundingClientRect();
+  ox = sx - r.left; oy = sy - r.top;
+  ghost = pH.cloneNode(true);
+  ghost.className = pH === pEl ? "svc ghost" : "monbtn grph ghost";
+  ghost.style.width = r.width + "px";
+  ghost.style.height = r.height + "px";
+  ghost.style.left = r.left + "px";
+  ghost.style.top = r.top + "px";
+  document.body.appendChild(ghost);
+  pEl.classList.add("lifted");
+  edge = setInterval(function(){
+    var se = document.scrollingElement || document.body;
+    if (lastY > window.innerHeight - 90) se.scrollTop += 10;
+    else if (lastY < 90) se.scrollTop -= 10;
+    reorder(lastX, lastY);
+  }, 16);
+}
+function reorder(x, y){
+  var isGrp = pEl.classList.contains("grp");
+  var boxes = mode === "widget" ? [document.getElementById("svc"), document.getElementById("hid")] : [document.getElementById("svc")];
+  // a button can also be dropped into any open stack (a stack can't go inside another stack)
+  if (mode !== "widget" && !isGrp) boxes = openBodies().concat(boxes);
+  var bi, i, j, c, r, k;
+  for (bi = 0; bi < boxes.length; bi++) {
+    k = boxes[bi].children;
+    for (i = 0; i < k.length; i++) {
+      c = k[i];
+      if (c === pEl) continue;
+      // over an open stack's button area: handled by that stack's own box
+      if (!isGrp && c.classList.contains("grp")) {
+        var gb = c.querySelector(".mon.open .gbody");
+        if (gb) {
+          var br = gb.getBoundingClientRect();
+          if (x >= br.left && x <= br.right && y >= br.top - 8 && y <= br.bottom + 8) continue;
+        }
+      }
+      r = c.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
+        var par = c.parentNode, before = false;
+        if (pEl.parentNode === par) {
+          for (j = 0; j < par.children.length; j++) {
+            if (par.children[j] === c) break;
+            if (par.children[j] === pEl) { before = true; break; }
+          }
+        }
+        // before === true: dragged item is currently ahead of c in the same panel, so move it after c
+        if (before) par.insertBefore(pEl, c.nextSibling);
+        else par.insertBefore(pEl, c);
+        markOverflow();
+        return;
+      }
+    }
+  }
+  // empty space at the end of a panel (or an empty panel): drop at the end
+  for (bi = 0; bi < boxes.length; bi++) {
+    var box = boxes[bi];
+    r = box.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top - 8 || y > r.bottom + 8) continue;
+    k = box.children;
+    var lastC = null;
+    for (i = 0; i < k.length; i++) if (k[i] !== pEl) lastC = k[i];
+    if (!lastC) {
+      if (pEl.parentNode !== box) { box.appendChild(pEl); markOverflow(); }
+      return;
+    }
+    if (y > lastC.getBoundingClientRect().bottom && box.lastElementChild !== pEl) {
+      box.appendChild(pEl);
+      markOverflow();
+      return;
+    }
+  }
+}
+document.addEventListener("touchmove", function(e){
+  var t = e.touches[0];
+  lastX = t.clientX; lastY = t.clientY;
+  if (dragging) {
+    e.preventDefault();
+    if (Math.abs(lastX - sx) > 10 || Math.abs(lastY - sy) > 10) moved = true;
+    ghost.style.left = (lastX - ox) + "px";
+    ghost.style.top = (lastY - oy) + "px";
+    reorder(lastX, lastY);
+    return;
+  }
+  if (pTimer && (Math.abs(lastX - sx) > 8 || Math.abs(lastY - sy) > 8)) {
+    clearTimeout(pTimer);
+    pTimer = null;
+  }
+}, { passive: false });
+function endTouch(){
+  clearTimeout(pTimer);
+  pTimer = null;
+  if (!dragging) return;
+  dragging = false;
+  clearInterval(edge);
+  ign = Date.now() + 450;
+  if (ghost) { ghost.remove(); ghost = null; }
+  pEl.classList.remove("lifted");
+  var changed = false;
+  if (!moved) {
+    showMenu(pSv);
+  } else {
+    if (sig() !== startOrder) {
+      changed = true;
+      if (mode === "widget") {
+        var payload = JSON.stringify({ s: ids("svc"), h: ids("hid") });
+        commitWidget();
+        location.href = "wrd://go?o=" + encodeURIComponent(payload);
+      } else {
+        location.href = "ord://go?o=" + encodeURIComponent(JSON.stringify({ o: order(), g: bodyMap() }));
+      }
+    }
+  }
+  // an update that arrived mid-drag is drawn now (after a change, a fresh one is on its way)
+  if (pendingDraw && !changed) draw();
+  pendingDraw = false;
+}
+function openBodies(){
+  var r = [], k = document.querySelectorAll(".grp .mon.open .gbody");
+  for (var i = 0; i < k.length; i++) r.push(k[i]);
+  return r;
+}
+document.addEventListener("touchend", endTouch);
+document.addEventListener("touchcancel", endTouch);
+var st = { dash: [], widget: [], hidden: [] }, mode = "dash";
+var svcUp = {}, gmap = {}, openG = {}, pendingDraw = false;
+// stack status: up = all up, dn = all down, part = some down
+function gstate(g){
+  var up = 0, dn = 0, n = g.members.length;
+  for (var i = 0; i < n; i++) { var v = svcUp[g.members[i].id]; if (v === true) up++; else if (v === false) dn++; }
+  if (!n || up + dn === 0) return "";
+  if (up === n) return " up";
+  if (dn === n) return " dn";
+  return dn ? " part" : "";
+}
+function applyDots(){
+  var k = document.querySelectorAll(".svc[data-id],.grph[data-gid]");
+  for (var i = 0; i < k.length; i++) {
+    var d = k[i].querySelector(".sd");
+    if (!d) continue;
+    var id = k[i].dataset.gid || k[i].dataset.id;
+    if (gmap[id]) { d.className = "sd" + gstate(gmap[id]); continue; }
+    var v = svcUp[id];
+    d.className = "sd" + (v === true ? " up" : v === false ? " dn" : "");
+  }
+}
+function iconHtml(sv){
+  var lg = st.logos && st.logos[sv.id];
+  return lg ? '<img class="ic" alt="" src="data:image/png;base64,' + lg + '">' : '<span class="ic">' + sv.icon + '</span>';
+}
+var CHEV = '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+// Stack card in the dashboard: header (tap = open/close, hold = drag or menu) + its buttons
+function makeGroup(g){
+  var w = document.createElement("div");
+  w.className = "grp";
+  w.dataset.id = g.id;
+  var open = !!openG[g.id];
+  var h = document.createElement("a");
+  h.className = open ? "monbtn grph open" : "monbtn grph";
+  h.dataset.gid = g.id;
+  h.innerHTML = '<span class="gt">' + iconHtml(g) + '<b></b><span class="gc"></span></span><span class="gr"><span class="sd"></span>' + CHEV + '</span>';
+  h.querySelector("b").textContent = g.name;
+  h.querySelector(".gc").textContent = g.members.length;
+  var m = document.createElement("div");
+  m.className = open ? "mon open" : "mon";
+  m.innerHTML = '<div class="moninner"><div class="gbody"></div></div>';
+  var body = m.querySelector(".gbody");
+  body.dataset.gid = g.id;
+  g.members.forEach(function(sv){ body.appendChild(makeBtn(sv, true)); });
+  w.appendChild(h);
+  w.appendChild(m);
+  bindPress(h, g, true, w);
+  h.addEventListener("click", function(e){ if (!e.defaultPrevented) toggleGroup(g.id); });
+  return w;
+}
+// Stack in "Widget layout": one pill (counts as all its buttons when "show members" is on)
+function makeGroupPill(g){
+  var a = document.createElement("a");
+  a.className = "svc";
+  a.dataset.id = g.id;
+  var n = g.members.length;
+  a.dataset.slots = g.expand ? n : (n ? 1 : 0);
+  a.innerHTML = iconHtml(g) + '<span class="nm"></span><span class="pt"></span><span class="sd"></span>';
+  a.querySelector(".nm").textContent = g.name + (g.expand ? " \u00d7" + n : "");
+  bindPress(a, g, true);
+  return a;
+}
+function toggleGroup(id){
+  openG[id] = !openG[id];
+  var w = document.querySelector('.grp[data-id="' + id + '"]');
+  if (!w) return;
+  w.querySelector(".grph").className = openG[id] ? "monbtn grph open" : "monbtn grph";
+  w.querySelector(".mon").className = openG[id] ? "mon open" : "mon";
+}
+function focusStack(id){
+  if (!gmap[id]) return;
+  if (mode !== "dash") { mode = "dash"; draw(); }
+  if (!openG[id]) toggleGroup(id);
+  var w = document.querySelector('.grp[data-id="' + id + '"]');
+  if (w) setTimeout(function(){ w.scrollIntoView({ behavior: "smooth", block: "start" }); }, 150);
+}
+function setUp(m){ svcUp = m; applyDots(); }
+function makeBtn(sv, drag){
+  var a = document.createElement("a");
+  a.className = "svc";
+  a.dataset.id = sv.id;
+  a.href = "open://go?u=" + encodeURIComponent(sv.url);
+  a.innerHTML = iconHtml(sv) + '<span class="nm"></span><span class="pt"></span><span class="sd"></span>';
+  a.querySelector(".nm").textContent = sv.name;
+  a.querySelector(".pt").textContent = sv.label || "";
+  bindPress(a, sv, drag);
+  return a;
+}
+function markOverflow(){
+  var k = document.getElementById("svc").children, h = document.getElementById("hid").children, i;
+  var used = 0;
+  for (i = 0; i < k.length; i++) {
+    var sl = k[i].dataset.slots != null ? Number(k[i].dataset.slots) : 1;
+    if (mode === "widget" && used >= UI.widgetMax && sl > 0) k[i].classList.add("over");
+    else k[i].classList.remove("over");
+    used += sl;
+  }
+  for (i = 0; i < h.length; i++) h[i].classList.remove("over");
+}
+function draw(){
+  var wide = mode === "widget";
+  var box = document.getElementById("svc"), hb = document.getElementById("hid");
+  box.className = wide ? "wide" : "";
+  document.body.classList.toggle("wide", wide);
+  box.innerHTML = "";
+  hb.innerHTML = "";
+  (wide ? st.widget : st.dash).forEach(function(sv){
+    box.appendChild(sv.kind === "group" ? (wide ? makeGroupPill(sv) : makeGroup(sv)) : makeBtn(sv, true));
+  });
+  if (wide) st.hidden.forEach(function(sv){ hb.appendChild(sv.kind === "group" ? makeGroupPill(sv) : makeBtn(sv, true)); });
+  document.getElementById("sect").textContent = wide ? "WIDGET LAYOUT" : "SERVICES";
+  var lb = document.getElementById("layb");
+  lb.textContent = wide ? "Done" : "Widget layout";
+  lb.className = wide ? "lay on" : "lay";
+  document.getElementById("wextra").style.display = wide ? "flex" : "none";
+  document.getElementById("hidwrap").style.display = wide ? "" : "none";
+  document.getElementById("addwrap").style.display = wide ? "none" : "";
+  markOverflow();
+  applyDots();
+}
+function renderServices(p){
+  st = p;
+  applyUi(p.ui);
+  if (p.title) document.getElementById("title").textContent = p.title;
+  gmap = {};
+  (st.dash || []).forEach(function(x){ if (x.kind === "group") gmap[x.id] = x; });
+  if (dragging) { pendingDraw = true; return; }
+  draw();
+}
+function toggleMode(){
+  mode = mode === "dash" ? "widget" : "dash";
+  draw();
+}
+function init(t, p){
+  document.getElementById("title").textContent = t;
+  renderServices(p);
+  if (UI.monOpen && !monOpen) toggleMon();
+}
+function showMenu(sv){
+  if (sv.kind === "group") { openStack(sv); return; }
+  cur = sv;
+  document.getElementById("sbtn").textContent = sv.group ? "Change stack" : "Add to stack";
+  delArmed = false;
+  document.getElementById("mt").textContent = sv.name;
+  document.getElementById("dbtn").textContent = "Delete";
+  document.getElementById("mv").className = "show";
+}
+function closeMenu(){ document.getElementById("mv").className = ""; }
+function menuEdit(){
+  if (Date.now() < ign) return;
+  var sv = cur;
+  closeMenu();
+  openAdd(sv);
+}
+function menuDel(){
+  if (Date.now() < ign) return;
+  if (!delArmed) {
+    delArmed = true;
+    document.getElementById("dbtn").textContent = "Tap again to delete";
+    return;
+  }
+  closeMenu();
+  location.href = "del://go?id=" + encodeURIComponent(cur.id);
+}
+var usePort = true;
+function applyPort(){
+  document.getElementById("sw").className = usePort ? "sw on" : "sw";
+  document.getElementById("pf").style.display = usePort ? "" : "none";
+  document.getElementById("fa").placeholder = usePort ? (st.host || "192.168.1.10") : "app.example.com";
+}
+var onW = true;
+function applyW(){
+  document.getElementById("sw2").className = onW ? "sw on" : "sw";
+}
+function toggleWidget(){
+  onW = !onW;
+  applyW();
+}
+function togglePort(){
+  usePort = !usePort;
+  applyPort();
+}
+function openAdd(sv){
+  editId = sv ? sv.id : null;
+  usePort = sv ? !!sv.port : true;
+  applyPort();
+  onW = sv ? sv.onWidget !== false : true;
+  applyW();
+  document.getElementById("at").textContent = sv ? "EDIT SERVICE" : "ADD SERVICE";
+  document.getElementById("okb").textContent = sv ? "Save" : "Add";
+  document.getElementById("fn").value = sv ? sv.name : "";
+  document.getElementById("fs").value = sv && sv.scheme === "https" ? "https" : "http";
+  document.getElementById("fa").value = sv ? sv.addr : "";
+  document.getElementById("fp").value = sv && sv.port ? sv.port : "";
+  document.getElementById("fl").value = sv && sv.logo ? sv.logo : "";
+  document.getElementById("flh").textContent = "Empty = emoji. Auto guesses from the name.";
+  previewLogo("fl", "flp");
+  document.getElementById("wtg").style.display = sv && sv.group ? "none" : "";
+  document.getElementById("er").textContent = "";
+  document.getElementById("ov").className = "show";
+  if (!sv) setTimeout(function(){ document.getElementById("fn").focus(); }, 80);
+}
+function closeAdd(){
+  document.getElementById("ov").className = "";
+  document.activeElement.blur();
+}
+function submitAdd(){
+  if (Date.now() < ign) return;
+  var n = document.getElementById("fn").value.trim();
+  var a = document.getElementById("fa").value.trim();
+  var sc = document.getElementById("fs").value;
+  var p = usePort ? document.getElementById("fp").value.replace(/[^0-9]/g, "") : "";
+  var lu = document.getElementById("fl").value.trim();
+  if (!n || !a) { document.getElementById("er").textContent = "Enter a name and an address"; return; }
+  if (lu && !/^https?:\\/\\//i.test(lu)) { document.getElementById("er").textContent = "Logo URL must start with http:// or https://"; return; }
+  closeAdd();
+  location.href = "add://go?d=" + encodeURIComponent(JSON.stringify({ id: editId, name: n, scheme: sc, addr: a, port: p, onWidget: onW, logo: lu }));
+}
+var lpT = {};
+function previewLogo(uid, iid){
+  clearTimeout(lpT[uid]);
+  lpT[uid] = setTimeout(function(){
+    var v = document.getElementById(uid).value.trim(), im = document.getElementById(iid);
+    if (/^https?:\\/\\//i.test(v)) { if (im.getAttribute("src") !== v) { im.className = "lp"; im.src = v; } }
+    else { im.className = "lp"; im.removeAttribute("src"); }
+  }, 350);
+}
+// Guess a dashboard-icons logo from the name (e.g. "Uptime Kuma" -> uptime-kuma.png)
+function guessLogo(nid, uid, iid, hid){
+  var n = document.getElementById(nid).value.trim().toLowerCase();
+  var h = document.getElementById(hid);
+  if (!n) { h.textContent = "Type a name first."; return; }
+  var slug = n.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  var im = document.getElementById(iid);
+  var url = (st.cdn || "") + slug + ".png";
+  h.textContent = "Checking " + slug + ".png ...";
+  var t = new Image();
+  t.onload = function(){ document.getElementById(uid).value = url; im.className = "lp"; im.src = url; h.textContent = "Found " + slug + ".png"; };
+  t.onerror = function(){ h.textContent = "No logo named " + slug + ".png. Paste a URL instead."; };
+  t.src = url;
+}
+// ---- Stacks: pick a stack for a button ----
+var pickSv = null;
+function menuStack(){
+  if (Date.now() < ign) return;
+  var sv = cur;
+  closeMenu();
+  openPick(sv);
+}
+function openPick(sv){
+  pickSv = sv;
+  var list = document.getElementById("pl");
+  list.innerHTML = "";
+  for (var id in gmap) {
+    if (id === sv.group) continue;
+    (function(g){
+      var b = document.createElement("button");
+      b.textContent = g.name;
+      b.onclick = function(){ pickTo(g.id); };
+      list.appendChild(b);
+    })(gmap[id]);
+  }
+  document.getElementById("pvt").textContent = sv.group ? "MOVE TO STACK" : "ADD TO STACK";
+  document.getElementById("prm").style.display = sv.group ? "" : "none";
+  document.getElementById("pv").className = "show";
+}
+function closePick(){ document.getElementById("pv").className = ""; }
+function pickTo(gid){
+  if (Date.now() < ign) return;
+  closePick();
+  location.href = "grp://go?d=" + encodeURIComponent(JSON.stringify({ act: "move", id: pickSv.id, to: gid }));
+}
+function pickRemove(){
+  if (Date.now() < ign) return;
+  closePick();
+  location.href = "grp://go?d=" + encodeURIComponent(JSON.stringify({ act: "move", id: pickSv.id, to: null }));
+}
+function pickNew(){
+  if (Date.now() < ign) return;
+  closePick();
+  openStack(null, pickSv);
+}
+// ---- Stacks: create / edit / ungroup ----
+var gEdit = null, gMember = null, gExp = false, gDelArmed = false;
+function applyExp(){ document.getElementById("sw3").className = gExp ? "sw on" : "sw"; }
+function toggleExp(){ gExp = !gExp; applyExp(); }
+function openStack(g, member){
+  gEdit = g ? g.id : null;
+  gMember = member ? member.id : null;
+  gExp = g ? !!g.expand : false;
+  applyExp();
+  gDelArmed = false;
+  document.getElementById("gvt").textContent = g ? "EDIT STACK" : "NEW STACK";
+  document.getElementById("gok").textContent = g ? "Save" : "Create";
+  document.getElementById("gnm").value = g ? g.name : "";
+  document.getElementById("gl").value = g && g.logo ? g.logo : "";
+  document.getElementById("glh").textContent = "Empty = \ud83d\uddc2\ufe0f. Auto guesses from the name.";
+  previewLogo("gl", "glp");
+  document.getElementById("gdw").style.display = g ? "" : "none";
+  document.getElementById("gdel").textContent = "Ungroup";
+  document.getElementById("ger").textContent = "";
+  document.getElementById("gv").className = "show";
+  if (!g) setTimeout(function(){ document.getElementById("gnm").focus(); }, 80);
+}
+function closeStack(){
+  document.getElementById("gv").className = "";
+  document.activeElement.blur();
+}
+function saveStack(){
+  if (Date.now() < ign) return;
+  var n = document.getElementById("gnm").value.trim();
+  var lu = document.getElementById("gl").value.trim();
+  if (!n) { document.getElementById("ger").textContent = "Enter a name"; return; }
+  if (lu && !/^https?:\\/\\//i.test(lu)) { document.getElementById("ger").textContent = "Logo URL must start with http:// or https://"; return; }
+  closeStack();
+  location.href = "grp://go?d=" + encodeURIComponent(JSON.stringify({ act: "save", gid: gEdit, member: gMember, name: n, logo: lu, expand: gExp }));
+}
+function ungroup(){
+  if (Date.now() < ign) return;
+  if (!gDelArmed) {
+    gDelArmed = true;
+    document.getElementById("gdel").textContent = "Tap again to ungroup";
+    return;
+  }
+  closeStack();
+  location.href = "grp://go?d=" + encodeURIComponent(JSON.stringify({ act: "del", gid: gEdit }));
+}
+// ---- Reboot / shut down (tap the server name) ----
+var pAct = "restart", tT = null;
+function togglePmenu(force){
+  var t = document.getElementById("tw");
+  var open = force != null ? force : !t.classList.contains("open");
+  if (open) t.classList.add("open"); else t.classList.remove("open");
+}
+document.getElementById("tw").addEventListener("click", function(e){
+  if (Date.now() < ign) return; // just renamed by holding the name
+  if (!UI.power) return; // Reboot / Shut down turned off in Settings
+  if (e.target.closest && e.target.closest(".pmenu")) return;
+  togglePmenu();
+});
+document.addEventListener("touchstart", function(e){
+  var t = document.getElementById("tw");
+  if (t.classList.contains("open") && !t.contains(e.target)) togglePmenu(false);
+}, { passive: true });
+function openPower(a, err, needLogin){
+  togglePmenu(false);
+  pAct = a;
+  var re = a === "restart";
+  document.getElementById("cvt").textContent = re ? "REBOOT SERVER?" : "SHUT DOWN SERVER?";
+  document.getElementById("cvn").textContent = re
+    ? "Every service goes offline until the server is back up, usually a minute or two."
+    : "Every service goes offline. You'll have to switch the server back on by hand.";
+  document.getElementById("cok").textContent = re ? "Reboot" : "Shut down";
+  var showL = needLogin || !st.hasLogin;
+  document.getElementById("cvl").style.display = showL ? "flex" : "none";
+  document.getElementById("cp").value = "";
+  document.getElementById("cer").textContent = err || "";
+  document.getElementById("cv").className = "show";
+}
+function closePower(){
+  document.getElementById("cv").className = "";
+  document.activeElement.blur();
+}
+function confirmPower(){
+  if (Date.now() < ign) return;
+  var u = "", p = "";
+  if (document.getElementById("cvl").style.display !== "none") {
+    u = document.getElementById("cu").value.trim();
+    p = document.getElementById("cp").value;
+    if (!u || !p) { document.getElementById("cer").textContent = "Enter your ZimaOS username and password"; return; }
+  }
+  closePower();
+  toast(pAct === "restart" ? "Sending reboot..." : "Sending shutdown...", 15000);
+  location.href = "pwr://go?d=" + encodeURIComponent(JSON.stringify({ a: pAct, u: u, p: p }));
+}
+function powerResult(r){
+  st.hasLogin = r.hasLogin;
+  if (r.auth) { toast("", 1); openPower(r.a, r.msg, true); return; }
+  toast(r.msg, 5000);
+}
+function toast(m, ms){
+  var t = document.getElementById("toast");
+  t.textContent = m;
+  t.className = m ? "toast show" : "toast";
+  clearTimeout(tT);
+  tT = setTimeout(function(){ t.className = "toast"; }, ms || 2500);
+}
+// ---- Display settings that apply right away (sent with every button update) ----
+var UI = { cols: 2, power: true, widgetMax: 24, monOpen: false };
+function applyUi(u){
+  if (!u) return;
+  UI = u;
+  applyLook(u.look, u);
+  document.body.classList.toggle("c3", u.cols === 3);
+  // Monitoring always open: the fold button is hidden and the panel stays open
+  document.body.classList.toggle("monfixed", !!u.monFixed);
+  if (u.monFixed && !monOpen) toggleMon();
+  var tw = document.getElementById("tw");
+  tw.classList.toggle("nop", !u.power);
+  if (!u.power) togglePmenu(false);
+  var wn = document.getElementById("wnote");
+  if (wn) wn.textContent = "The large widget fits " + u.widgetMax + " buttons. Dimmed ones will not show. Press, hold and drag to reorder, or drag a button between the two panels to show or hide it.";
+  if (typeof markOverflow === "function") markOverflow();
+}
+
+// ---- Theme & look ----
+var LOOKK = ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize"];
+function lookVars(look, U){
+  var t = U.themes[look.theme] || U.themes.aurora;
+  var a = U.accents[look.accent];
+  var own = a && a.c;
+  return {
+    bg: t.bg, g1: t.g1, g2: t.g2,
+    acc: own ? a.c : t.acc, ink: own ? a.ink : t.ink,
+    panel: t.panel, panel2: t.panel2,
+    glowop: t.noGlow ? 0 : U.glows[look.glow],
+    glass: { subtle: 0.04, normal: 0.07, strong: 0.12 }[look.cardStyle] || 0.07
+  };
+}
+function applyLook(look, U){
+  if (!look || !U || !U.themes) return;
+  var v = lookVars(look, U), r = document.documentElement.style;
+  r.setProperty("--bg", v.bg);
+  r.setProperty("--g1", v.g1);
+  r.setProperty("--g2", v.g2);
+  r.setProperty("--acc", v.acc);
+  r.setProperty("--acc-ink", v.ink);
+  r.setProperty("--panel", v.panel);
+  r.setProperty("--panel2", v.panel2);
+  r.setProperty("--glowop", String(v.glowop));
+  r.setProperty("--glass", String(v.glass));
+  var b = document.body.classList;
+  b.toggle("noanim", !look.movingBg);
+  b.toggle("sharp", look.corners === "sharp");
+  b.toggle("frnd", look.font === "rounded");
+  b.toggle("fserif", look.font === "serif");
+  b.toggle("compact", look.buttonSize === "compact");
+}
+
+// ---- Settings sheet (gear icon) ----
+var S = {}, srq = 0, scb = {};
+function sEl(id){ return document.getElementById(id); }
+function sSend(d, cb){
+  d.rq = ++srq;
+  scb[d.rq] = cb;
+  S.busy = true;
+  sEl("sbody").classList.add("sbusy");
+  location.href = "set://go?d=" + encodeURIComponent(JSON.stringify(d));
+}
+function setReply(rq, r){
+  var cb = scb[rq];
+  delete scb[rq];
+  S.busy = false;
+  sEl("sbody").classList.remove("sbusy");
+  if (cb) cb(r || { ok: false, error: "No answer" });
+}
+function openSettings(){
+  if (Date.now() < ign) return;
+  togglePmenu(false);
+  S = { busy: false };
+  sEl("serr").textContent = "";
+  sEl("sbody").innerHTML = '<div class="swait">Loading...</div>';
+  sEl("ssave").style.display = "none";
+  sEl("sv").className = "show";
+  sSend({ op: "load" }, function(r){
+    if (!r.ok) { sEl("sbody").innerHTML = ""; sEl("serr").textContent = r.error || "Couldn't load the settings"; return; }
+    S.info = r;
+    S.f = JSON.parse(JSON.stringify(r.s));
+    S.gpass = "";
+    S.clearGpass = false;
+    sEl("ssave").style.display = "";
+    sRender();
+  });
+}
+function closeSettings(){
+  // a look that was only previewed goes back to the saved one
+  if (S.previewed && !S.saved) applyLook(UI.look, UI);
+  sEl("sv").className = "";
+  if (document.activeElement) document.activeElement.blur();
+}
+
+// building blocks
+function sSec(parent, title){
+  var sec = document.createElement("div");
+  sec.className = "ssec";
+  var h = document.createElement("div");
+  h.className = "sec";
+  h.textContent = title;
+  sec.appendChild(h);
+  var card = document.createElement("div");
+  card.className = "scard";
+  sec.appendChild(card);
+  parent.appendChild(sec);
+  return card;
+}
+function sHint(parent, text){
+  var d = document.createElement("div");
+  d.className = "shint";
+  d.textContent = text;
+  parent.appendChild(d);
+  return d;
+}
+function sLabel(parent, text){
+  var f = document.createElement("div");
+  f.className = "f";
+  var l = document.createElement("label");
+  l.textContent = text;
+  f.appendChild(l);
+  parent.appendChild(f);
+  return f;
+}
+function sInputEl(val, ph, mode, type){
+  var w = document.createElement("div");
+  w.className = "in";
+  var i = document.createElement("input");
+  i.type = type || "text";
+  i.value = val == null ? "" : String(val);
+  i.placeholder = ph || "";
+  i.setAttribute("autocapitalize", "none");
+  i.setAttribute("autocorrect", "off");
+  i.spellcheck = false;
+  if (mode) i.inputMode = mode;
+  w.appendChild(i);
+  return { w: w, i: i };
+}
+function sText(parent, label, key, ph, mode, hint){
+  var f = sLabel(parent, label), x = sInputEl(S.f[key], ph, mode);
+  x.i.oninput = function(){ S.f[key] = x.i.value.trim(); };
+  f.appendChild(x.w);
+  if (hint) sHint(parent, hint);
+  return x.i;
+}
+function sNum(parent, label, key, ph, hint){
+  var f = sLabel(parent, label), x = sInputEl(S.f[key], ph, "numeric");
+  x.i.oninput = function(){ S.f[key] = x.i.value.trim(); };
+  f.appendChild(x.w);
+  if (hint) sHint(parent, hint);
+}
+function sSelect(parent, label, key, opts, hint, asNumber){
+  var f = sLabel(parent, label);
+  var w = document.createElement("div");
+  w.className = "in";
+  var s = document.createElement("select");
+  s.style.flex = "1";
+  opts.forEach(function(o){
+    var op = document.createElement("option");
+    op.value = String(o[0]);
+    op.textContent = o[1];
+    s.appendChild(op);
+  });
+  s.value = String(S.f[key]);
+  s.onchange = function(){ S.f[key] = asNumber ? Number(s.value) : s.value; sChanged(key); };
+  w.appendChild(s);
+  var c = document.createElement("span");
+  c.className = "chev";
+  c.innerHTML = "&#9662;";
+  w.appendChild(c);
+  f.appendChild(w);
+  if (hint) sHint(parent, hint);
+}
+function sSwitch(on, onChange){
+  var sw = document.createElement("div");
+  sw.className = on ? "sw on" : "sw";
+  sw.innerHTML = "<i></i>";
+  sw.onclick = function(){ sw.classList.toggle("on"); onChange(sw.classList.contains("on")); };
+  return sw;
+}
+function sToggle(parent, label, key, hint){
+  var tg = document.createElement("div");
+  tg.className = "tg";
+  var l = document.createElement("label");
+  l.textContent = label;
+  tg.appendChild(l);
+  tg.appendChild(sSwitch(!!S.f[key], function(v){ S.f[key] = v; sChanged(key); }));
+  parent.appendChild(tg);
+  if (hint) sHint(parent, hint);
+}
+// theme / look changes are previewed on the dashboard straight away
+function sChanged(key){
+  if (LOOKK.indexOf(key) < 0) return;
+  S.previewed = true;
+  var o = {};
+  LOOKK.forEach(function(k){ o[k] = S.f[k]; });
+  applyLook(o, UI);
+}
+function sSwatches(parent, label, key, items){
+  var f = sLabel(parent, label);
+  var row = document.createElement("div");
+  row.className = "swl";
+  f.appendChild(row);
+  var nm = document.createElement("div");
+  nm.className = "swn";
+  f.appendChild(nm);
+  function draw(){
+    row.innerHTML = "";
+    items.forEach(function(it){
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "swt" + (S.f[key] === it.v ? " on" : "");
+      b.style.background = it.css;
+      if (it.dashed) b.style.borderStyle = "dashed";
+      b.setAttribute("aria-label", it.name);
+      b.onclick = function(){ S.f[key] = it.v; draw(); sChanged(key); if (it.after) it.after(); };
+      row.appendChild(b);
+      if (S.f[key] === it.v) nm.textContent = it.name;
+    });
+  }
+  draw();
+  return { redraw: function(next){ items = next; draw(); } };
+}
+function sChip(parent, text, fn){
+  var b = document.createElement("button");
+  b.type = "button";
+  b.className = "chip";
+  b.textContent = text;
+  b.onclick = function(){ if (!S.busy) fn(b); };
+  parent.appendChild(b);
+  return b;
+}
+function sRow(parent, title, sub){
+  var r = document.createElement("div");
+  r.className = "srow";
+  var t = document.createElement("div");
+  t.className = "st";
+  var b = document.createElement("b");
+  b.textContent = title;
+  t.appendChild(b);
+  if (sub) {
+    var sp = document.createElement("span");
+    sp.textContent = sub;
+    t.appendChild(sp);
+  }
+  r.appendChild(t);
+  parent.appendChild(r);
+  return r;
+}
+function sSize(b){
+  var u = ["B", "KB", "MB", "GB", "TB"], i = 0;
+  while (b >= 1024 && i < 4) { b /= 1024; i++; }
+  return (b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)) + " " + u[i];
+}
+// a button that needs a second tap
+function sArmed(btn, label, armedLabel, fn){
+  var armed = false;
+  btn.textContent = label;
+  btn.onclick = function(){
+    if (S.busy) return;
+    if (!armed) { armed = true; btn.textContent = armedLabel; return; }
+    armed = false;
+    btn.textContent = label;
+    fn();
+  };
+}
+function sMsg(r){
+  if (!r.ok) { sEl("serr").textContent = r.error || "Something went wrong"; return false; }
+  sEl("serr").textContent = "";
+  if (r.msg) toast(r.msg, 3000);
+  return true;
+}
+
+function sRender(){
+  var b = sEl("sbody"), I = S.info, f = S.f;
+  b.innerHTML = "";
+
+  if (I.firstRun) {
+    var wel = document.createElement("div");
+    wel.className = "cnote";
+    wel.textContent = "Welcome to -board. Enter the address of your Glances server below, tap Test connection, then Save. After that, add your services with the + button.";
+    b.appendChild(wel);
+  }
+
+  // ---------- SERVER ----------
+  var c = sSec(b, "SERVER");
+  sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
+  sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
+  sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
+  var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl("", I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
+  px.i.oninput = function(){ S.gpass = px.i.value; };
+  pf.appendChild(px.w);
+  if (I.hasGpass) {
+    var cg = sChip(c, "Remove saved Glances password", function(){
+      S.clearGpass = !S.clearGpass;
+      cg.textContent = S.clearGpass ? "Will be removed when you save (tap to undo)" : "Remove saved Glances password";
+    });
+    cg.style.alignSelf = "flex-start";
+  }
+  sText(c, "ZIMAOS ADDRESS", "zimaUrl", I.host ? "http://" + I.host + " (default)" : "http://192.168.1.10", "url", "Used by Reboot / Shut down. Leave empty for the same server as Glances on port 80.");
+  sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
+  if (I.hasZimaLogin) {
+    var zr = sRow(c, "ZimaOS login saved", "Stored in the iOS Keychain");
+    sChip(zr, "Forget", function(){
+      sSend({ op: "forget" }, function(r){ if (sMsg(r)) { I.hasZimaLogin = false; st.hasLogin = false; sRender(); } });
+    });
+  } else {
+    sRow(c, "No ZimaOS login saved", "You'll be asked the first time you use Reboot / Shut down");
+  }
+  var res = document.createElement("div");
+  res.className = "sres";
+  var tb = sChip(c, "Test connection", function(){
+    res.innerHTML = '<div><span>Testing...</span></div>';
+    sSend({ op: "test", s: S.f, gpass: S.gpass }, function(r){
+      res.innerHTML = "";
+      if (!r.ok) { res.textContent = r.error || "Test failed"; return; }
+      r.lines.forEach(function(l){
+        var d = document.createElement("div");
+        if (!l.ok) d.className = "bad";
+        d.innerHTML = "<i></i><span></span>";
+        d.querySelector("span").textContent = l.t;
+        res.appendChild(d);
+      });
+    });
+  });
+  tb.style.alignSelf = "flex-start";
+  c.appendChild(res);
+  sHint(c, "Tests the values above, even before you save them.");
+
+  // ---------- MONITORING ----------
+  c = sSec(b, "MONITORING");
+  var dl = sLabel(c, "DRIVES IN THE STORAGE CARD");
+  if (I.mounts && I.mounts.length) {
+    var shown = I.mounts.slice();
+    f.diskMounts.forEach(function(m){
+      if (!shown.some(function(x){ return x.mnt === m; })) shown.push({ mnt: m, missing: true });
+    });
+    shown.forEach(function(m){
+      var sub = m.missing ? "Not found in Glances right now" : sSize(m.size) + (m.dev ? " · " + m.dev : "") + (m.size ? " · " + Math.round(m.used / m.size * 100) + "% used" : "");
+      var row = sRow(dl, m.mnt, sub);
+      row.appendChild(sSwitch(f.diskMounts.indexOf(m.mnt) >= 0, function(on){
+        f.diskMounts = f.diskMounts.filter(function(x){ return x !== m.mnt; });
+        if (on) f.diskMounts.push(m.mnt);
+      }));
+    });
+    sHint(c, "None picked = pick automatically. Paths are as the Glances container sees them.");
+  } else {
+    var dx = sInputEl(f.diskMounts.join(", "), "/, /DATA", null);
+    dx.i.oninput = function(){ f.diskMounts = dx.i.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean); };
+    dl.appendChild(dx.w);
+    sHint(c, "Couldn't reach Glances to list the drives, so type the paths, separated by commas. Empty = pick automatically.");
+  }
+  sNum(c, "MAX DRIVES WHEN PICKED AUTOMATICALLY", "maxDisks", "3");
+  var ifo = [["", "Automatic (the busiest)"]];
+  (I.ifaces || []).forEach(function(n){ ifo.push([n, n]); });
+  if (f.networkInterface && !ifo.some(function(o){ return o[0] === f.networkInterface; })) ifo.push([f.networkInterface, f.networkInterface]);
+  sSelect(c, "NETWORK INTERFACE", "networkInterface", ifo, I.ifaces ? null : "Couldn't reach Glances to list the interfaces.");
+  sToggle(c, "OPEN MONITORING ON START", "monitoringOpen");
+  sToggle(c, "KEEP MONITORING ALWAYS OPEN", "monitoringFixed", "Removes the Monitoring button, so the cards and network speed always show.");
+  sNum(c, "DASHBOARD UPDATES EVERY (SECONDS)", "liveSeconds", "3", "Lower = smoother graphs, more battery while the dashboard is open.");
+  var tl = sLabel(c, "TEMPERATURE COLOURS (°C)");
+  var th = document.createElement("div");
+  th.className = "trow th";
+  th.innerHTML = "<span></span><span>ORANGE FROM</span><span>RED FROM</span>";
+  tl.appendChild(th);
+  [["cpu", "CPU"], ["nvme", "NVMe"], ["hdd", "HDD"]].forEach(function(k){
+    var r = document.createElement("div");
+    r.className = "trow";
+    var lb = document.createElement("b");
+    lb.textContent = k[1];
+    r.appendChild(lb);
+    ["warm", "hot"].forEach(function(w){
+      var x = sInputEl(f.tempLimits[k[0]][w], "", "numeric");
+      x.i.oninput = function(){ f.tempLimits[k[0]][w] = x.i.value.trim(); };
+      r.appendChild(x.w);
+    });
+    tl.appendChild(r);
+  });
+
+  // ---------- WIDGET ----------
+  c = sSec(b, "WIDGET");
+  sNum(c, "REFRESH EVERY (MINUTES)", "refreshMinutes", "5", "iOS decides the exact moment, so this is the shortest gap, not a promise.");
+  sText(c, "CORNER BUTTON LINK", "linkUrl", "https://... (empty = no button)", "url", "A small button in the widget corner, e.g. your ZimaOS page.");
+  sToggle(c, "STATUS DOTS ON THE WIDGET", "widgetStatusDots", "Each widget refresh checks every button, which takes a couple of seconds.");
+  sText(c, "WIDGET TITLE", "widgetTitle", "Same as the dashboard name");
+  sSelect(c, "BUTTON ROWS", "widgetRows", [[1, "1 row (4 buttons)"], [2, "2 rows (8 buttons)"], [3, "3 rows (12 buttons)"], [4, "4 rows (16 buttons)"], [5, "5 rows (20 buttons)"], [6, "6 rows (24 buttons)"]], null, true);
+
+  // ---------- BUTTONS ----------
+  c = sSec(b, "BUTTONS");
+  sToggle(c, "SHOW LOGOS", "useLogos", "Off shows the emoji instead.");
+  sSelect(c, "DASHBOARD COLUMNS", "columns", [[2, "2 columns"], [3, "3 columns"]], null, true);
+  sNum(c, "CHECK UP/DOWN EVERY (SECONDS)", "statusSeconds", "30");
+  sNum(c, "COUNT AS DOWN AFTER (SECONDS)", "pingTimeout", "3", "How long a service may take to answer. The widget waits at most 3 seconds.");
+  var rl = I.hasBuiltin || I.hidden.length ? sLabel(c, "DELETED BUTTONS") : null;
+  if (!rl) {
+    // no built-in buttons in this script, so nothing to restore
+  } else if (I.hidden.length) {
+    I.hidden.forEach(function(h){
+      var row = sRow(rl, h.name);
+      sChip(row, "Restore", function(){
+        sSend({ op: "restore", id: h.id }, function(r){
+          if (sMsg(r)) { I.hidden = I.hidden.filter(function(x){ return x.id !== h.id; }); sRender(); }
+        });
+      });
+    });
+    if (I.hidden.length > 1) {
+      var ra = sChip(rl, "Restore all", function(){
+        sSend({ op: "restore" }, function(r){ if (sMsg(r)) { I.hidden = []; sRender(); } });
+      });
+      ra.style.alignSelf = "flex-start";
+    }
+  } else {
+    sRow(rl, "None", "Built-in buttons you delete show up here");
+  }
+
+  // ---------- THEME & LOOK ----------
+  c = sSec(b, "THEME & LOOK");
+  var accRow = null;
+  var accItems = function(){
+    var ta = (UI.themes[f.theme] || UI.themes.aurora).acc;
+    return Object.keys(UI.accents).map(function(k){
+      var a = UI.accents[k];
+      return { v: k, name: a.c ? a.name : "Same as theme", css: a.c || ta, dashed: !a.c };
+    });
+  };
+  sSwatches(c, "THEME", "theme", Object.keys(UI.themes).map(function(k){
+    var t = UI.themes[k];
+    return {
+      v: k,
+      name: t.name,
+      css: t.noGlow ? "#000" : "radial-gradient(circle at 28% 25%, rgb(" + t.g1 + ") 0%, rgba(" + t.g1 + ",0) 62%), radial-gradient(circle at 75% 82%, rgb(" + t.g2 + ") 0%, rgba(" + t.g2 + ",0) 66%), " + t.bg,
+      after: function(){ if (accRow) accRow.redraw(accItems()); }
+    };
+  }));
+  accRow = sSwatches(c, "ACCENT COLOUR", "accent", accItems());
+  sHint(c, "Used for switches, Save buttons and the selected tab. Status colours (green / orange / red) stay the same.");
+  sSelect(c, "BACKGROUND GLOW", "glow", [["off", "Off"], ["soft", "Soft"], ["normal", "Normal"], ["strong", "Strong"]]);
+  sToggle(c, "MOVING BACKGROUND", "movingBg", "Off keeps the glow still (saves a little battery).");
+  sSelect(c, "CARD STYLE", "cardStyle", [["subtle", "Subtle glass"], ["normal", "Normal glass"], ["strong", "Strong glass"]]);
+  sSelect(c, "CORNERS", "corners", [["round", "Rounded"], ["sharp", "Sharper"]]);
+  sSelect(c, "FONT", "font", [["system", "System (SF Pro)"], ["rounded", "Rounded (SF Pro Rounded)"], ["serif", "Serif (New York)"]]);
+  sSelect(c, "BUTTON SIZE", "buttonSize", [["normal", "Normal"], ["compact", "Compact"]]);
+  sHint(c, "Changes show on the dashboard behind this sheet as you pick them. Cancel puts the old look back. The widget background follows the theme and glow.");
+
+  // ---------- DATA ----------
+  c = sSec(b, "DATA");
+  var bx = document.createElement("div");
+  bx.className = "sbtns";
+  c.appendChild(bx);
+  var b1 = document.createElement("button");
+  b1.textContent = "Clear logo cache";
+  b1.onclick = function(){ if (!S.busy) sSend({ op: "clearlogos" }, sMsg); };
+  bx.appendChild(b1);
+  var b2 = document.createElement("button");
+  b2.textContent = "Export settings";
+  b2.onclick = function(){ if (!S.busy) sSend({ op: "export" }, sMsg); };
+  bx.appendChild(b2);
+  var b3 = document.createElement("button");
+  sArmed(b3, "Import settings", "Tap again to replace everything", function(){
+    sSend({ op: "import" }, function(r){ if (sMsg(r)) closeSettings(); });
+  });
+  bx.appendChild(b3);
+  var b4 = document.createElement("button");
+  b4.className = "rtxt";
+  sArmed(b4, "Reset layout", "Tap again to reset the layout", function(){
+    sSend({ op: "reset" }, sMsg);
+  });
+  bx.appendChild(b4);
+  sHint(c, "Export copies all settings, buttons, stacks and layout to the clipboard (passwords stay on the phone). Import reads them back from the clipboard. Reset layout clears the button order and stacks but keeps your own buttons.");
+}
+
+function saveSettings(){
+  if (Date.now() < ign || S.busy || !S.f) return;
+  var f = S.f, n = function(v){ return /^\\d+$/.test(String(v)); };
+  var nums = ["maxDisks", "liveSeconds", "refreshMinutes", "statusSeconds", "pingTimeout"];
+  for (var i = 0; i < nums.length; i++) if (!n(f[nums[i]])) { sEl("serr").textContent = "Use whole numbers for the number fields"; return; }
+  var tk = ["cpu", "nvme", "hdd"];
+  for (i = 0; i < tk.length; i++) {
+    var t = f.tempLimits[tk[i]];
+    if (!n(t.warm) || !n(t.hot)) { sEl("serr").textContent = "Use whole numbers for the temperatures"; return; }
+    if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
+  }
+  if (!/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
+  if (f.zimaUrl && !/^https?:\\/\\//i.test(f.zimaUrl)) { sEl("serr").textContent = "The ZimaOS address must start with http:// or https://"; return; }
+  sSend({ op: "save", s: f, gpass: S.gpass, clearGpass: S.clearGpass }, function(r){
+    if (sMsg(r)) { S.saved = true; closeSettings(); }
+  });
+}
+</script></body></html>`;
+
+async function showLiveDashboard(openStackId) {
+  const sleep = (ms) => new Promise((resolve) => Timer.schedule(ms, false, resolve));
+  const wv = new WebView();
+
+  // Service buttons use an open:// link; open it in an in-app browser
+  // instead of navigating away from the dashboard.
+  wv.shouldAllowRequest = (req) => {
+    if (req.url.startsWith("add://")) {
+      (async () => {
+        try {
+          const d = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3)));
+          const data = loadData();
+          const item = makeCustom(d);
+          let id = d.id;
+          if (d.id && String(d.id).startsWith("b:")) {
+            data.edits[d.id] = { name: item.name, port: item.port, url: item.url, logo: item.logo };
+          } else if (d.id) {
+            const i = data.custom.findIndex((c) => c.id === d.id);
+            if (i >= 0) data.custom[i] = { ...data.custom[i], name: item.name, port: item.port, url: item.url, logo: item.logo };
+          } else {
+            item.id = "c:" + Date.now();
+            id = item.id;
+            data.custom.push(item);
+          }
+          data.widgetHidden = data.widgetHidden.filter((x) => x !== id);
+          if (d.onWidget === false) data.widgetHidden.push(id);
+          saveData(data);
+          statusDirty = true;
+          clearLogoFail(item.logo); // a re-saved logo gets a fresh download try
+          await pushServices(wv);
+          refreshLogos(wv);
+        } catch (e) {}
+      })();
+      return false;
+    }
+    if (req.url.startsWith("del://")) {
+      (async () => {
+        try {
+          const id = decodeURIComponent(req.url.slice(req.url.indexOf("?id=") + 4));
+          const data = loadData();
+          if (id.startsWith("b:")) {
+            delete data.edits[id];
+            if (!data.hidden.includes(id)) data.hidden.push(id);
+          } else {
+            data.custom = data.custom.filter((c) => c.id !== id);
+          }
+          data.groups.forEach((g) => (g.members = g.members.filter((x) => x !== id)));
+          saveData(data);
+          statusDirty = true;
+          await pushServices(wv);
+        } catch (e) {}
+      })();
+      return false;
+    }
+    if (req.url.startsWith("exp://")) {
+      expanded = decodeURIComponent(req.url.slice(req.url.indexOf("?k=") + 3)) || null;
+      if (expanded) {
+        (async () => {
+          try {
+            await pushDetail(wv);
+          } catch (e) {}
+        })();
+      }
+      return false;
+    }
+    if (req.url.startsWith("ord://")) {
+      try {
+        const o = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?o=") + 3)));
+        const str = (x) => typeof x === "string";
+        const data = loadData();
+        if (Array.isArray(o)) {
+          data.order = o.filter(str);
+        } else if (o && Array.isArray(o.o)) {
+          // o: top-level order, g: each stack's buttons (buttons can be dragged in and out of open stacks)
+          data.order = o.o.filter(str);
+          if (o.g && typeof o.g === "object") {
+            for (const g of data.groups) if (Array.isArray(o.g[g.id])) g.members = o.g[g.id].filter(str);
+          }
+        }
+        saveData(data);
+        pushServices(wv).catch(() => {});
+      } catch (e) {}
+      return false;
+    }
+    if (req.url.startsWith("grp://")) {
+      (async () => {
+        try {
+          stackAction(JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3))));
+          statusDirty = true;
+          await pushServices(wv);
+          refreshLogos(wv);
+        } catch (e) {}
+      })();
+      return false;
+    }
+    if (req.url.startsWith("wrd://")) {
+      try {
+        const o = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?o=") + 3)));
+        if (o && Array.isArray(o.s) && Array.isArray(o.h)) {
+          const data = loadData();
+          data.widgetOrder = o.s.filter((x) => typeof x === "string");
+          data.widgetHidden = o.h.filter((x) => typeof x === "string");
+          saveData(data);
+          pushServices(wv).catch(() => {});
+        }
+      } catch (e) {}
+      return false;
+    }
+    if (req.url.startsWith("ttl://")) {
+      try {
+        const t = decodeURIComponent(req.url.slice(req.url.indexOf("?t=") + 3)).trim().slice(0, 20);
+        if (t) {
+          const data = loadData();
+          data.title = t;
+          saveData(data);
+        }
+      } catch (e) {}
+      return false;
+    }
+    if (req.url.startsWith("set://")) {
+      (async () => {
+        let d = {};
+        try {
+          d = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3)));
+        } catch (e) {}
+        let r;
+        try {
+          r = await settingsOp(d);
+        } catch (e) {
+          r = { ok: false, error: "Something went wrong: " + ((e && e.message) || e) };
+        }
+        try {
+          await wv.evaluateJavaScript(`setReply(${JSON.stringify(d.rq)}, ${JSON.stringify(r)})`, false);
+          // anything that changes buttons, logos or layout is redrawn right away
+          if (r.ok && ["save", "restore", "clearlogos", "import", "reset"].includes(d.op)) {
+            await pushServices(wv);
+            refreshLogos(wv);
+          }
+        } catch (e) {}
+      })();
+      return false;
+    }
+    if (req.url.startsWith("pwr://")) {
+      (async () => {
+        let d = {};
+        try {
+          d = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3)));
+        } catch (e) {}
+        let r;
+        try {
+          r = await handlePower(d);
+        } catch (e) {
+          r = { ok: false, msg: "Something went wrong: " + ((e && e.message) || e), a: d.a, hasLogin: hasZimaLogin() };
+        }
+        try {
+          await wv.evaluateJavaScript(`powerResult(${JSON.stringify(r)})`, false);
+        } catch (e) {}
+      })();
+      return false;
+    }
+    if (req.url.startsWith("open://")) {
+      Safari.open(decodeURIComponent(req.url.split("u=")[1]));
+      return false;
+    }
+    return true;
+  };
+
+  await wv.loadHTML(LIVE_HTML);
+  await wv.evaluateJavaScript(
+    `init(${JSON.stringify(getTitle())}, ${JSON.stringify(getPayload())})`,
+    false
+  );
+  // opened from a stack pill on the widget: open that stack and scroll to it
+  if (openStackId) await wv.evaluateJavaScript(`focusStack(${JSON.stringify(openStackId)})`, false);
+  // download any logos not saved yet (first run, or new ones) without holding up the dashboard
+  refreshLogos(wv);
+  // first run: no server yet, so go straight to Settings
+  if (!SET.baseUrl) await wv.evaluateJavaScript("setTimeout(openSettings, 400)", false);
+
+  let open = true;
+  const presented = wv.present(true).then(() => {
+    open = false;
+  });
+
+  while (open) {
+    if (!SET.baseUrl) {
+      await wv.evaluateJavaScript("offline(true)", false);
+      await sleep(1000);
+      continue;
+    }
+    try {
+      const stats = await getStats({ fsMaxAge: 10000 });
+      lastStats = stats;
+      await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
+    } catch (e) {
+      await wv.evaluateJavaScript("offline()", false);
+    }
+    try {
+      await pushDetail(wv);
+    } catch (e) {}
+    if (!statusBusy && (statusDirty || Date.now() - lastStatus > SET.statusSeconds * 1000)) {
+      statusBusy = true;
+      statusDirty = false;
+      checkServices(getServices(false), SET.pingTimeout)
+        .then((m) => wv.evaluateJavaScript(`setUp(${JSON.stringify(m)})`, false))
+        .catch(() => {})
+        .then(() => {
+          statusBusy = false;
+          lastStatus = Date.now();
+        });
+    }
+    await sleep(SET.liveSeconds * 1000);
+  }
+  await presented;
+}
+
+// ---------- Run ----------
+if (config.runsInWidget) {
+  Script.setWidget(await buildWidget());
+} else if (PREVIEW_WIDGET_IN_APP) {
+  await (await buildWidget()).presentMedium();
+} else {
+  await showLiveDashboard((args.queryParameters || {}).stack || null);
+}
+Script.complete();
