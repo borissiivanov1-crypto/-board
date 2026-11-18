@@ -5,23 +5,32 @@
 //
 // WHAT YOU NEED
 // - The free Scriptable app on your iPhone.
-// - A home server running ZimaOS, Proxmox VE, or any mainstream Linux (Debian, Ubuntu Server, Fedora, ...).
+// - A home server running ZimaOS, Proxmox VE, TrueNAS, Unraid, Synology DSM, OpenMediaVault,
+//   or any mainstream Linux (Debian, Ubuntu Server, Fedora, ...).
 // - Glances running on your server with its web server / API turned on (default port 61208).
 //   Docker (any OS):  docker run -d --name glances --restart unless-stopped -p 61208:61208 --pid host \
 //                       -e GLANCES_OPT="-w" -v /var/run/docker.sock:/var/run/docker.sock:ro nicolargo/glances
+//   (TrueNAS and Unraid: as a custom app / from Community Apps; Synology: Container Manager)
 //   Debian / Ubuntu / Proxmox host without Docker:  sudo apt install glances, then run "glances -w"
 //   (older distro packages are Glances 3.x: pick API version 3 in Settings).
 //   A Glances container only sees the drives you give it, so mount each drive you want to watch.
-// - Optional, for the Reboot / Shut down menu, pick your server type in Settings:
-//   ZimaOS  - uses your ZimaOS login, nothing to install.
-//   Proxmox - uses the Proxmox VE API (port 8006) with your Proxmox login, e.g. root@pam. Nothing to install.
-//   Linux   - Debian, Ubuntu and other systemd distros have no web API for this, so Settings gives you a
-//             one-time setup command for a tiny helper service (Python 3, one file, protected by a secret key).
+// - Optional: the Reboot / Shut down menu. -board works out which system your server runs once you enter the
+//   Glances address (from what Glances reports and the server's usual web pages) and shows only its settings.
+//   You can also pick the type yourself in Settings > Server.
+//   ZimaOS   - your ZimaOS login. Nothing to install.
+//   Proxmox  - the Proxmox VE API (port 8006) with your Proxmox login, e.g. root@pam. Nothing to install.
+//   TrueNAS  - your TrueNAS login, over its WebSocket API (25.04+) or REST API (older, CORE). Nothing to install.
+//   Unraid   - your Unraid login (root); sends what Unraid's own Reboot button sends. Nothing to install.
+//   Synology - the DSM Web API (port 5000 / 5001) with an administrator account. Nothing to install.
+//   OpenMediaVault - its own API with an administrator account (admin). Nothing to install.
+//   Linux    - Debian, Ubuntu and other systemd distros have no web API for this, so Settings gives you a
+//              one-time setup command for a tiny helper service (Python 3, one file, protected by a secret key).
+//   Logins without two-factor are needed; they are stored in the iOS Keychain.
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
-// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208),
-//    tap "Test connection", then Save.
+// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208);
+//    the server type is detected. Tap "Test connection", then Save.
 // 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
@@ -53,20 +62,33 @@ const CONFIG = {
   refreshMinutes: 5,
   widgetStatusDots: true,               // up/down dots on the large widget buttons (adds ~2s of checking per widget refresh)
   linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS / Proxmox page); empty = no button
-  platform: "zimaos",                   // server type for Reboot / Shut down: "zimaos", "proxmox" or "linux"
-  zimaUrl: "",                          // ZimaOS address for Reboot / Shut down; empty = same server, port 80
-  proxmoxUrl: "",                       // Proxmox VE address; empty = same server, https port 8006
-  proxmoxNode: "",                      // Proxmox node name; empty = found automatically (single-node setups)
-  helperUrl: "",                        // Linux power helper address; empty = same server, port 61209
+  platform: "auto",                     // server type for Reboot / Shut down: "auto" (found from the address), "zimaos",
+                                        // "proxmox", "truenas", "unraid", "synology", "omv" (OpenMediaVault) or "linux"
+  // Addresses used by Reboot / Shut down; empty = the Glances server with the usual port for that system
+  zimaUrl: "",                          // ZimaOS: http, port 80
+  proxmoxUrl: "",                       // Proxmox VE: https, port 8006
+  proxmoxNode: "",                      // Proxmox node name; empty = found automatically
+  truenasUrl: "",                       // TrueNAS: http, port 80
+  unraidUrl: "",                        // Unraid: http, port 80
+  synologyUrl: "",                      // Synology DSM: http, port 5000
+  omvUrl: "",                           // OpenMediaVault: http, port 80
+  helperUrl: "",                        // Linux power helper: http, port 61209
 };
 
 // Server types (Settings > Server). Monitoring works the same on all of them (Glances);
 // they only change how Reboot / Shut down reaches the server.
+// url: the setting with its address; def: the usual address ({h} = the Glances server); login: name in the login popup
+// (null = no login: the Linux helper uses its secret key)
 const PLATFORMS = {
-  zimaos: { name: "ZimaOS", login: "ZimaOS" },
-  proxmox: { name: "Proxmox", login: "Proxmox" },
-  linux: { name: "Linux", login: null },          // uses the helper's secret key, no login
+  zimaos: { name: "ZimaOS", login: "ZimaOS", url: "zimaUrl", def: "http://{h}" },
+  proxmox: { name: "Proxmox VE", short: "Proxmox", login: "Proxmox", url: "proxmoxUrl", def: "https://{h}:8006", userPh: "root@pam" },
+  truenas: { name: "TrueNAS", login: "TrueNAS", url: "truenasUrl", def: "http://{h}", userPh: "truenas_admin" },
+  unraid: { name: "Unraid", login: "Unraid", url: "unraidUrl", def: "http://{h}", userPh: "root" },
+  synology: { name: "Synology DSM", short: "Synology", login: "Synology", url: "synologyUrl", def: "http://{h}:5000" },
+  omv: { name: "OpenMediaVault", short: "OMV", login: "OpenMediaVault", url: "omvUrl", def: "http://{h}", userPh: "admin" },
+  linux: { name: "Linux", login: null, url: "helperUrl", def: "http://{h}:61209" },
 };
+const PLATFORM_KEYS = Object.keys(PLATFORMS);
 
 // Temperatures (°C) where the number turns orange (warm) and red (hot) in the enlarged cards.
 // Typical limits: most desktop CPUs throttle around 95-100°C, NVMe drives around 70-85°C,
@@ -112,6 +134,10 @@ const DEFAULTS = {
   zimaUrl: CONFIG.zimaUrl,
   proxmoxUrl: CONFIG.proxmoxUrl,
   proxmoxNode: CONFIG.proxmoxNode,
+  truenasUrl: CONFIG.truenasUrl,
+  unraidUrl: CONFIG.unraidUrl,
+  synologyUrl: CONFIG.synologyUrl,
+  omvUrl: CONFIG.omvUrl,
   helperUrl: CONFIG.helperUrl,
   showPower: true,                 // Reboot / Shut down under the server name
   diskMounts: CONFIG.diskMounts,
@@ -158,8 +184,12 @@ function cleanSettings(raw) {
   out.baseUrl = out.baseUrl.replace(/\/+$/, "");
   num("apiVersion", 3, 4);
   str("username", 100);
-  out.platform = PLATFORMS[r.platform] ? r.platform : PLATFORMS[DEFAULTS.platform] ? DEFAULTS.platform : "zimaos";
-  for (const k of ["zimaUrl", "proxmoxUrl", "helperUrl"]) {
+  // "auto" = not known yet (found from the address). Settings saved by the older ZimaOS-only -board
+  // (they have showPower but no platform) stay on ZimaOS, so their Reboot menu keeps working.
+  out.platform = PLATFORMS[r.platform] || r.platform === "auto"
+    ? r.platform
+    : typeof r.showPower === "boolean" ? "zimaos" : PLATFORMS[DEFAULTS.platform] ? DEFAULTS.platform : "auto";
+  for (const k of PLATFORM_KEYS.map((x) => PLATFORMS[x].url)) {
     str(k);
     if (out[k] && !/^https?:\/\//i.test(out[k])) out[k] = "";
     out[k] = out[k].replace(/\/+$/, "");
@@ -490,14 +520,16 @@ function getPayload() {
     limits: SET.tempLimits,
     logos,
     cdn: LOGO_CDN,
-    hasLogin: hasLogin(),
+    hasLogin: PLATFORMS[SET.platform] ? hasLogin() : false,
     title: getTitle(),
     host: SET.baseUrl ? HOST : "",
     ui: {
       cols: SET.columns,
-      power: SET.showPower,
+      // the Reboot / Shut down menu needs a known server type
+      power: SET.showPower && !!PLATFORMS[SET.platform],
       platform: SET.platform,
-      login: PLATFORMS[SET.platform].login,  // name for the login popup; null = no login (Linux helper)
+      login: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].login : null,  // name in the login popup; null = no login
+      userPh: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].userPh || "" : "",
       widgetMax: SET.widgetRows * 4,
       monOpen: SET.monitoringOpen,
       monFixed: SET.monitoringFixed,
@@ -511,12 +543,24 @@ function getPayload() {
 }
 
 // ---------- Reboot / shut down ----------
-// ZimaOS:  log in (POST /v1/users/login), then PUT /v1/sys/state/restart or /off
-// Proxmox: log in (POST /api2/json/access/ticket), then POST /api2/json/nodes/<node>/status command=reboot|shutdown
-// Linux:   the small "board-power" helper (set up from Settings), POST /reboot or /shutdown with its secret key
+// Every server type has a driver: run(action, user, pass, base, s). action "restart" / "off" sends the command;
+// action null only checks the login (for Test connection). It returns { ok, msg } or { ok: false, auth, net, msg }.
+// ZimaOS:   log in (POST /v1/users/login), then PUT /v1/sys/state/restart or /off
+// Proxmox:  log in (POST /api2/json/access/ticket), then POST /api2/json/nodes/<node>/status command=reboot|shutdown
+// TrueNAS:  JSON-RPC over WebSocket (/api/current: auth.login, then system.reboot / system.shutdown);
+//           older versions without it: the REST API (/api/v2.0/system/reboot or /shutdown)
+// Unraid:   log in (POST /login), read the page's csrf_token, then POST /webGui/include/Boot.php cmd=reboot|shutdown
+//           (what Unraid's own Reboot button does)
+// Synology: DSM Web API: SYNO.API.Auth login, then SYNO.Core.System reboot / shutdown
+// OpenMediaVault: rpc.php: Session.login, then System.reboot / System.shutdown
+// Linux:    the small "board-power" helper (set up from Settings), POST /reboot or /shutdown with its secret key
 const LOGIN_KEYS = {
   zimaos: { user: "board-zima-user", pass: "board-zima-pass" },
   proxmox: { user: "board-pve-user", pass: "board-pve-pass" },
+  truenas: { user: "board-truenas-user", pass: "board-truenas-pass" },
+  unraid: { user: "board-unraid-user", pass: "board-unraid-pass" },
+  synology: { user: "board-syno-user", pass: "board-syno-pass" },
+  omv: { user: "board-omv-user", pass: "board-omv-pass" },
 };
 const HELPER_KEY = "board-helper-key";
 const HELPER_PORT = 61209;
@@ -553,16 +597,48 @@ function savedLogin(platform) {
   return { user: Keychain.get(k.user), pass: Keychain.get(k.pass) };
 }
 
+// The address Reboot / Shut down uses for a server type: the one in Settings, or the usual one on the Glances server
+function platformBase(P, s = SET) {
+  const pl = PLATFORMS[P];
+  return (s[pl.url] || pl.def.replace("{h}", hostOf(s.baseUrl))).replace(/\/+$/, "");
+}
+
 const powerSent = (action) =>
   action === "off"
     ? "Shutdown sent. Switch the server on by hand to bring it back."
     : "Reboot sent. The server should be back in a minute or two.";
 
-// --- ZimaOS ---
-function zimaBase(s = SET) {
-  return (s.zimaUrl || `http://${hostOf(s.baseUrl)}`).replace(/\/+$/, "");
+const formBody = (o) => Object.keys(o).map((k) => encodeURIComponent(k) + "=" + encodeURIComponent(o[k])).join("&");
+
+// "name=value; ..." from the cookies a response set
+function cookiesOf(req) {
+  const list = (req.response && req.response.cookies) || [];
+  return list.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
+// A request that accepts self-signed certificates (most NAS systems use one out of the box)
+function nasRequest(url, method, timeout) {
+  const req = new Request(url);
+  req.allowInsecureRequest = true;
+  req.timeoutInterval = timeout || 8;
+  if (method) req.method = method;
+  return req;
+}
+
+// After the command: a dropped connection is normal (the server is going down)
+async function sendCommand(req, action, name) {
+  try {
+    await req.loadString();
+  } catch (e) {
+    return { ok: true, msg: powerSent(action) };
+  }
+  const code = req.response && req.response.statusCode;
+  if (code === 401) return { ok: false, auth: true, msg: `${name} refused the login. Enter it again.` };
+  if (code && code >= 300) return { ok: false, msg: `${name} didn't accept the command (HTTP ${code}).` };
+  return { ok: true, msg: powerSent(action) };
+}
+
+// --- ZimaOS ---
 async function zimaLogin(user, pass, base) {
   const login = new Request(base + "/v1/users/login");
   login.method = "POST";
@@ -580,33 +656,20 @@ async function zimaLogin(user, pass, base) {
   return { token };
 }
 
-async function zimaPower(action, user, pass) {
-  const base = zimaBase();
+async function zimaRun(action, user, pass, base) {
   const lg = await zimaLogin(user, pass, base);
   if (!lg.token) return { ok: false, auth: !!lg.auth, net: !!lg.net, msg: lg.error };
-
+  if (!action) return { ok: true, msg: "saved login works" };
   const req = new Request(`${base}/v1/sys/state/${action === "off" ? "off" : "restart"}`);
   req.method = "PUT";
   req.headers = { Authorization: lg.token };
   req.timeoutInterval = 8;
-  try {
-    await req.loadString();
-  } catch (e) {
-    // the server may drop the connection as it goes down
-    return { ok: true, msg: powerSent(action) };
-  }
-  const code = req.response && req.response.statusCode;
-  if (code === 401 || code === 403) return { ok: false, auth: true, msg: "ZimaOS refused the login. Enter it again." };
-  if (code && code >= 300) return { ok: false, msg: `ZimaOS didn't accept the command (HTTP ${code}).` };
-  return { ok: true, msg: powerSent(action) };
+  const r = await sendCommand(req, action, "ZimaOS");
+  if (r.auth || /HTTP 403/.test(r.msg)) return { ok: false, auth: true, msg: "ZimaOS refused the login. Enter it again." };
+  return r;
 }
 
 // --- Proxmox VE ---
-// Proxmox uses a self-signed certificate out of the box, so these requests accept it.
-function pveBase(s = SET) {
-  return (s.proxmoxUrl || `https://${hostOf(s.baseUrl)}:8006`).replace(/\/+$/, "");
-}
-
 // "root" -> "root@pam" (the Linux login realm Proxmox uses by default)
 function pveUser(u) {
   u = String(u || "").trim();
@@ -614,9 +677,7 @@ function pveUser(u) {
 }
 
 function pveRequest(url, auth) {
-  const req = new Request(url);
-  req.allowInsecureRequest = true;
-  req.timeoutInterval = 8;
+  const req = nasRequest(url);
   if (auth) req.headers = { Cookie: "PVEAuthCookie=" + auth.ticket, CSRFPreventionToken: auth.csrf };
   return req;
 }
@@ -625,7 +686,7 @@ async function pveLogin(user, pass, base) {
   const req = pveRequest(base + "/api2/json/access/ticket");
   req.method = "POST";
   req.headers = { "Content-Type": "application/x-www-form-urlencoded" };
-  req.body = "username=" + encodeURIComponent(pveUser(user)) + "&password=" + encodeURIComponent(pass);
+  req.body = formBody({ username: pveUser(user), password: pass });
   let r;
   try {
     r = await req.loadJSON();
@@ -662,31 +723,240 @@ async function pveNode(base, auth, s = SET) {
   return hit ? { node: hit } : { error: `Several Proxmox nodes found (${nodes.join(", ")}). Enter the node name in Settings.` };
 }
 
-async function pvePower(action, user, pass) {
-  const base = pveBase();
+async function pveRun(action, user, pass, base, s) {
   const lg = await pveLogin(user, pass, base);
   if (!lg.ticket) return { ok: false, auth: !!lg.auth, net: !!lg.net, msg: lg.error };
-  const nd = await pveNode(base, lg);
+  const nd = await pveNode(base, lg, s);
   if (!nd.node) return { ok: false, msg: nd.error };
+  if (!action) return { ok: true, msg: `saved login works (node ${nd.node})` };
   const req = pveRequest(`${base}/api2/json/nodes/${encodeURIComponent(nd.node)}/status`, lg);
   req.method = "POST";
   req.headers = { ...req.headers, "Content-Type": "application/x-www-form-urlencoded" };
   req.body = "command=" + (action === "off" ? "shutdown" : "reboot");
+  const r = await sendCommand(req, action, "Proxmox");
+  if (/HTTP 403/.test(r.msg || "")) return { ok: false, msg: `This Proxmox user isn't allowed to power off node "${nd.node}" (needs Sys.PowerMgmt).` };
+  return r;
+}
+
+// --- TrueNAS (SCALE / Community Edition, and CORE) ---
+// TrueNAS 25.04 and newer: JSON-RPC 2.0 over a WebSocket (its REST API is deprecated and being removed).
+// Scriptable has no WebSocket of its own, so a hidden web view makes the connection.
+// calls: [[method, params, fallbackParams]], run one after another after logging in.
+async function truenasWs(base, user, pass, calls) {
+  const url = base.replace(/^http/i, "ws") + "/api/current";
+  const wv = new WebView();
+  await wv.loadHTML("<html><body></body></html>");
+  const js = `(function(){
+    var url = ${JSON.stringify(url)}, user = ${JSON.stringify(user)}, pass = ${JSON.stringify(pass)}, calls = ${JSON.stringify(calls)};
+    var done = false, id = 0, stage = "connect", pending = {}, ws, results = [];
+    function finish(r){ if (done) return; done = true; r.stage = stage; try { ws.close(); } catch (e) {} completion(r); }
+    setTimeout(function(){ finish({ timeout: true }); }, 12000);
+    try { ws = new WebSocket(url); } catch (e) { finish({ error: String(e) }); return; }
+    function call(method, params, cb){ var i = ++id; pending[i] = cb; ws.send(JSON.stringify({ jsonrpc: "2.0", id: i, method: method, params: params })); }
+    function msg(e){ return (e && (e.message || (e.data && e.data.reason))) || "error"; }
+    ws.onerror = function(){ finish({ error: "connection" }); };
+    ws.onclose = function(){ finish({ closed: true }); };
+    ws.onmessage = function(e){ var m; try { m = JSON.parse(e.data); } catch (x) { return; } var cb = pending[m.id]; if (cb) { delete pending[m.id]; cb(m); } };
+    ws.onopen = function(){
+      stage = "login";
+      call("auth.login", [user, pass], function(m){
+        if (m.error) { finish({ error: msg(m.error) }); return; }
+        if (m.result !== true) { finish({ auth: true }); return; }
+        stage = "call";
+        var k = 0;
+        (function next(){
+          if (k >= calls.length) { finish({ ok: true, results: results }); return; }
+          var c = calls[k];
+          call(c[0], c[1], function(r){
+            if (r.error && c[2]) {
+              call(c[0], c[2], function(r2){
+                if (r2.error) { finish({ error: msg(r2.error) }); return; }
+                results.push(r2.result); k++; next();
+              });
+              return;
+            }
+            if (r.error) { finish({ error: msg(r.error) }); return; }
+            results.push(r.result); k++; next();
+          });
+        })();
+      });
+    };
+  })();`;
   try {
-    await req.loadString();
+    return await wv.evaluateJavaScript(js, true);
+  } catch (e) {
+    return { error: String((e && e.message) || e), stage: "connect" };
+  }
+}
+
+async function truenasRun(action, user, pass, base) {
+  const method = action === "off" ? "system.shutdown" : "system.reboot";
+  // 25.10+ needs a reason; earlier JSON-RPC versions take only options, hence the fallback
+  const calls = action ? [[method, ["Requested from the -board app"], []]] : [["system.info", []]];
+  const w = await truenasWs(base, user, pass, calls);
+  if (w.ok) {
+    if (action) return { ok: true, msg: powerSent(action) };
+    const info = w.results && w.results[0];
+    return { ok: true, msg: "saved login works" + (info && info.version ? ` (${info.version})` : "") };
+  }
+  if (w.auth) return { ok: false, auth: true, msg: "TrueNAS refused the login (wrong username or password, or the account uses two-factor login)." };
+  if (action && w.stage === "call" && (w.closed || w.timeout)) return { ok: true, msg: powerSent(action) };
+  if (w.stage !== "connect") return { ok: false, msg: "TrueNAS: " + (w.error || "no answer") };
+
+  // No JSON-RPC WebSocket: an older TrueNAS (24.10 and earlier, or CORE) with the REST API
+  const auth = { Authorization: "Basic " + Data.fromString(`${user}:${pass}`).toBase64String() };
+  if (!action) {
+    const req = nasRequest(base + "/api/v2.0/system/info");
+    req.headers = auth;
+    let info;
+    try {
+      info = await req.loadJSON();
+    } catch (e) {
+      return { ok: false, net: true, msg: "Can't reach TrueNAS at " + base + (/^https:/i.test(base) ? " (for https it needs a certificate the iPhone trusts)" : "") };
+    }
+    const code = req.response && req.response.statusCode;
+    if (code === 401) return { ok: false, auth: true, msg: "TrueNAS refused the login" };
+    if (code !== 200) return { ok: false, msg: `TrueNAS answered HTTP ${code}` };
+    return { ok: true, msg: "saved login works" + (info && info.version ? ` (${info.version})` : "") };
+  }
+  const req = nasRequest(`${base}/api/v2.0/system/${action === "off" ? "shutdown" : "reboot"}`, "POST");
+  req.headers = { ...auth, "Content-Type": "application/json" };
+  req.body = "{}";
+  return sendCommand(req, action, "TrueNAS");
+}
+
+// --- Unraid ---
+async function unraidRun(action, user, pass, base) {
+  // 1. log in; the answer is a redirect that sets the session cookie, so don't follow it
+  const lg = nasRequest(base + "/login", "POST");
+  lg.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  lg.body = formBody({ username: user || "root", password: pass });
+  lg.onRedirect = () => null;
+  let page;
+  try {
+    page = await lg.loadString();
+  } catch (e) {
+    return { ok: false, net: true, msg: "Can't reach Unraid at " + base };
+  }
+  const code = (lg.response && lg.response.statusCode) || 0;
+  const hdr = (lg.response && lg.response.headers) || {};
+  const loc = String(hdr.Location || hdr.location || "");
+  if (code >= 300 && code < 400 && /^https?:\/\//i.test(loc) && hostOf(loc) !== hostOf(base)) {
+    return { ok: false, msg: `Unraid sends you on to ${loc.replace(/\/login.*$/i, "")}. Enter that as the Unraid address in Settings.` };
+  }
+  if (code < 300 || code >= 400) {
+    return /password/i.test(page || "") ? { ok: false, auth: true, msg: "Unraid refused the login (wrong username or password)." } : { ok: false, msg: `Unraid answered HTTP ${code}` };
+  }
+  const cookie = cookiesOf(lg) || String(hdr["Set-Cookie"] || hdr["set-cookie"] || "").split(";")[0];
+  // 2. the csrf_token every Unraid page carries
+  const pg = nasRequest(base + "/Main");
+  pg.headers = { Cookie: cookie };
+  let html = "";
+  try {
+    html = await pg.loadString();
+  } catch (e) {}
+  const m = html.match(/csrf_token["'\s]*[:=]\s*["']([0-9A-Za-z]{8,})["']/);
+  if (!m) return /name=["']?password/i.test(html) ? { ok: false, auth: true, msg: "Unraid refused the login." } : { ok: false, msg: "Logged in to Unraid, but couldn't read its security token." };
+  if (!action) return { ok: true, msg: "saved login works" };
+  // 3. what Unraid's own Reboot / Shut down buttons send
+  const req = nasRequest(base + "/webGui/include/Boot.php", "POST");
+  req.headers = { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" };
+  req.body = formBody({ cmd: action === "off" ? "shutdown" : "reboot", csrf_token: m[1] });
+  return sendCommand(req, action, "Unraid");
+}
+
+// --- Synology DSM ---
+const SYNO_ERRORS = {
+  400: "wrong username or password",
+  401: "this account is disabled",
+  402: "this account isn't allowed to log in",
+  403: "this account uses two-factor login. Use an administrator account without it",
+  404: "the two-factor code failed",
+  406: "two-factor login is enforced for this account",
+  407: "too many failed logins: this address is blocked for a while",
+};
+
+async function synoApi(base, cgi, params) {
+  const req = nasRequest(`${base}/webapi/${cgi}`, "POST");
+  req.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  req.body = formBody(params);
+  return req;
+}
+
+async function synologyRun(action, user, pass, base) {
+  let r;
+  try {
+    const login = { api: "SYNO.API.Auth", method: "login", account: user, passwd: pass, session: "board", format: "sid" };
+    r = await (await synoApi(base, "entry.cgi", { ...login, version: 6 })).loadJSON();
+    // DSM 6: the login API lives in auth.cgi
+    if (r && !r.success && r.error && [102, 103, 104].includes(r.error.code)) {
+      r = await (await synoApi(base, "auth.cgi", { ...login, version: 3 })).loadJSON();
+    }
+  } catch (e) {
+    return { ok: false, net: true, msg: "Can't reach Synology DSM at " + base };
+  }
+  if (!r || !r.success || !r.data || !r.data.sid) {
+    const c = r && r.error && r.error.code;
+    return { ok: false, auth: [400, 401, 402, 403, 404, 406].includes(c), msg: "Synology: " + (SYNO_ERRORS[c] || `login failed (error ${c})`) };
+  }
+  if (!action) return { ok: true, msg: "saved login works" };
+  const req = await synoApi(base, "entry.cgi", { api: "SYNO.Core.System", version: 1, method: action === "off" ? "shutdown" : "reboot", _sid: r.data.sid });
+  let j;
+  try {
+    j = JSON.parse((await req.loadString()) || "{}");
   } catch (e) {
     return { ok: true, msg: powerSent(action) };
   }
-  const code = req.response && req.response.statusCode;
-  if (code === 401) return { ok: false, auth: true, msg: "Proxmox refused the login. Enter it again." };
-  if (code === 403) return { ok: false, msg: `This Proxmox user isn't allowed to power off node "${nd.node}" (needs Sys.PowerMgmt).` };
-  if (code && code >= 300) return { ok: false, msg: `Proxmox didn't accept the command (HTTP ${code}).` };
+  if (j && j.success === false) {
+    const c = j.error && j.error.code;
+    return { ok: false, msg: c === 105 ? "This Synology account isn't an administrator." : `Synology didn't accept the command (error ${c}).` };
+  }
   return { ok: true, msg: powerSent(action) };
 }
 
+// --- OpenMediaVault ---
+async function omvRpc(base, body, cookie) {
+  const req = nasRequest(base + "/rpc.php", "POST");
+  req.headers = { "Content-Type": "application/json", ...(cookie ? { Cookie: cookie } : {}) };
+  req.body = JSON.stringify(body);
+  return req;
+}
+
+async function omvRun(action, user, pass, base) {
+  const lg = await omvRpc(base, { service: "Session", method: "login", params: { username: user, password: pass }, options: null });
+  let r;
+  try {
+    r = JSON.parse((await lg.loadString()) || "{}");
+  } catch (e) {
+    return { ok: false, net: true, msg: "Can't reach OpenMediaVault at " + base };
+  }
+  const resp = (r && r.response) || {};
+  if (resp.status === "challengeRequired") return { ok: false, auth: true, msg: "This OpenMediaVault account uses two-factor login. Use an administrator account without it." };
+  if (!(resp.authenticated === true || resp.status === "authenticated")) {
+    return { ok: false, auth: true, msg: "OpenMediaVault: " + ((r && r.error && r.error.message) || "wrong username or password") };
+  }
+  const cookie = cookiesOf(lg) || (resp.sessionid ? "X-OPENMEDIAVAULT-SESSIONID=" + resp.sessionid : "");
+  if (!action) return { ok: true, msg: "saved login works" };
+  // a 1 second delay lets OpenMediaVault answer before it goes down
+  const req = await omvRpc(base, { service: "System", method: action === "off" ? "shutdown" : "reboot", params: { delay: 1 }, options: null }, cookie);
+  let j;
+  try {
+    j = JSON.parse((await req.loadString()) || "{}");
+  } catch (e) {
+    return { ok: true, msg: powerSent(action) };
+  }
+  if (j && j.error) {
+    const m = j.error.message || "error";
+    return { ok: false, auth: /session|authenticat/i.test(m), msg: "OpenMediaVault didn't accept the command: " + m };
+  }
+  return { ok: true, msg: powerSent(action) };
+}
+
+const DRIVERS = { zimaos: zimaRun, proxmox: pveRun, truenas: truenasRun, unraid: unraidRun, synology: synologyRun, omv: omvRun };
+
 // --- Linux (Debian, Ubuntu, Fedora, ... any systemd distro) via the board-power helper ---
 function helperBase(s = SET) {
-  return (s.helperUrl || `http://${hostOf(s.baseUrl)}:${HELPER_PORT}`).replace(/\/+$/, "");
+  return platformBase("linux", s);
 }
 
 function helperPort(s = SET) {
@@ -718,6 +988,67 @@ async function helperPower(action) {
   if (code === 401) return { ok: false, msg: "The helper refused the key. Copy the setup command from Settings and run it again." };
   if (code >= 300) return { ok: false, msg: `The helper didn't accept the command (HTTP ${code}).` };
   return { ok: true, msg: powerSent(action) };
+}
+
+// ---------- Which system is the server running? ----------
+// Uses what Glances reports (kernel and distribution names) and a few quick, read-only looks at the usual
+// web pages and APIs: Proxmox on port 8006, Synology's API on 5000 / 5001, the web page on port 80 / 443
+// (TrueNAS, Unraid, OpenMediaVault and ZimaOS name themselves there) and the -board power helper.
+// Returns { platform (null = couldn't tell), why, url (an address to use instead of the usual one, or "") }.
+async function detectPlatform(s, gpass) {
+  const host = hostOf(s.baseUrl);
+  const probe = async (url) => {
+    const req = nasRequest(url, "GET", 4);
+    try {
+      const body = (await req.loadString()) || "";
+      return { code: (req.response && req.response.statusCode) || 0, body: body.slice(0, 20000), url: (req.response && req.response.url) || url };
+    } catch (e) {
+      return null;
+    }
+  };
+  const synoQ = "/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth";
+  const [sys, pve, syno, synos, web, webs, helper] = await Promise.all([
+    glancesRequest(s, "system", gpass).catch(() => null),
+    probe(`https://${host}:8006/`),
+    probe(`http://${host}:5000${synoQ}`),
+    probe(`https://${host}:5001${synoQ}`),
+    probe(`http://${host}/`),
+    probe(`https://${host}/`),
+    probe(`http://${host}:${HELPER_PORT}/health`),
+  ]);
+  const kern = String((sys && sys.os_version) || "");
+  const distro = String((sys && (sys.linux_distro || sys.hr_name)) || "");
+  const osName = String((sys && sys.os_name) || "");
+  const said = kern + " " + distro;
+  const origin = (u) => (String(u).match(/^https?:\/\/[^\/]+/i) || [""])[0];
+  // the web page that names the system; a page reached over https (or after a redirect) becomes the address
+  const page = (re) => {
+    for (const p of [web, webs]) {
+      if (p && re.test(p.body)) {
+        const o = origin(p.url);
+        return { url: o && o !== `http://${host}` ? o : "" };
+      }
+    }
+    return null;
+  };
+  const synoOk = (p) => p && /"success"\s*:\s*true/.test(p.body);
+  const res = (platform, why, url) => ({ platform, why, url: url || "" });
+  let p;
+  if (/pve/i.test(kern)) return res("proxmox", `Glances reports a Proxmox kernel (${kern})`);
+  if (pve && /proxmox/i.test(pve.body)) return res("proxmox", "Proxmox's web interface answers on port 8006");
+  if (/truenas/i.test(said)) return res("truenas", `Glances reports a TrueNAS system (${kern || distro})`, (page(/truenas/i) || {}).url);
+  if ((p = page(/truenas/i))) return res("truenas", "the server's web page is TrueNAS", p.url);
+  if (/unraid/i.test(said)) return res("unraid", `Glances reports an Unraid kernel (${kern})`, (page(/unraid|lime\s*technology/i) || {}).url);
+  if ((p = page(/unraid|lime\s*technology/i))) return res("unraid", "the server's web page is Unraid", p.url);
+  if (synoOk(syno)) return res("synology", "Synology's DSM answers on port 5000");
+  if (synoOk(synos)) return res("synology", "Synology's DSM answers on port 5001", `https://${host}:5001`);
+  if (/openmediavault/i.test(said)) return res("omv", `Glances reports ${distro}`, (page(/openmediavault/i) || {}).url);
+  if ((p = page(/openmediavault/i))) return res("omv", "the server's web page is OpenMediaVault", p.url);
+  if (/zimaos/i.test(said)) return res("zimaos", `Glances reports ${distro}`);
+  if ((p = page(/zimaos/i))) return res("zimaos", "the server's web page is ZimaOS", p.url);
+  if (helper && (helper.code === 200 || helper.code === 401)) return res("linux", "the -board power helper answers on port " + HELPER_PORT);
+  if (/linux/i.test(osName) || distro) return res("linux", `Glances reports ${distro || "Linux"}, with no NAS system on top`);
+  return { platform: null, why: sys ? `Glances reports ${osName || "an unknown system"}` : "Glances didn't answer at that address", url: "" };
 }
 
 // The helper: one Python 3 file (standard library only) run by systemd as root.
@@ -814,7 +1145,9 @@ async function handlePower(d) {
   const a = d.a === "off" ? "off" : "restart";
   const P = SET.platform;
   let r;
-  if (P === "linux") {
+  if (!PLATFORMS[P]) {
+    r = { ok: false, msg: "-board doesn't know your server type yet. Open Settings > Server to detect or pick it." };
+  } else if (P === "linux") {
     r = await helperPower(a);
   } else {
     let user = d.u;
@@ -825,7 +1158,7 @@ async function handlePower(d) {
       saved = true;
     }
     if (!user || !pass) r = { ok: false, auth: true, msg: "" };
-    else r = await (P === "proxmox" ? pvePower : zimaPower)(a, user, pass);
+    else r = await DRIVERS[P](a, user, pass, platformBase(P), SET);
     if (r.auth && saved) forgetLogin(P);
     if (!r.auth && !r.net && !saved && user && pass) {
       Keychain.set(LOGIN_KEYS[P].user, user);
@@ -840,32 +1173,24 @@ async function handlePower(d) {
 // One line for "Test connection" about the Reboot / Shut down side of the chosen server type
 async function testPower(s) {
   const P = s.platform;
+  if (!PLATFORMS[P]) return { ok: false, t: "Server type: not known yet, so Reboot / Shut down is off. Pick it under SERVER TYPE." };
+  const name = PLATFORMS[P].name;
+  const base = platformBase(P, s);
   if (P === "linux") {
-    const base = helperBase(s);
     if (!hasLogin("linux")) return { ok: false, t: "Power helper: not set up yet (tap Copy setup command)" };
     const code = await helperCall(base, Keychain.get(HELPER_KEY), "/health", "GET");
     if (code === 200) return { ok: true, t: "Power helper: OK at " + base };
     if (code === 401) return { ok: false, t: "Power helper: answers, but refused the key. Run the setup command again." };
     return { ok: false, t: "Power helper: no answer at " + base + (code ? ` (HTTP ${code})` : "") };
   }
-  const name = PLATFORMS[P].login;
-  const base = P === "proxmox" ? pveBase(s) : zimaBase(s);
   if (hasLogin(P)) {
     const { user, pass } = savedLogin(P);
-    if (P === "proxmox") {
-      const r = await pveLogin(user, pass, base);
-      if (!r.ticket) return { ok: false, t: "Proxmox: " + (r.auth ? "saved login was refused" : "no answer at " + base) };
-      const nd = await pveNode(base, r, s);
-      return nd.node ? { ok: true, t: `Proxmox: OK, saved login works (node ${nd.node})` } : { ok: false, t: "Proxmox: " + nd.error };
-    }
-    const r = await zimaLogin(user, pass, base);
-    return r.token
-      ? { ok: true, t: "ZimaOS: OK, saved login works" }
-      : { ok: false, t: "ZimaOS: " + (r.auth ? "saved login was refused" : "no answer at " + base) };
+    const r = await DRIVERS[P](null, user, pass, base, s);
+    if (r.ok) return { ok: true, t: `${name}: OK, ${r.msg}` };
+    return { ok: false, t: `${name}: ` + (r.auth ? "the saved login was refused. " : "") + (r.msg || "no answer at " + base) };
   }
   try {
-    const req = P === "proxmox" ? pveRequest(base + "/api2/json/version") : new Request(base);
-    req.timeoutInterval = 6;
+    const req = nasRequest(base, "GET", 6);
     await req.load();
     return { ok: true, t: `${name}: reachable at ${base} (no login saved yet)` };
   } catch (e) {
@@ -901,7 +1226,7 @@ async function settingsOp(d) {
       mounts,
       ifaces,
       hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
-      logins: { zimaos: hasLogin("zimaos"), proxmox: hasLogin("proxmox"), linux: hasLogin("linux") },
+      logins: Object.fromEntries(PLATFORM_KEYS.map((k) => [k, hasLogin(k)])),
       platforms: PLATFORMS,
       helperPort: HELPER_PORT,
       hasGpass,
@@ -941,13 +1266,31 @@ async function settingsOp(d) {
           : { ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, that Glances runs with -w, and your VPN if you're away from home)" }
       );
     }
+    // server type not known yet: work it out first (the form takes it over)
+    let det = null;
+    if (!PLATFORMS[s.platform]) {
+      det = await detectPlatform(s, d.gpass || null);
+      if (det.platform) {
+        s.platform = det.platform;
+        if (det.url && !s[PLATFORMS[det.platform].url]) s[PLATFORMS[det.platform].url] = det.url;
+        lines.push({ ok: true, t: `Server type: ${PLATFORMS[det.platform].name} (${det.why})` });
+      } else {
+        lines.push({ ok: false, t: `Server type: couldn't tell (${det.why}). Pick it under SERVER TYPE.` });
+      }
+    }
     lines.push(await testPower(s));
-    return { ok: true, lines };
+    return { ok: true, lines, det };
   }
   if (d.op === "forget") {
     const P = PLATFORMS[d.platform] ? d.platform : SET.platform;
     forgetLogin(P);
     return { ok: true, msg: P === "linux" ? "Helper key forgotten" : PLATFORMS[P].login + " login forgotten" };
+  }
+  if (d.op === "detect") {
+    // which system is at the address typed in the form (saved or not)
+    const s = cleanSettings(d.s);
+    if (!s.baseUrl) return { ok: true, det: { platform: null, why: "no Glances address yet", url: "" } };
+    return { ok: true, det: await detectPlatform(s, d.gpass || null) };
   }
   if (d.op === "helper") {
     // Linux power helper: keep the saved key (or save the new one made in the dashboard) and copy the setup command
@@ -2079,6 +2422,8 @@ body.noanim .blob{animation:none;will-change:auto}
 .seg button i{flex:none;width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.5);box-sizing:border-box}
 .seg button.on{background:var(--acc);color:var(--acc-ink);opacity:1}
 .seg button.on i{border:4px solid var(--acc-ink);background:var(--acc)}
+.segw{flex-wrap:wrap}
+.segw button{flex:1 1 30%}
 .btns button.ok,.shd button.ok,.lay.on{background:var(--acc);color:var(--acc-ink)}
 .modal{background:var(--panel)}
 .pmenu{background:var(--panel2)}
@@ -3171,7 +3516,7 @@ function openPower(a, err, needLogin){
   if (UI.login) {
     document.getElementById("cul").textContent = UI.login.toUpperCase() + " USERNAME";
     document.getElementById("cpl").textContent = UI.login.toUpperCase() + " PASSWORD";
-    document.getElementById("cu").placeholder = UI.platform === "proxmox" ? "root@pam" : "";
+    document.getElementById("cu").placeholder = UI.userPh || "";
   }
   document.getElementById("cvl").style.display = showL ? "flex" : "none";
   document.getElementById("cp").value = "";
@@ -3290,8 +3635,13 @@ function openSettings(){
     S.f = JSON.parse(JSON.stringify(r.s));
     S.gpass = "";
     S.clearGpass = false;
+    S.det = null;
+    S.detFor = "";
+    S.autoPicked = false;
     sEl("ssave").style.display = "";
     sRender();
+    // server type not known yet but an address is: work it out straight away
+    if (S.f.platform === "auto" && /^https?:\\/\\/[^\\/:]+/i.test(S.f.baseUrl)) sDetect();
   });
 }
 function closeSettings(){
@@ -3504,6 +3854,30 @@ function sMsg(r){
   return true;
 }
 
+var PLATFORM_ORDER = ["zimaos", "proxmox", "truenas", "unraid", "synology", "omv", "linux"];
+// take over a detection result: the type, and an address when the usual one isn't right (e.g. https)
+function sApplyDet(det){
+  S.det = det;
+  S.detFor = S.f.baseUrl;
+  if (!det || !det.platform) return;
+  S.f.platform = det.platform;
+  S.autoPicked = true;
+  var k = S.info.platforms[det.platform].url;
+  if (det.url && !S.f[k]) S.f[k] = det.url;
+}
+// force: run even when the type was picked by hand
+function sDetect(force){
+  if (S.busy) return;
+  S.det = { busy: true };
+  sRender();
+  sSend({ op: "detect", s: S.f, gpass: S.gpass }, function(r){
+    if (!r.ok) { S.det = null; sRender(); return; }
+    if (force || S.f.platform === "auto" || S.autoPicked) sApplyDet(r.det);
+    else { S.det = r.det; S.detFor = S.f.baseUrl; }
+    sRender();
+  });
+}
+
 function sRender(){
   var b = sEl("sbody"), I = S.info, f = S.f;
   b.innerHTML = "";
@@ -3517,7 +3891,11 @@ function sRender(){
 
   // ---------- SERVER ----------
   var c = sSec(b, "SERVER");
-  sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
+  var gin = sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
+  // a new address: work out the server type again (unless it was picked by hand)
+  gin.addEventListener("change", function(){
+    if (/^https?:\\/\\/[^\\/:]+/i.test(S.f.baseUrl) && S.f.baseUrl !== S.detFor && (S.f.platform === "auto" || S.autoPicked)) sDetect();
+  });
   sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
   sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
   var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
@@ -3533,18 +3911,60 @@ function sRender(){
   sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
 
   // ---------- SERVER TYPE (only changes how Reboot / Shut down reaches the server) ----------
-  var P = f.platform, hostPh = I.host || "192.168.1.10";
-  sRadio(c, "SERVER TYPE", "platform", [["zimaos", "ZimaOS"], ["proxmox", "Proxmox"], ["linux", "Linux"]], function(){ sRender(); });
-  if (P === "zimaos") {
+  var P = f.platform, hostPh = I.host || "192.168.1.10", PL = I.platforms;
+  var tl = sLabel(c, "SERVER TYPE");
+  var dst = document.createElement("div");
+  dst.className = "sres";
+  var dm = S.det, line = null;
+  if (dm && dm.busy) line = { ok: true, t: "Working out which system the server runs..." };
+  else if (dm && dm.platform) line = { ok: true, t: "Detected " + PL[dm.platform].name + ": " + dm.why + "." + (P !== dm.platform ? " You picked " + PL[P].name + " instead." : "") };
+  else if (dm) line = { ok: false, t: "Couldn't tell the server type (" + dm.why + "). Pick it below." };
+  else if (P === "auto") line = { ok: false, t: "Not known yet. Enter the Glances address above and -board works it out." };
+  if (line) {
+    var dd = document.createElement("div");
+    if (!line.ok) dd.className = "bad";
+    dd.innerHTML = "<i></i><span></span>";
+    dd.querySelector("span").textContent = line.t;
+    dst.appendChild(dd);
+    tl.appendChild(dst);
+  }
+  var seg = sRadio(c, "", "platform", PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }), function(){ S.autoPicked = false; sRender(); });
+  seg.querySelector(".seg").classList.add("segw");
+  seg.removeChild(seg.querySelector("label"));
+  if (/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl) && !(dm && dm.busy)) {
+    var db = sChip(c, P === "auto" ? "Detect server type" : "Detect again", function(){ sDetect(true); });
+    db.style.alignSelf = "flex-start";
+  }
+  var urlKey = P !== "auto" ? PL[P].url : null;
+  var defUrl = urlKey ? PL[P].def.replace("{h}", hostPh) : "";
+  var addrField = function(label){
+    sText(c, label, urlKey, defUrl + (I.host ? " (default)" : ""), "url", "Leave empty for " + (I.host ? defUrl : "the Glances server with the usual port") + ".");
+  };
+  if (P === "auto") {
+    sHint(c, "Reboot / Shut down appear once the server type is known. -board looks at what Glances reports and at the server's usual web pages; nothing is changed on the server.");
+  } else if (P === "zimaos") {
     sHint(c, "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.");
-    sText(c, "ZIMAOS ADDRESS", "zimaUrl", "http://" + hostPh + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on port 80.");
+    addrField("ZIMAOS ADDRESS");
   } else if (P === "proxmox") {
     sHint(c, "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.");
-    sText(c, "PROXMOX ADDRESS", "proxmoxUrl", "https://" + hostPh + ":8006" + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on https port 8006.");
+    addrField("PROXMOX ADDRESS");
     sText(c, "NODE NAME", "proxmoxNode", "Automatic (e.g. pve)", null, "Only needed in a cluster: the node to reboot, as shown in the Proxmox web UI.");
+  } else if (P === "truenas") {
+    sHint(c, "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. TrueNAS 25.04 and newer are reached through their WebSocket API, older versions and CORE through the REST API. Accounts with two-factor login can't be used.");
+    addrField("TRUENAS ADDRESS");
+    sHint(c, "With https, TrueNAS needs a certificate the iPhone trusts (its own self-signed one won't work for the WebSocket). Plain http on your home network or VPN is fine.");
+  } else if (P === "unraid") {
+    sHint(c, "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.");
+    addrField("UNRAID ADDRESS");
+  } else if (P === "synology") {
+    sHint(c, "Synology DSM: Reboot / Shut down use the DSM Web API with an administrator account. Nothing to install. Accounts with two-factor login can't be used; make a separate administrator account for -board if yours has it.");
+    addrField("SYNOLOGY DSM ADDRESS");
+  } else if (P === "omv") {
+    sHint(c, "OpenMediaVault: Reboot / Shut down use OpenMediaVault's own API with an administrator account (admin by default). Nothing to install.");
+    addrField("OPENMEDIAVAULT ADDRESS");
   } else {
     sHint(c, "Debian, Ubuntu Server, Fedora and other systemd Linux have no web API for reboot, so -board uses a tiny helper service on the server: one Python 3 file, protected by a secret key that stays on this phone and the server.");
-    sText(c, "HELPER ADDRESS", "helperUrl", "http://" + hostPh + ":" + I.helperPort + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on port " + I.helperPort + ".");
+    addrField("HELPER ADDRESS");
     var hb = sChip(c, I.logins.linux ? "Copy setup command" : "Create key & copy setup command", function(){
       var k = "";
       try {
@@ -3557,8 +3977,8 @@ function sRender(){
     hb.style.alignSelf = "flex-start";
     sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address.");
   }
-  if (P !== "linux") {
-    var LN = I.platforms[P].login;
+  if (P !== "linux" && P !== "auto") {
+    var LN = PL[P].login;
     if (I.logins[P]) {
       var zr = sRow(c, LN + " login saved", "Stored in the iOS Keychain");
       sChip(zr, "Forget", function(){
@@ -3567,19 +3987,20 @@ function sRender(){
     } else {
       sRow(c, "No " + LN + " login saved", "You'll be asked the first time you use Reboot / Shut down");
     }
-  } else if (I.logins.linux) {
+  } else if (P === "linux" && I.logins.linux) {
     var kr = sRow(c, "Helper key saved", "Stored in the iOS Keychain");
     sChip(kr, "Forget", function(){
       sSend({ op: "forget", platform: "linux" }, function(r){ if (sMsg(r)) { I.logins.linux = false; if (UI.platform === "linux") st.hasLogin = false; sRender(); } });
     });
   }
   var res = document.createElement("div");
-  res.className = "sres";
+  res.className = "sres stest";
   var tb = sChip(c, "Test connection", function(){
     res.innerHTML = '<div><span>Testing...</span></div>';
     sSend({ op: "test", s: S.f, gpass: S.gpass }, function(r){
       res.innerHTML = "";
       if (!r.ok) { res.textContent = r.error || "Test failed"; return; }
+      if (r.det && S.f.platform === "auto") { sApplyDet(r.det); sRender(); res = sEl("sbody").querySelector(".stest"); }
       r.lines.forEach(function(l){
         var d = document.createElement("div");
         if (!l.ok) d.className = "bad";
@@ -3753,7 +4174,7 @@ function saveSettings(){
     if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
   }
   if (!/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
-  var urls = [["zimaUrl", "ZimaOS"], ["proxmoxUrl", "Proxmox"], ["helperUrl", "helper"]];
+  var urls = PLATFORM_ORDER.map(function(k){ return [S.info.platforms[k].url, S.info.platforms[k].name]; });
   for (i = 0; i < urls.length; i++) {
     if (f[urls[i][0]] && !/^https?:\\/\\//i.test(f[urls[i][0]])) { sEl("serr").textContent = "The " + urls[i][1] + " address must start with http:// or https://"; return; }
   }
@@ -4058,6 +4479,23 @@ async function showLiveDashboard(openStackId) {
   if (openStackId) await wv.evaluateJavaScript(`focusStack(${JSON.stringify(openStackId)})`, false);
   // download any logos not saved yet (first run, or new ones) without holding up the dashboard
   refreshLogos(wv);
+  // server type not known yet (e.g. settings from before it existed): work it out in the background
+  if (SET.baseUrl && !PLATFORMS[SET.platform]) {
+    (async () => {
+      try {
+        const det = await detectPlatform(SET);
+        if (!det.platform || PLATFORMS[SET.platform]) return;
+        const data = loadData();
+        const ns = { ...SET, platform: det.platform };
+        if (det.url && !ns[PLATFORMS[det.platform].url]) ns[PLATFORMS[det.platform].url] = det.url;
+        data.settings = cleanSettings(ns);
+        saveData(data);
+        applySettings();
+        await pushServices(wv);
+        await wv.evaluateJavaScript(`toast(${JSON.stringify("Server type detected: " + PLATFORMS[det.platform].name)}, 3500)`, false);
+      } catch (e) {}
+    })();
+  }
   // first run: no server yet, so go straight to Settings
   // (after the startup screen, when it's on)
   if (!SET.baseUrl) await wv.evaluateJavaScript(`setTimeout(openSettings, ${SET.splash ? 1700 : 400})`, false);
