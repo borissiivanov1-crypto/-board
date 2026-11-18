@@ -4,6 +4,9 @@ on:
     paths: [".github/workflows/runner-check.yml"]
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [macos-14, macos-15, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - run: echo "Actions runners work"
+      - run: echo "runner works"; xcodebuild -version
