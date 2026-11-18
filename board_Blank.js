@@ -5,10 +5,18 @@
 //
 // WHAT YOU NEED
 // - The free Scriptable app on your iPhone.
+// - A home server running ZimaOS, Proxmox VE, or any mainstream Linux (Debian, Ubuntu Server, Fedora, ...).
 // - Glances running on your server with its web server / API turned on (default port 61208).
-//   For example the Docker image "nicolargo/glances" with GLANCES_OPT="-w".
-//   Glances only sees the drives you give its container, so mount each drive you want to watch.
-// - Optional: ZimaOS, for the Reboot / Shut down menu (it uses your ZimaOS login).
+//   Docker (any OS):  docker run -d --name glances --restart unless-stopped -p 61208:61208 --pid host \
+//                       -e GLANCES_OPT="-w" -v /var/run/docker.sock:/var/run/docker.sock:ro nicolargo/glances
+//   Debian / Ubuntu / Proxmox host without Docker:  sudo apt install glances, then run "glances -w"
+//   (older distro packages are Glances 3.x: pick API version 3 in Settings).
+//   A Glances container only sees the drives you give it, so mount each drive you want to watch.
+// - Optional, for the Reboot / Shut down menu, pick your server type in Settings:
+//   ZimaOS  - uses your ZimaOS login, nothing to install.
+//   Proxmox - uses the Proxmox VE API (port 8006) with your Proxmox login, e.g. root@pam. Nothing to install.
+//   Linux   - Debian, Ubuntu and other systemd distros have no web API for this, so Settings gives you a
+//             one-time setup command for a tiny helper service (Python 3, one file, protected by a secret key).
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
@@ -24,7 +32,7 @@
 // - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack.
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
-// - Hold the server name to rename it. Tap it for Reboot / Shut down (ZimaOS only, asks to confirm).
+// - Hold the server name to rename it. Tap it for Reboot / Shut down (asks to confirm).
 // - The gear icon opens Settings: server, monitoring, widget, buttons, theme & look, export / import.
 //   The values in CONFIG below are only the starting defaults; Settings saves your choices on the phone.
 // - Live polling only runs while the dashboard is open, so the widget stays light on battery.
@@ -41,8 +49,20 @@ const CONFIG = {
   networkInterface: "",                 // e.g. "eth0"; empty = busiest interface
   refreshMinutes: 5,
   widgetStatusDots: true,               // up/down dots on the large widget buttons (adds ~2s of checking per widget refresh)
-  linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS page); empty = no button
+  linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS / Proxmox page); empty = no button
+  platform: "zimaos",                   // server type for Reboot / Shut down: "zimaos", "proxmox" or "linux"
   zimaUrl: "",                          // ZimaOS address for Reboot / Shut down; empty = same server, port 80
+  proxmoxUrl: "",                       // Proxmox VE address; empty = same server, https port 8006
+  proxmoxNode: "",                      // Proxmox node name; empty = found automatically (single-node setups)
+  helperUrl: "",                        // Linux power helper address; empty = same server, port 61209
+};
+
+// Server types (Settings > Server). Monitoring works the same on all of them (Glances);
+// they only change how Reboot / Shut down reaches the server.
+const PLATFORMS = {
+  zimaos: { name: "ZimaOS", login: "ZimaOS" },
+  proxmox: { name: "Proxmox", login: "Proxmox" },
+  linux: { name: "Linux", login: null },          // uses the helper's secret key, no login
 };
 
 // Temperatures (°C) where the number turns orange (warm) and red (hot) in the enlarged cards.
@@ -85,7 +105,11 @@ const DEFAULTS = {
   baseUrl: CONFIG.baseUrl,
   apiVersion: CONFIG.apiVersion,
   username: CONFIG.username,
+  platform: CONFIG.platform,
   zimaUrl: CONFIG.zimaUrl,
+  proxmoxUrl: CONFIG.proxmoxUrl,
+  proxmoxNode: CONFIG.proxmoxNode,
+  helperUrl: CONFIG.helperUrl,
   showPower: true,                 // Reboot / Shut down under the server name
   diskMounts: CONFIG.diskMounts,
   maxDisks: CONFIG.maxDisks,       // used when no drives are picked (auto-detect)
@@ -129,8 +153,14 @@ function cleanSettings(raw) {
   out.baseUrl = out.baseUrl.replace(/\/+$/, "");
   num("apiVersion", 3, 4);
   str("username", 100);
-  str("zimaUrl");
-  if (out.zimaUrl && !/^https?:\/\//i.test(out.zimaUrl)) out.zimaUrl = "";
+  out.platform = PLATFORMS[r.platform] ? r.platform : PLATFORMS[DEFAULTS.platform] ? DEFAULTS.platform : "zimaos";
+  for (const k of ["zimaUrl", "proxmoxUrl", "helperUrl"]) {
+    str(k);
+    if (out[k] && !/^https?:\/\//i.test(out[k])) out[k] = "";
+    out[k] = out[k].replace(/\/+$/, "");
+  }
+  str("proxmoxNode", 64);
+  out.proxmoxNode = out.proxmoxNode.replace(/[^A-Za-z0-9._-]/g, "");
   bool("showPower");
   out.diskMounts = Array.isArray(r.diskMounts)
     ? r.diskMounts.filter((x) => typeof x === "string" && x).slice(0, 12)
@@ -453,12 +483,14 @@ function getPayload() {
     limits: SET.tempLimits,
     logos,
     cdn: LOGO_CDN,
-    hasLogin: hasZimaLogin(),
+    hasLogin: hasLogin(),
     title: getTitle(),
     host: SET.baseUrl ? HOST : "",
     ui: {
       cols: SET.columns,
       power: SET.showPower,
+      platform: SET.platform,
+      login: PLATFORMS[SET.platform].login,  // name for the login popup; null = no login (Linux helper)
       widgetMax: SET.widgetRows * 4,
       monOpen: SET.monitoringOpen,
       monFixed: SET.monitoringFixed,
@@ -470,23 +502,57 @@ function getPayload() {
   };
 }
 
-// ---------- Reboot / shut down (ZimaOS API: log in, then PUT /v1/sys/state/restart or /off) ----------
-const ZIMA_KEYS = { user: "board-zima-user", pass: "board-zima-pass" };
+// ---------- Reboot / shut down ----------
+// ZimaOS:  log in (POST /v1/users/login), then PUT /v1/sys/state/restart or /off
+// Proxmox: log in (POST /api2/json/access/ticket), then POST /api2/json/nodes/<node>/status command=reboot|shutdown
+// Linux:   the small "board-power" helper (set up from Settings), POST /reboot or /shutdown with its secret key
+const LOGIN_KEYS = {
+  zimaos: { user: "board-zima-user", pass: "board-zima-pass" },
+  proxmox: { user: "board-pve-user", pass: "board-pve-pass" },
+};
+const HELPER_KEY = "board-helper-key";
+const HELPER_PORT = 61209;
 
-function hasZimaLogin() {
+function kcHas(k) {
   try {
-    return Keychain.contains(ZIMA_KEYS.user) && Keychain.contains(ZIMA_KEYS.pass);
+    return Keychain.contains(k);
   } catch (e) {
     return false;
   }
 }
 
-function forgetZimaLogin() {
-  for (const k of Object.values(ZIMA_KEYS)) {
-    try {
-      if (Keychain.contains(k)) Keychain.remove(k);
-    } catch (e) {}
-  }
+function kcRemove(k) {
+  try {
+    if (Keychain.contains(k)) Keychain.remove(k);
+  } catch (e) {}
+}
+
+// Linux: "logged in" = the helper's secret key is saved
+function hasLogin(platform = SET.platform) {
+  if (platform === "linux") return kcHas(HELPER_KEY);
+  const k = LOGIN_KEYS[platform];
+  return !!k && kcHas(k.user) && kcHas(k.pass);
+}
+
+function forgetLogin(platform = SET.platform) {
+  if (platform === "linux") return kcRemove(HELPER_KEY);
+  const k = LOGIN_KEYS[platform];
+  if (k) for (const x of Object.values(k)) kcRemove(x);
+}
+
+function savedLogin(platform) {
+  const k = LOGIN_KEYS[platform];
+  return { user: Keychain.get(k.user), pass: Keychain.get(k.pass) };
+}
+
+const powerSent = (action) =>
+  action === "off"
+    ? "Shutdown sent. Switch the server on by hand to bring it back."
+    : "Reboot sent. The server should be back in a minute or two.";
+
+// --- ZimaOS ---
+function zimaBase(s = SET) {
+  return (s.zimaUrl || `http://${hostOf(s.baseUrl)}`).replace(/\/+$/, "");
 }
 
 async function zimaLogin(user, pass, base) {
@@ -499,7 +565,7 @@ async function zimaLogin(user, pass, base) {
   try {
     r = await login.loadJSON();
   } catch (e) {
-    return { error: "Can't reach ZimaOS at " + base };
+    return { net: true, error: "Can't reach ZimaOS at " + base };
   }
   const token = r && r.data && r.data.token && r.data.token.access_token;
   if (!token) return { auth: true, error: "Login failed: " + ((r && r.message) || "wrong username or password") };
@@ -507,52 +573,296 @@ async function zimaLogin(user, pass, base) {
 }
 
 async function zimaPower(action, user, pass) {
-  const base = (SET.zimaUrl || `http://${HOST}`).replace(/\/+$/, "");
+  const base = zimaBase();
   const lg = await zimaLogin(user, pass, base);
-  if (!lg.token) return { ok: false, auth: !!lg.auth, msg: lg.error };
-  const token = lg.token;
+  if (!lg.token) return { ok: false, auth: !!lg.auth, net: !!lg.net, msg: lg.error };
 
   const req = new Request(`${base}/v1/sys/state/${action === "off" ? "off" : "restart"}`);
   req.method = "PUT";
-  req.headers = { Authorization: token };
+  req.headers = { Authorization: lg.token };
   req.timeoutInterval = 8;
-  const sent = action === "off"
-    ? "Shutdown sent. Switch the server on by hand to bring it back."
-    : "Reboot sent. The server should be back in a minute or two.";
   try {
     await req.loadString();
   } catch (e) {
     // the server may drop the connection as it goes down
-    return { ok: true, msg: sent };
+    return { ok: true, msg: powerSent(action) };
   }
   const code = req.response && req.response.statusCode;
   if (code === 401 || code === 403) return { ok: false, auth: true, msg: "ZimaOS refused the login. Enter it again." };
   if (code && code >= 300) return { ok: false, msg: `ZimaOS didn't accept the command (HTTP ${code}).` };
-  return { ok: true, msg: sent };
+  return { ok: true, msg: powerSent(action) };
+}
+
+// --- Proxmox VE ---
+// Proxmox uses a self-signed certificate out of the box, so these requests accept it.
+function pveBase(s = SET) {
+  return (s.proxmoxUrl || `https://${hostOf(s.baseUrl)}:8006`).replace(/\/+$/, "");
+}
+
+// "root" -> "root@pam" (the Linux login realm Proxmox uses by default)
+function pveUser(u) {
+  u = String(u || "").trim();
+  return u && !u.includes("@") ? u + "@pam" : u;
+}
+
+function pveRequest(url, auth) {
+  const req = new Request(url);
+  req.allowInsecureRequest = true;
+  req.timeoutInterval = 8;
+  if (auth) req.headers = { Cookie: "PVEAuthCookie=" + auth.ticket, CSRFPreventionToken: auth.csrf };
+  return req;
+}
+
+async function pveLogin(user, pass, base) {
+  const req = pveRequest(base + "/api2/json/access/ticket");
+  req.method = "POST";
+  req.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  req.body = "username=" + encodeURIComponent(pveUser(user)) + "&password=" + encodeURIComponent(pass);
+  let r;
+  try {
+    r = await req.loadJSON();
+  } catch (e) {
+    return { net: true, error: "Can't reach Proxmox at " + base };
+  }
+  const d = r && r.data;
+  if (d && d.NeedTFA) return { auth: true, error: "This account uses two-factor login. Use an account without it (e.g. a separate user with the Sys.PowerMgmt permission)." };
+  if (!d || !d.ticket) return { auth: true, error: "Login failed: wrong username or password (e.g. root@pam)" };
+  return { ticket: d.ticket, csrf: d.CSRFPreventionToken };
+}
+
+// The node to reboot: the one named in Settings, the only one, or the one at the Glances address
+async function pveNode(base, auth, s = SET) {
+  if (s.proxmoxNode) return { node: s.proxmoxNode };
+  let nodes = [];
+  try {
+    const r = await pveRequest(base + "/api2/json/nodes", auth).loadJSON();
+    nodes = ((r && r.data) || []).map((n) => n.node).filter(Boolean);
+  } catch (e) {
+    return { error: "Couldn't list the Proxmox nodes" };
+  }
+  if (nodes.length === 1) return { node: nodes[0] };
+  if (!nodes.length) return { error: "Proxmox didn't list any nodes. Enter the node name in Settings." };
+  const host = hostOf(s.baseUrl).toLowerCase();
+  let hit = nodes.find((n) => n.toLowerCase() === host || host.startsWith(n.toLowerCase() + "."));
+  if (!hit) {
+    try {
+      const r = await pveRequest(base + "/api2/json/cluster/status", auth).loadJSON();
+      const m = ((r && r.data) || []).find((x) => x.type === "node" && x.ip === host);
+      if (m) hit = m.name;
+    } catch (e) {}
+  }
+  return hit ? { node: hit } : { error: `Several Proxmox nodes found (${nodes.join(", ")}). Enter the node name in Settings.` };
+}
+
+async function pvePower(action, user, pass) {
+  const base = pveBase();
+  const lg = await pveLogin(user, pass, base);
+  if (!lg.ticket) return { ok: false, auth: !!lg.auth, net: !!lg.net, msg: lg.error };
+  const nd = await pveNode(base, lg);
+  if (!nd.node) return { ok: false, msg: nd.error };
+  const req = pveRequest(`${base}/api2/json/nodes/${encodeURIComponent(nd.node)}/status`, lg);
+  req.method = "POST";
+  req.headers = { ...req.headers, "Content-Type": "application/x-www-form-urlencoded" };
+  req.body = "command=" + (action === "off" ? "shutdown" : "reboot");
+  try {
+    await req.loadString();
+  } catch (e) {
+    return { ok: true, msg: powerSent(action) };
+  }
+  const code = req.response && req.response.statusCode;
+  if (code === 401) return { ok: false, auth: true, msg: "Proxmox refused the login. Enter it again." };
+  if (code === 403) return { ok: false, msg: `This Proxmox user isn't allowed to power off node "${nd.node}" (needs Sys.PowerMgmt).` };
+  if (code && code >= 300) return { ok: false, msg: `Proxmox didn't accept the command (HTTP ${code}).` };
+  return { ok: true, msg: powerSent(action) };
+}
+
+// --- Linux (Debian, Ubuntu, Fedora, ... any systemd distro) via the board-power helper ---
+function helperBase(s = SET) {
+  return (s.helperUrl || `http://${hostOf(s.baseUrl)}:${HELPER_PORT}`).replace(/\/+$/, "");
+}
+
+function helperPort(s = SET) {
+  const m = helperBase(s).match(/^https?:\/\/[^\/:]+:(\d+)/i);
+  return m ? Number(m[1]) : /^https:/i.test(helperBase(s)) ? 443 : 80;
+}
+
+// returns the HTTP status code, or 0 when the helper can't be reached
+async function helperCall(base, key, path, method) {
+  const req = new Request(base + path);
+  req.method = method;
+  req.headers = { Authorization: "Bearer " + key };
+  req.timeoutInterval = 8;
+  try {
+    await req.loadString();
+  } catch (e) {
+    return 0;
+  }
+  return (req.response && req.response.statusCode) || 0;
+}
+
+async function helperPower(action) {
+  if (!hasLogin("linux")) {
+    return { ok: false, msg: "Set up the power helper first: Settings > Server > Copy setup command." };
+  }
+  const base = helperBase();
+  const code = await helperCall(base, Keychain.get(HELPER_KEY), action === "off" ? "/shutdown" : "/reboot", "POST");
+  if (!code) return { ok: false, msg: "Can't reach the power helper at " + base + ". Is it set up on the server?" };
+  if (code === 401) return { ok: false, msg: "The helper refused the key. Copy the setup command from Settings and run it again." };
+  if (code >= 300) return { ok: false, msg: `The helper didn't accept the command (HTTP ${code}).` };
+  return { ok: true, msg: powerSent(action) };
+}
+
+// The helper: one Python 3 file (standard library only) run by systemd as root.
+// It only answers requests that carry the secret key, and only knows /health, /reboot and /shutdown.
+const HELPER_PY = `#!/usr/bin/env python3
+# board-power: lets the -board app reboot or shut down this server.
+# Remove it with: systemctl disable --now board-power; rm /usr/local/bin/board-power /etc/board-power.key /etc/systemd/system/board-power.service
+import hmac, json, os, socket, subprocess, threading, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+KEY = open("/etc/board-power.key").read().strip()
+PORT = int(os.environ.get("BOARD_POWER_PORT", "${HELPER_PORT}"))
+CMDS = {"/reboot": ["systemctl", "reboot"], "/shutdown": ["systemctl", "poweroff"]}
+
+class Handler(BaseHTTPRequestHandler):
+    def reply(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authed(self):
+        given = self.headers.get("Authorization", "").encode()
+        if hmac.compare_digest(given, ("Bearer " + KEY).encode()):
+            return True
+        time.sleep(1)  # slows down guessing
+        self.reply(401, {"ok": False, "error": "wrong key"})
+        return False
+
+    def do_GET(self):
+        if self.path != "/health":
+            return self.reply(404, {"ok": False})
+        if self.authed():
+            self.reply(200, {"ok": True, "host": socket.gethostname()})
+
+    def do_POST(self):
+        cmd = CMDS.get(self.path)
+        if not cmd:
+            return self.reply(404, {"ok": False})
+        if self.authed():
+            self.reply(200, {"ok": True})
+            threading.Timer(1.0, subprocess.run, [cmd]).start()
+
+    def log_message(self, *args):
+        pass
+
+ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+`;
+
+// What "Copy setup command" puts on the clipboard: paste it into an SSH session on the server.
+// It asks for sudo once (or runs straight away when you're root, e.g. on Proxmox).
+function helperSetupScript(key, port) {
+  return `$(command -v sudo) bash -c "$(cat <<'BOARD_SETUP'
+# -board power helper setup (Debian, Ubuntu, Fedora and other systemd Linux)
+set -e
+if ! command -v python3 >/dev/null; then
+  if command -v apt-get >/dev/null; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 </dev/null
+  elif command -v dnf >/dev/null; then dnf install -y -q python3 </dev/null
+  else echo "Please install python3 first, then paste this again."; exit 1; fi
+fi
+(umask 077; printf '%s\\n' '${key}' > /etc/board-power.key)
+cat > /usr/local/bin/board-power <<'BOARD_PY'
+${HELPER_PY}BOARD_PY
+chmod 755 /usr/local/bin/board-power
+cat > /etc/systemd/system/board-power.service <<'BOARD_UNIT'
+[Unit]
+Description=-board power helper (reboot / shut down from the -board app)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=BOARD_POWER_PORT=${port}
+ExecStart=/usr/bin/env python3 /usr/local/bin/board-power
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+BOARD_UNIT
+systemctl daemon-reload
+systemctl enable board-power >/dev/null 2>&1
+systemctl restart board-power
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow ${port}/tcp >/dev/null; fi
+if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then firewall-cmd -q --permanent --add-port=${port}/tcp && firewall-cmd -q --reload; fi
+echo "-board power helper is running on port ${port}. Go back to -board and tap Test connection."
+BOARD_SETUP
+)"
+`;
 }
 
 // d: { a: "restart" | "off", u, p } (u/p only when typed in the popup; otherwise the saved login is used)
 async function handlePower(d) {
   const a = d.a === "off" ? "off" : "restart";
-  let user = d.u;
-  let pass = d.p;
-  let saved = false;
-  if ((!user || !pass) && hasZimaLogin()) {
-    user = Keychain.get(ZIMA_KEYS.user);
-    pass = Keychain.get(ZIMA_KEYS.pass);
-    saved = true;
-  }
+  const P = SET.platform;
   let r;
-  if (!user || !pass) r = { ok: false, auth: true, msg: "" };
-  else r = await zimaPower(a, user, pass);
-  if (r.auth && saved) forgetZimaLogin();
-  if (!r.auth && !saved && user && pass && !/Can't reach/.test(r.msg)) {
-    Keychain.set(ZIMA_KEYS.user, user);
-    Keychain.set(ZIMA_KEYS.pass, pass);
+  if (P === "linux") {
+    r = await helperPower(a);
+  } else {
+    let user = d.u;
+    let pass = d.p;
+    let saved = false;
+    if ((!user || !pass) && hasLogin(P)) {
+      ({ user, pass } = savedLogin(P));
+      saved = true;
+    }
+    if (!user || !pass) r = { ok: false, auth: true, msg: "" };
+    else r = await (P === "proxmox" ? pvePower : zimaPower)(a, user, pass);
+    if (r.auth && saved) forgetLogin(P);
+    if (!r.auth && !r.net && !saved && user && pass) {
+      Keychain.set(LOGIN_KEYS[P].user, user);
+      Keychain.set(LOGIN_KEYS[P].pass, pass);
+    }
   }
   r.a = a;
-  r.hasLogin = hasZimaLogin();
+  r.hasLogin = hasLogin(P);
   return r;
+}
+
+// One line for "Test connection" about the Reboot / Shut down side of the chosen server type
+async function testPower(s) {
+  const P = s.platform;
+  if (P === "linux") {
+    const base = helperBase(s);
+    if (!hasLogin("linux")) return { ok: false, t: "Power helper: not set up yet (tap Copy setup command)" };
+    const code = await helperCall(base, Keychain.get(HELPER_KEY), "/health", "GET");
+    if (code === 200) return { ok: true, t: "Power helper: OK at " + base };
+    if (code === 401) return { ok: false, t: "Power helper: answers, but refused the key. Run the setup command again." };
+    return { ok: false, t: "Power helper: no answer at " + base + (code ? ` (HTTP ${code})` : "") };
+  }
+  const name = PLATFORMS[P].login;
+  const base = P === "proxmox" ? pveBase(s) : zimaBase(s);
+  if (hasLogin(P)) {
+    const { user, pass } = savedLogin(P);
+    if (P === "proxmox") {
+      const r = await pveLogin(user, pass, base);
+      if (!r.ticket) return { ok: false, t: "Proxmox: " + (r.auth ? "saved login was refused" : "no answer at " + base) };
+      const nd = await pveNode(base, r, s);
+      return nd.node ? { ok: true, t: `Proxmox: OK, saved login works (node ${nd.node})` } : { ok: false, t: "Proxmox: " + nd.error };
+    }
+    const r = await zimaLogin(user, pass, base);
+    return r.token
+      ? { ok: true, t: "ZimaOS: OK, saved login works" }
+      : { ok: false, t: "ZimaOS: " + (r.auth ? "saved login was refused" : "no answer at " + base) };
+  }
+  try {
+    const req = P === "proxmox" ? pveRequest(base + "/api2/json/version") : new Request(base);
+    req.timeoutInterval = 6;
+    await req.load();
+    return { ok: true, t: `${name}: reachable at ${base} (no login saved yet)` };
+  } catch (e) {
+    return { ok: false, t: `${name}: no answer at ${base}` };
+  }
 }
 
 // ---------- Settings sheet (gear icon): load / save / test / maintenance ----------
@@ -561,15 +871,13 @@ async function settingsOp(d) {
   const data = loadData();
   if (d.op === "load") {
     const [fs, net] = await Promise.all([api("fs").catch(() => null), api("network").catch(() => null)]);
-    const skipPath = /^\/(etc|run|dev|sys|proc|boot|snap|var\/lib\/docker)/;
-    const skipType = /^(overlay|tmpfs|squashfs|devtmpfs)$/;
     const mounts = Array.isArray(fs)
       ? fs
-          .filter((x) => x && x.mnt_point && !skipPath.test(x.mnt_point) && !skipType.test(x.fs_type || ""))
+          .filter((x) => x && x.mnt_point && isRealDrive(x))
           .map((x) => ({ mnt: x.mnt_point, size: x.size || 0, used: x.used || 0, dev: String(x.device_name || "").split("/").pop() }))
       : null;
     const ifaces = Array.isArray(net)
-      ? net.map((n) => n.interface_name).filter((n) => n && !/^(lo|docker|veth|br-|virbr)/.test(n))
+      ? net.map((n) => n.interface_name).filter((n) => n && !SKIP_IFACE.test(n))
       : null;
     let hasGpass = false;
     try {
@@ -585,7 +893,9 @@ async function settingsOp(d) {
       mounts,
       ifaces,
       hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
-      hasZimaLogin: hasZimaLogin(),
+      logins: { zimaos: hasLogin("zimaos"), proxmox: hasLogin("proxmox"), linux: hasLogin("linux") },
+      platforms: PLATFORMS,
+      helperPort: HELPER_PORT,
       hasGpass,
     };
   }
@@ -610,31 +920,36 @@ async function settingsOp(d) {
       const q = await glancesRequest(s, "quicklook", d.gpass || null);
       lines.push({ ok: true, t: `Glances: OK (${Date.now() - t0} ms${q && q.cpu_name ? ", " + q.cpu_name : ""})` });
     } catch (e) {
-      lines.push({ ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, the API version, and your VPN if you're away from home)" });
-    }
-    const zbase = (s.zimaUrl || `http://${hostOf(s.baseUrl)}`).replace(/\/+$/, "");
-    if (hasZimaLogin()) {
-      const r = await zimaLogin(Keychain.get(ZIMA_KEYS.user), Keychain.get(ZIMA_KEYS.pass), zbase);
-      lines.push(
-        r.token
-          ? { ok: true, t: "ZimaOS: OK, saved login works" }
-          : { ok: false, t: "ZimaOS: " + (r.auth ? "saved login was refused" : "no answer at " + zbase) }
-      );
-    } else {
+      // maybe it's the other Glances API version (distro packages are often Glances 3.x)
+      const other = s.apiVersion === 4 ? 3 : 4;
+      let otherOk = false;
       try {
-        const req = new Request(zbase);
-        req.timeoutInterval = 6;
-        await req.load();
-        lines.push({ ok: true, t: "ZimaOS: reachable at " + zbase + " (no login saved yet)" });
-      } catch (e) {
-        lines.push({ ok: false, t: "ZimaOS: no answer at " + zbase });
-      }
+        await glancesRequest({ ...s, apiVersion: other }, "quicklook", d.gpass || null);
+        otherOk = true;
+      } catch (e2) {}
+      lines.push(
+        otherOk
+          ? { ok: false, t: `Glances: answers with API version ${other}, not ${s.apiVersion}. Pick ${other} under GLANCES API VERSION.` }
+          : { ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, that Glances runs with -w, and your VPN if you're away from home)" }
+      );
     }
+    lines.push(await testPower(s));
     return { ok: true, lines };
   }
   if (d.op === "forget") {
-    forgetZimaLogin();
-    return { ok: true, msg: "ZimaOS login forgotten" };
+    const P = PLATFORMS[d.platform] ? d.platform : SET.platform;
+    forgetLogin(P);
+    return { ok: true, msg: P === "linux" ? "Helper key forgotten" : PLATFORMS[P].login + " login forgotten" };
+  }
+  if (d.op === "helper") {
+    // Linux power helper: keep the saved key (or save the new one made in the dashboard) and copy the setup command
+    const s = cleanSettings(d.s);
+    if (!hasLogin("linux")) {
+      if (!/^[a-f0-9]{32,128}$/.test(String(d.key || ""))) return { ok: false, error: "Couldn't make a key. Try again." };
+      Keychain.set(HELPER_KEY, d.key);
+    }
+    Pasteboard.copy(helperSetupScript(Keychain.get(HELPER_KEY), helperPort(s)));
+    return { ok: true, msg: "Setup command copied. Paste it into an SSH session on the server.", hasKey: true };
   }
   if (d.op === "restore") {
     data.hidden = d.id ? data.hidden.filter((x) => x !== d.id) : [];
@@ -900,7 +1215,7 @@ function sumStorage(disks) {
   let size = 0;
   let free = 0;
   for (const d of disks) {
-    const k = `${d.device}|${d.size}|${d.used}`;
+    const k = d.fstype === "zfs" ? driveKey({ device_name: d.device, fs_type: "zfs" }) : `${d.device}|${d.size}|${d.used}`;
     if (seen.has(k)) continue;
     seen.add(k);
     used += d.used || 0;
@@ -910,6 +1225,23 @@ function sumStorage(disks) {
   return { percent: size ? (used / size) * 100 : 0, used, size, free, count: seen.size };
 }
 
+// Mounts that aren't real drives: system folders, container layers, Proxmox's config and LXC file systems
+const SKIP_MNT = /^\/(etc|run|dev|sys|proc|boot|snap|var\/lib\/(docker|lxcfs|containers)|var\/snap)(\/|$)/;
+const SKIP_FSTYPE = /^(overlay|tmpfs|squashfs|devtmpfs|ramfs|nsfs|autofs|efivarfs|fuse|fuse\.lxcfs|fuse\.gvfsd-fuse|fuse\.portal|fusectl)$/;
+// Virtual network interfaces (Docker, Proxmox VM / container taps and firewall bridges, Kubernetes, LXD)
+const SKIP_IFACE = /^(lo|docker|veth|br-|virbr|tap|fwbr|fwpr|fwln|vnet|cali|flannel|cni|kube|lxcbr|lxdbr)/;
+
+function isRealDrive(d) {
+  return !SKIP_MNT.test(d.mnt_point || "") && !SKIP_FSTYPE.test(d.fs_type || "");
+}
+
+// The same storage seen at several mount points counts once. ZFS datasets (rpool/data, rpool/ROOT/pve-1, ...)
+// all share their pool's space, so they count once per pool.
+function driveKey(d) {
+  const dev = String(d.device_name || "");
+  return d.fs_type === "zfs" ? "zfs:" + dev.split("/")[0] : dev;
+}
+
 function pickDisks(fs) {
   let list = fs;
   if (SET.diskMounts.length) {
@@ -917,13 +1249,12 @@ function pickDisks(fs) {
       .map((m) => fs.find((d) => d.mnt_point === m))
       .filter(Boolean);
   } else {
-    const skipPath = /^\/(etc|run|dev|sys|proc|boot|snap|var\/lib\/docker)/;
-    const skipType = /^(overlay|tmpfs|squashfs|devtmpfs)$/;
     const seen = new Set();
+    // biggest first, so a ZFS pool is shown by its largest dataset
     list = fs
-      .filter((d) => !skipPath.test(d.mnt_point) && !skipType.test(d.fs_type || ""))
-      .filter((d) => (seen.has(d.device_name) ? false : seen.add(d.device_name)))
-      .sort((a, b) => b.size - a.size);
+      .filter(isRealDrive)
+      .sort((a, b) => b.size - a.size)
+      .filter((d) => (seen.has(driveKey(d)) ? false : seen.add(driveKey(d))));
   }
   return list.slice(0, SET.diskMounts.length ? 12 : SET.maxDisks).map((d) => ({
     name: d.mnt_point === "/" ? "Root" : d.mnt_point.split("/").filter(Boolean).pop(),
@@ -938,7 +1269,7 @@ function pickDisks(fs) {
 }
 
 function pickNetwork(net) {
-  const skip = /^(lo|docker|veth|br-|virbr)/;
+  const skip = SKIP_IFACE;
   const total = (n) => (n.bytes_recv || n.rx || 0) + (n.bytes_sent || n.tx || 0);
   let iface = SET.networkInterface
     ? net.find((n) => n.interface_name === SET.networkInterface)
@@ -1710,6 +2041,11 @@ html,body{background:var(--bg)}
 .blob{opacity:var(--glowop);transition:opacity .4s}
 body.noanim .blob{animation:none;will-change:auto}
 .sw.on{background:var(--acc)}
+.seg{display:flex;gap:3px;padding:3px;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.12);border-radius:14px}
+.seg button{flex:1;min-width:0;height:38px;border:0;border-radius:11px;background:none;color:#fff;font-size:14px;font-weight:700;font-family:inherit;opacity:.75;display:flex;align-items:center;justify-content:center;gap:7px}
+.seg button i{flex:none;width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.5);box-sizing:border-box}
+.seg button.on{background:var(--acc);color:var(--acc-ink);opacity:1}
+.seg button.on i{border:4px solid var(--acc-ink);background:var(--acc)}
 .btns button.ok,.shd button.ok,.lay.on{background:var(--acc);color:var(--acc-ink)}
 .modal{background:var(--panel)}
 .pmenu{background:var(--panel2)}
@@ -1753,8 +2089,8 @@ body.compact #svc:not(.wide),body.compact .gbody{gap:8px}
 <h2 id="cvt">REBOOT SERVER?</h2>
 <div class="cnote" id="cvn"></div>
 <div id="cvl">
-<div class="f"><label>ZIMAOS USERNAME</label><div class="in"><input id="cu" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username"></div></div>
-<div class="f"><label>ZIMAOS PASSWORD</label><div class="in"><input id="cp" type="password" autocomplete="current-password"></div></div>
+<div class="f"><label id="cul">USERNAME</label><div class="in"><input id="cu" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username"></div></div>
+<div class="f"><label id="cpl">PASSWORD</label><div class="in"><input id="cp" type="password" autocomplete="current-password"></div></div>
 <div class="fh">Asked once, then saved in the iOS Keychain.</div>
 </div>
 <div class="err" id="cer"></div>
@@ -2607,7 +2943,13 @@ function openPower(a, err, needLogin){
     ? "Every service goes offline until the server is back up, usually a minute or two."
     : "Every service goes offline. You'll have to switch the server back on by hand.";
   document.getElementById("cok").textContent = re ? "Reboot" : "Shut down";
-  var showL = needLogin || !st.hasLogin;
+  // Linux uses the helper's key from Settings, so it never asks for a login here
+  var showL = !!UI.login && (needLogin || !st.hasLogin);
+  if (UI.login) {
+    document.getElementById("cul").textContent = UI.login.toUpperCase() + " USERNAME";
+    document.getElementById("cpl").textContent = UI.login.toUpperCase() + " PASSWORD";
+    document.getElementById("cu").placeholder = UI.platform === "proxmox" ? "root@pam" : "";
+  }
   document.getElementById("cvl").style.display = showL ? "flex" : "none";
   document.getElementById("cp").value = "";
   document.getElementById("cer").textContent = err || "";
@@ -2623,7 +2965,7 @@ function confirmPower(){
   if (document.getElementById("cvl").style.display !== "none") {
     u = document.getElementById("cu").value.trim();
     p = document.getElementById("cp").value;
-    if (!u || !p) { document.getElementById("cer").textContent = "Enter your ZimaOS username and password"; return; }
+    if (!u || !p) { document.getElementById("cer").textContent = "Enter your " + UI.login + " username and password"; return; }
   }
   closePower();
   toast(pAct === "restart" ? "Sending reboot..." : "Sending shutdown...", 15000);
@@ -2642,7 +2984,7 @@ function toast(m, ms){
   tT = setTimeout(function(){ t.className = "toast"; }, ms || 2500);
 }
 // ---- Display settings that apply right away (sent with every button update) ----
-var UI = { cols: 2, power: true, widgetMax: 24, monOpen: false };
+var UI = { cols: 2, power: true, platform: "zimaos", login: "ZimaOS", widgetMax: 24, monOpen: false };
 function applyUi(u){
   if (!u) return;
   UI = u;
@@ -2831,6 +3173,30 @@ function sToggle(parent, label, key, hint){
   parent.appendChild(tg);
   if (hint) sHint(parent, hint);
 }
+// a row of radio buttons; after(v) runs when the choice changes
+function sRadio(parent, label, key, opts, after){
+  var f = sLabel(parent, label);
+  var row = document.createElement("div");
+  row.className = "seg";
+  row.setAttribute("role", "radiogroup");
+  opts.forEach(function(o){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", S.f[key] === o[0] ? "true" : "false");
+    if (S.f[key] === o[0]) b.className = "on";
+    b.innerHTML = "<i></i><span></span>";
+    b.querySelector("span").textContent = o[1];
+    b.onclick = function(){
+      if (S.busy || S.f[key] === o[0]) return;
+      S.f[key] = o[0];
+      if (after) after(o[0]);
+    };
+    row.appendChild(b);
+  });
+  f.appendChild(row);
+  return f;
+}
 // theme / look changes are previewed on the dashboard straight away
 function sChanged(key){
   if (LOOKK.indexOf(key) < 0) return;
@@ -2930,7 +3296,7 @@ function sRender(){
   sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
   sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
   sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
-  var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl("", I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
+  var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
   px.i.oninput = function(){ S.gpass = px.i.value; };
   pf.appendChild(px.w);
   if (I.hasGpass) {
@@ -2940,15 +3306,48 @@ function sRender(){
     });
     cg.style.alignSelf = "flex-start";
   }
-  sText(c, "ZIMAOS ADDRESS", "zimaUrl", I.host ? "http://" + I.host + " (default)" : "http://192.168.1.10", "url", "Used by Reboot / Shut down. Leave empty for the same server as Glances on port 80.");
   sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
-  if (I.hasZimaLogin) {
-    var zr = sRow(c, "ZimaOS login saved", "Stored in the iOS Keychain");
-    sChip(zr, "Forget", function(){
-      sSend({ op: "forget" }, function(r){ if (sMsg(r)) { I.hasZimaLogin = false; st.hasLogin = false; sRender(); } });
-    });
+
+  // ---------- SERVER TYPE (only changes how Reboot / Shut down reaches the server) ----------
+  var P = f.platform, hostPh = I.host || "192.168.1.10";
+  sRadio(c, "SERVER TYPE", "platform", [["zimaos", "ZimaOS"], ["proxmox", "Proxmox"], ["linux", "Linux"]], function(){ sRender(); });
+  if (P === "zimaos") {
+    sHint(c, "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.");
+    sText(c, "ZIMAOS ADDRESS", "zimaUrl", "http://" + hostPh + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on port 80.");
+  } else if (P === "proxmox") {
+    sHint(c, "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.");
+    sText(c, "PROXMOX ADDRESS", "proxmoxUrl", "https://" + hostPh + ":8006" + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on https port 8006.");
+    sText(c, "NODE NAME", "proxmoxNode", "Automatic (e.g. pve)", null, "Only needed in a cluster: the node to reboot, as shown in the Proxmox web UI.");
   } else {
-    sRow(c, "No ZimaOS login saved", "You'll be asked the first time you use Reboot / Shut down");
+    sHint(c, "Debian, Ubuntu Server, Fedora and other systemd Linux have no web API for reboot, so -board uses a tiny helper service on the server: one Python 3 file, protected by a secret key that stays on this phone and the server.");
+    sText(c, "HELPER ADDRESS", "helperUrl", "http://" + hostPh + ":" + I.helperPort + (I.host ? " (default)" : ""), "url", "Leave empty for the same server as Glances on port " + I.helperPort + ".");
+    var hb = sChip(c, I.logins.linux ? "Copy setup command" : "Create key & copy setup command", function(){
+      var k = "";
+      try {
+        var a = new Uint8Array(24);
+        crypto.getRandomValues(a);
+        for (var i = 0; i < a.length; i++) k += ("0" + a[i].toString(16)).slice(-2);
+      } catch (e) { k = ""; }
+      sSend({ op: "helper", s: S.f, key: k }, function(r){ if (sMsg(r)) { I.logins.linux = true; st.hasLogin = (UI.platform === "linux") || st.hasLogin; sRender(); } });
+    });
+    hb.style.alignSelf = "flex-start";
+    sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address.");
+  }
+  if (P !== "linux") {
+    var LN = I.platforms[P].login;
+    if (I.logins[P]) {
+      var zr = sRow(c, LN + " login saved", "Stored in the iOS Keychain");
+      sChip(zr, "Forget", function(){
+        sSend({ op: "forget", platform: P }, function(r){ if (sMsg(r)) { I.logins[P] = false; if (UI.platform === P) st.hasLogin = false; sRender(); } });
+      });
+    } else {
+      sRow(c, "No " + LN + " login saved", "You'll be asked the first time you use Reboot / Shut down");
+    }
+  } else if (I.logins.linux) {
+    var kr = sRow(c, "Helper key saved", "Stored in the iOS Keychain");
+    sChip(kr, "Forget", function(){
+      sSend({ op: "forget", platform: "linux" }, function(r){ if (sMsg(r)) { I.logins.linux = false; if (UI.platform === "linux") st.hasLogin = false; sRender(); } });
+    });
   }
   var res = document.createElement("div");
   res.className = "sres";
@@ -2988,7 +3387,7 @@ function sRender(){
     });
     sHint(c, "None picked = pick automatically. Paths are as the Glances container sees them.");
   } else {
-    var dx = sInputEl(f.diskMounts.join(", "), "/, /DATA", null);
+    var dx = sInputEl(f.diskMounts.join(", "), "/, /mnt/data", null);
     dx.i.oninput = function(){ f.diskMounts = dx.i.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean); };
     dl.appendChild(dx.w);
     sHint(c, "Couldn't reach Glances to list the drives, so type the paths, separated by commas. Empty = pick automatically.");
@@ -3023,7 +3422,7 @@ function sRender(){
   // ---------- WIDGET ----------
   c = sSec(b, "WIDGET");
   sNum(c, "REFRESH EVERY (MINUTES)", "refreshMinutes", "5", "iOS decides the exact moment, so this is the shortest gap, not a promise.");
-  sText(c, "CORNER BUTTON LINK", "linkUrl", "https://... (empty = no button)", "url", "A small button in the widget corner, e.g. your ZimaOS page.");
+  sText(c, "CORNER BUTTON LINK", "linkUrl", "https://... (empty = no button)", "url", "A small button in the widget corner, e.g. your ZimaOS or Proxmox page.");
   sToggle(c, "STATUS DOTS ON THE WIDGET", "widgetStatusDots", "Each widget refresh checks every button, which takes a couple of seconds.");
   sText(c, "WIDGET TITLE", "widgetTitle", "Same as the dashboard name");
   sSelect(c, "BUTTON ROWS", "widgetRows", [[1, "1 row (4 buttons)"], [2, "2 rows (8 buttons)"], [3, "3 rows (12 buttons)"], [4, "4 rows (16 buttons)"], [5, "5 rows (20 buttons)"], [6, "6 rows (24 buttons)"]], null, true);
@@ -3124,7 +3523,10 @@ function saveSettings(){
     if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
   }
   if (!/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
-  if (f.zimaUrl && !/^https?:\\/\\//i.test(f.zimaUrl)) { sEl("serr").textContent = "The ZimaOS address must start with http:// or https://"; return; }
+  var urls = [["zimaUrl", "ZimaOS"], ["proxmoxUrl", "Proxmox"], ["helperUrl", "helper"]];
+  for (i = 0; i < urls.length; i++) {
+    if (f[urls[i][0]] && !/^https?:\\/\\//i.test(f[urls[i][0]])) { sEl("serr").textContent = "The " + urls[i][1] + " address must start with http:// or https://"; return; }
+  }
   sSend({ op: "save", s: f, gpass: S.gpass, clearGpass: S.clearGpass }, function(r){
     if (sMsg(r)) { S.saved = true; closeSettings(); }
   });
@@ -3283,7 +3685,7 @@ async function showLiveDashboard(openStackId) {
         try {
           r = await handlePower(d);
         } catch (e) {
-          r = { ok: false, msg: "Something went wrong: " + ((e && e.message) || e), a: d.a, hasLogin: hasZimaLogin() };
+          r = { ok: false, msg: "Something went wrong: " + ((e && e.message) || e), a: d.a, hasLogin: hasLogin() };
         }
         try {
           await wv.evaluateJavaScript(`powerResult(${JSON.stringify(r)})`, false);
