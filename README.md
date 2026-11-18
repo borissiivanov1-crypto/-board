@@ -3,8 +3,8 @@
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
 The whole app is one file: `board_Blank.js`.
 
-**iPhone app:** a real app (Swift, with a home screen widget) that you install for free with SideStore or AltStore;
-see [iPhone app (SideStore / AltStore)](#iphone-app-sidestore--altstore) below.
+**iPhone app (work in progress):** a real app (Swift, with a home screen widget) to install for free with SideStore or
+AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 
 **Android:** a native version (Kotlin + Jetpack Compose) is in [`android/`](android/). Install
 [`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
@@ -144,6 +144,8 @@ Differences from the iPhone version:
 the APK is `app/build/outputs/apk/release/app-release.apk`. `./gradlew testReleaseUnitTest` runs the unit tests.
 
 ## iPhone app (SideStore / AltStore)
+
+> **Work in progress:** not compiled or tested yet, so there is no build to install. See [`ios/README.md`](ios/README.md).
 
 [`ios/`](ios/) is a native iPhone app version of the script. Its dashboard is the script's own page (so it looks and
 behaves exactly the same), backed by a Swift port of the script's logic, plus a WidgetKit home screen widget. It needs
