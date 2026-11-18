@@ -4,7 +4,8 @@ A live home-server dashboard and home screen widget for [Scriptable](https://scr
 The whole app is one file: `board_Blank.js`.
 
 **Android:** a native version (Kotlin + Jetpack Compose) is in [`android/`](android/). Install
-[`android/dist/board.apk`](android/dist/board.apk); see [Android app](#android-app) below.
+[`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
+[Android user manual](board_User_Manual_Android.docx). See also [Android app](#android-app) below.
 
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
@@ -119,6 +120,8 @@ with the same features, logic and look: several servers, LIVE / OFFLINE, Glances
 drag to rearrange, Widget layout, Reboot / Shut down for ZimaOS, Proxmox, TrueNAS, Unraid, Synology, OpenMediaVault
 and Linux (the same helper setup command), every theme and accent, Classic and Liquid Glass, the startup animation,
 and Settings with Test connection.
+
+Full guide: the [Android user manual](board_User_Manual_Android.docx) (Word document).
 
 **Install:** copy [`android/dist/board.apk`](android/dist/board.apk) to the phone and open it (allow installing from
 that source when asked). Android 8.0 or newer. The APK is signed with a development key, so it installs
