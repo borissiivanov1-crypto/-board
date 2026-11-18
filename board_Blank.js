@@ -1207,6 +1207,25 @@ async function settingsOp(d) {
     lines.push(await testPower(s));
     return { ok: true, lines };
   }
+  if (d.op === "login") {
+    // Settings > Server > Enter login: check the login against the server (address from the form), then save it
+    const P = d.platform;
+    if (!DRIVERS[P]) return { ok: false, error: "This server type doesn't use a login." };
+    const user = String(d.u || "").trim();
+    const pass = String(d.p || "");
+    if (!user || !pass) return { ok: false, error: "Enter a username and a password." };
+    const s = cleanSettings(d.s);
+    const base = platformBase(P, s);
+    const r = await DRIVERS[P](null, user, pass, base, s);
+    if (!r.ok) {
+      const why = r.msg || "no answer at " + base;
+      return { ok: false, error: (r.net ? why + ". The login wasn't saved: try again when the server can be reached." : why) };
+    }
+    Keychain.set(LOGIN_KEYS[P].user, user);
+    Keychain.set(LOGIN_KEYS[P].pass, pass);
+    const extra = (String(r.msg || "").match(/\(([^)]*)\)\s*$/) || [])[1];
+    return { ok: true, msg: `${PLATFORMS[P].login} login checked and saved` + (extra ? ` (${extra})` : "") };
+  }
   if (d.op === "forget") {
     const P = PLATFORMS[d.platform] ? d.platform : SET.platform;
     forgetLogin(P);
@@ -2343,6 +2362,8 @@ body.noanim .blob{animation:none;will-change:auto}
 .seg button.on{background:var(--acc);color:var(--acc-ink);opacity:1}
 .seg button.on i{border:4px solid var(--acc-ink);background:var(--acc)}
 .segw{flex-wrap:wrap}
+.slogin{display:flex;flex-direction:column;gap:12px;padding:12px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1)}
+.slogin .srow{gap:8px}
 .segw button{flex:1 1 30%}
 .btns button.ok,.shd button.ok,.lay.on{background:var(--acc);color:var(--acc-ink)}
 .modal{background:var(--panel)}
@@ -3555,6 +3576,10 @@ function openSettings(){
     S.f = JSON.parse(JSON.stringify(r.s));
     S.gpass = "";
     S.clearGpass = false;
+    S.loginOpen = null;
+    S.lu = "";
+    S.lp = "";
+    S.lerr = "";
     sEl("ssave").style.display = "";
     sRender();
   });
@@ -3846,13 +3871,56 @@ function sRender(){
   }
   if (P !== "linux" && P !== "none") {
     var LN = PL[P].login;
+    var openLogin = function(){ S.loginOpen = P; S.lu = ""; S.lp = ""; S.lerr = ""; sRender(); };
     if (I.logins[P]) {
       var zr = sRow(c, LN + " login saved", "Stored in the iOS Keychain");
+      sChip(zr, "Change", openLogin);
       sChip(zr, "Forget", function(){
         sSend({ op: "forget", platform: P }, function(r){ if (sMsg(r)) { I.logins[P] = false; if (UI.platform === P) st.hasLogin = false; sRender(); } });
       });
     } else {
-      sRow(c, "No " + LN + " login saved", "You'll be asked the first time you use Reboot / Shut down");
+      var nr = sRow(c, "No " + LN + " login saved", "Enter it now, or you'll be asked the first time you use Reboot / Shut down");
+      sChip(nr, "Enter login", openLogin);
+    }
+    // the login form (checked against the server before it's saved)
+    if (S.loginOpen === P) {
+      var lf = document.createElement("div");
+      lf.className = "slogin";
+      c.appendChild(lf);
+      var uf = sLabel(lf, LN.toUpperCase() + " USERNAME"), ux = sInputEl(S.lu, PL[P].userPh || "", null);
+      ux.i.setAttribute("autocomplete", "username");
+      ux.i.oninput = function(){ S.lu = ux.i.value; };
+      uf.appendChild(ux.w);
+      var pwf = sLabel(lf, LN.toUpperCase() + " PASSWORD"), pwx = sInputEl(S.lp, "", null, "password");
+      pwx.i.setAttribute("autocomplete", "current-password");
+      pwx.i.oninput = function(){ S.lp = pwx.i.value; };
+      pwf.appendChild(pwx.w);
+      if (S.lerr) {
+        var le = document.createElement("div");
+        le.className = "sres";
+        le.innerHTML = '<div class="bad"><i></i><span></span></div>';
+        le.querySelector("span").textContent = S.lerr;
+        lf.appendChild(le);
+      }
+      var lb = document.createElement("div");
+      lb.className = "srow";
+      lf.appendChild(lb);
+      sChip(lb, "Cancel", function(){ S.loginOpen = null; S.lp = ""; sRender(); });
+      sChip(lb, "Check & save login", function(){
+        if (!S.lu.trim() || !S.lp) { S.lerr = "Enter a username and a password."; sRender(); return; }
+        S.lerr = "";
+        sSend({ op: "login", platform: P, u: S.lu, p: S.lp, s: S.f }, function(r){
+          if (!r.ok) { S.lerr = r.error || "The login didn't work."; sRender(); return; }
+          I.logins[P] = true;
+          if (UI.platform === P) st.hasLogin = true;
+          S.loginOpen = null;
+          S.lp = "";
+          toast(r.msg, 3500);
+          sRender();
+        });
+      });
+      sHint(lf, "Checked against the server at the address above (even before you save Settings), then stored in the iOS Keychain." + (P === "proxmox" ? " Typing root means root@pam." : ""));
+      if (!S.lu) setTimeout(function(){ ux.i.focus(); }, 60);
     }
   } else if (P === "linux" && I.logins.linux) {
     var kr = sRow(c, "Helper key saved", "Stored in the iOS Keychain");

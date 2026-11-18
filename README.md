@@ -25,7 +25,8 @@ A new install has none picked, so there's no Reboot / Shut down menu until you c
 only that system's options.
 
 Accounts with two-factor login can't be used for Reboot / Shut down; make a separate administrator account for -board.
-Logins are stored in the iOS Keychain.
+Logins are stored in the iOS Keychain. Enter a login ahead of time with **Enter login** under the server type in Settings
+(it is checked against the server before it is saved), or wait to be asked the first time you use Reboot / Shut down.
 
 ## 1. Run Glances on the server
 
