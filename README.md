@@ -32,6 +32,17 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 2. Run it. Settings opens: enter the Glances address (e.g. `http://192.168.1.10:61208`), choose your **server type**, tap **Test connection**, then **Save**.
 3. Add a Scriptable widget to your home screen and pick this script.
 
+## Looks
+
+*Settings > Theme & look* has two optional extras, both off by default:
+
+- **Style**: *Classic* (the plain -board look) or *Liquid Glass* (iOS 26 style glass cards with a bright rim,
+  a third background glow, springy animation on presses, menus, sheets and drags, and glass rings and pills on the widget).
+  The change previews live behind the Settings sheet.
+- **Startup animation**: a short animated -board logo when the dashboard opens (tap to skip). Works with either style.
+
+Themes, accent colours, glow, corners, font and button size work with both styles.
+
 ## Reboot / Shut down per server type
 
 - **ZimaOS**: you're asked for your ZimaOS login the first time; it's saved in the iOS Keychain.

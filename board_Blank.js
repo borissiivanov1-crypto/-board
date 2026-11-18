@@ -33,6 +33,9 @@
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
 // - Hold the server name to rename it. Tap it for Reboot / Shut down (asks to confirm).
+// - Settings > Theme & look > Style: "Classic" (default) or "Liquid Glass" (iOS 26 style glass, springy
+//   animation on every press, menu and sheet, glass rings on the widget). "Startup animation" adds a short
+//   animated logo when the dashboard opens. Both are off by default.
 // - The gear icon opens Settings: server, monitoring, widget, buttons, theme & look, export / import.
 //   The values in CONFIG below are only the starting defaults; Settings saves your choices on the phone.
 // - Live polling only runs while the dashboard is open, so the widget stays light on battery.
@@ -135,6 +138,8 @@ const DEFAULTS = {
   corners: "round",                // round / sharp
   font: "system",                  // system / rounded / serif
   buttonSize: "normal",            // normal / compact
+  style: "classic",                // classic (the plain -board look) / glass (Liquid Glass: iOS 26 style glass and motion)
+  splash: false,                   // short animated startup screen when the dashboard opens
 };
 
 function clampNum(v, lo, hi, def) {
@@ -196,6 +201,8 @@ function cleanSettings(raw) {
   pick("corners", ["round", "sharp"]);
   pick("font", ["system", "rounded", "serif"]);
   pick("buttonSize", ["normal", "compact"]);
+  pick("style", ["classic", "glass"]);
+  bool("splash");
   return out;
 }
 
@@ -205,7 +212,7 @@ function loadSettings() {
 
 function lookSettings(s) {
   const o = {};
-  for (const k of ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize"]) o[k] = s[k];
+  for (const k of ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize", "style"]) o[k] = s[k];
   return o;
 }
 
@@ -495,6 +502,7 @@ function getPayload() {
       monOpen: SET.monitoringOpen,
       monFixed: SET.monitoringFixed,
       look: lookSettings(SET),
+      splash: SET.splash,
       themes: THEMES,
       accents: ACCENTS,
       glows: GLOW_LEVELS,
@@ -1582,6 +1590,16 @@ function ringImage(pct, color, size = 140) {
     dc.fillEllipse(new Rect(pt.x - lw / 2, pt.y - lw / 2, lw, lw));
   }
 
+  // Liquid Glass look: glass lens in the middle
+  if (SET.style === "glass") {
+    const lr = r - lw * 0.95;
+    dc.setFillColor(new Color("#ffffff", 0.07));
+    dc.fillEllipse(new Rect(cx - lr, cy - lr, lr * 2, lr * 2));
+    dc.setStrokeColor(new Color("#ffffff", 0.16));
+    dc.setLineWidth(1);
+    dc.strokeEllipse(new Rect(cx - lr, cy - lr, lr * 2, lr * 2));
+  }
+
   // value in the middle
   dc.setFont(Font.boldRoundedSystemFont(size * 0.25));
   dc.setTextColor(Color.white());
@@ -1589,6 +1607,25 @@ function ringImage(pct, color, size = 140) {
   dc.drawTextInRect(`${Math.round(pct)}%`, new Rect(0, cy - size * 0.16, size, size * 0.32));
 
   return dc.getImage();
+}
+
+// Widget pill / button background. Classic: flat see-through fill.
+// Liquid Glass: top-lit gradient fill + a thin bright rim (k = strength).
+function glassStack(st, radius, k, flatAlpha) {
+  if (SET.style !== "glass") {
+    st.backgroundColor = new Color("#ffffff", flatAlpha);
+    st.cornerRadius = radius.classic;
+    return;
+  }
+  const g = new LinearGradient();
+  g.colors = [new Color("#ffffff", 0.2 * k), new Color("#ffffff", 0.06 * k), new Color("#ffffff", 0.1 * k)];
+  g.locations = [0, 0.55, 1];
+  g.startPoint = new Point(0, 0);
+  g.endPoint = new Point(0.4, 1);
+  st.backgroundGradient = g;
+  st.borderColor = new Color("#ffffff", 0.22 * k);
+  st.borderWidth = 1;
+  st.cornerRadius = radius.glass;
 }
 
 function addSymbolText(parent, symbol, text, color) {
@@ -1643,8 +1680,7 @@ function addServiceGrid(w, prep) {
       pill.size = new Size(pw, 26);
       if (!s) continue;
       pill.centerAlignContent();
-      pill.backgroundColor = new Color("#ffffff", 0.1);
-      pill.cornerRadius = 8;
+      glassStack(pill, { classic: 8, glass: 9 }, 1, 0.1);
       pill.setPadding(0, 4, 0, 4);
       // a stack pill opens the live dashboard with that stack open
       pill.url =
@@ -1721,8 +1757,7 @@ async function buildWidget() {
   // status pill
   const pill = header.addStack();
   pill.centerAlignContent();
-  pill.backgroundColor = new Color("#ffffff", 0.1);
-  pill.cornerRadius = 9;
+  glassStack(pill, { classic: 9, glass: 10 }, 1, 0.1);
   pill.setPadding(3, 8, 3, 8);
   const time = new DateFormatter();
   time.dateFormat = "HH:mm";
@@ -1740,8 +1775,7 @@ async function buildWidget() {
     const btn = header.addStack();
     btn.size = new Size(24, 24);
     btn.centerAlignContent();
-    btn.backgroundColor = new Color("#ffffff", 0.14);
-    btn.cornerRadius = 12;
+    glassStack(btn, { classic: 12, glass: 12 }, 1.3, 0.14);
     btn.url = SET.linkUrl;
     btn.addSpacer();
     const sf = SFSymbol.named("arrow.up.right");
@@ -1797,8 +1831,7 @@ async function buildWidget() {
     w.addSpacer();
     const net = w.addStack();
     net.centerAlignContent();
-    net.backgroundColor = new Color("#ffffff", 0.08);
-    net.cornerRadius = 9;
+    glassStack(net, { classic: 9, glass: 11 }, 0.85, 0.08);
     net.setPadding(4, 10, 4, 10);
     addSymbolText(net, "arrow.down", `${formatBytes(stats.net.down)}/s`, new Color("#5ac8fa"));
     net.addSpacer();
@@ -2068,21 +2101,180 @@ body.compact #svc:not(.wide),body.compact .gbody{gap:8px}
 .swt{width:44px;height:44px;border-radius:50%;border:2px solid rgba(255,255,255,.15);padding:0;position:relative}
 .swt.on{border-color:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.18)}
 .swn{font-size:12px;opacity:.6;margin:2px 4px 0}
+/* ===================== LIQUID GLASS LOOK (Settings > Theme & look > Style) =====================
+   Every rule below only applies while body has the "glass" class. :where() adds no specificity,
+   so these rules override the classic ones exactly as the Liquid Glass edition does. */
+:root{--spring:cubic-bezier(.34,1.56,.64,1);--soft:cubic-bezier(.22,1,.36,1);--glassdark:rgba(14,18,34,.38)}
+@keyframes drift2{0%{transform:translate(-12vmax,-8vmax) scale(.85)}100%{transform:translate(14vmax,16vmax) scale(1.15)}}
+@keyframes liftup{from{transform:scale(.92)}}
+@keyframes rise{from{opacity:0;transform:translateY(16px) scale(.92)}}
+body:where(.glass){-webkit-font-smoothing:antialiased}
+:where(body.glass) h1{font-size:24px;letter-spacing:.1em}
+:where(body.glass) .blob{width:110vmax;height:110vmax;animation-duration:18s;filter:saturate(1.25)}
+:where(body.glass) .b3{position:absolute;width:75vmax;height:75vmax;border-radius:50%;top:35%;left:15%;background:radial-gradient(circle,color-mix(in srgb,var(--acc) 45%,transparent) 0%,transparent 65%);opacity:calc(var(--glowop)*.6);animation:drift2 23s ease-in-out infinite alternate;will-change:transform}
+body:where(.glass).noanim .b3{animation:none}
+:where(body.glass) header{position:relative;z-index:8}
+:where(body.glass) .topfade{position:fixed;top:0;left:0;right:0;height:calc(env(safe-area-inset-top,0px) + 44px);z-index:9;pointer-events:none;-webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);-webkit-mask-image:linear-gradient(#000 35%,transparent);mask-image:linear-gradient(#000 35%,transparent)}
+:where(body.glass) .card,:where(body.glass) .netcard,:where(body.glass) .svc,:where(body.glass) .monbtn,:where(body.glass) .live,:where(body.glass) .gear,:where(body.glass) .addbtn,:where(body.glass) .lay,:where(body.glass) .chip,:where(body.glass) .btns button,:where(body.glass) .sbtns button,:where(body.glass) .shd button,:where(body.glass) .scard,:where(body.glass) .seg,:where(body.glass) .svc:active,:where(body.glass) .monbtn:active,:where(body.glass) .addbtn:active,:where(body.glass) .gear:active,:where(body.glass) .chip:active,:where(body.glass) .sbtns button:active{background:linear-gradient(165deg,rgba(255,255,255,calc(var(--glass)*2.3)) 0%,rgba(255,255,255,calc(var(--glass)*.6)) 52%,rgba(255,255,255,calc(var(--glass)*1.3)) 100%);
+  border:0;
+  -webkit-backdrop-filter:blur(22px) saturate(185%);backdrop-filter:blur(22px) saturate(185%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),inset 0 -1px 0 rgba(255,255,255,.05),0 12px 30px -10px rgba(0,0,0,.5);}
+:where(body.glass) .card,:where(body.glass) .netcard,:where(body.glass) .svc,:where(body.glass) .monbtn,:where(body.glass) .live,:where(body.glass) .gear,:where(body.glass) .addbtn,:where(body.glass) .lay,:where(body.glass) .chip,:where(body.glass) .btns button,:where(body.glass) .sbtns button,:where(body.glass) .shd button,:where(body.glass) .scard,:where(body.glass) .modal,:where(body.glass) .pmenu button,:where(body.glass) .seg{position:relative}
+:where(body.glass) .modal,:where(body.glass) .pmenu,:where(body.glass) .toast{background:linear-gradient(165deg,rgba(255,255,255,.17),rgba(255,255,255,.04) 55%,rgba(255,255,255,.08)),var(--glassdark);
+  border:0;-webkit-backdrop-filter:blur(40px) saturate(190%);backdrop-filter:blur(40px) saturate(190%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 30px 70px -10px rgba(0,0,0,.6);}
+:where(body.glass) .card::before,:where(body.glass) .netcard::before,:where(body.glass) .svc::before,:where(body.glass) .monbtn::before,:where(body.glass) .live::before,:where(body.glass) .gear::before,:where(body.glass) .addbtn::before,:where(body.glass) .lay::before,:where(body.glass) .chip::before,:where(body.glass) .btns button::before,:where(body.glass) .sbtns button::before,:where(body.glass) .shd button::before,:where(body.glass) .scard::before,:where(body.glass) .modal::before,:where(body.glass) .pmenu::before,:where(body.glass) .toast::before,:where(body.glass) .seg::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(140deg,rgba(255,255,255,.62),rgba(255,255,255,.14) 28%,rgba(255,255,255,0) 48%,rgba(255,255,255,.06) 68%,rgba(255,255,255,.34));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;}
+:where(body.glass) .card::after,:where(body.glass) .netcard::after,:where(body.glass) .svc::after,:where(body.glass) .monbtn::after,:where(body.glass) .live::after,:where(body.glass) .gear::after,:where(body.glass) .addbtn::after,:where(body.glass) .lay::after,:where(body.glass) .chip::after,:where(body.glass) .btns button::after,:where(body.glass) .sbtns button::after,:where(body.glass) .shd button::after,:where(body.glass) .pmenu button::after,:where(body.glass) .seg button::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(circle at var(--mx,50%) var(--my,50%),rgba(255,255,255,.34),rgba(255,255,255,.08) 35%,rgba(255,255,255,0) 65%);
+  opacity:0;transition:opacity .6s var(--soft);}
+:where(body.glass) .prs::after{opacity:1;transition:opacity .07s}
+:where(body.glass) .card,:where(body.glass) .netcard,:where(body.glass) .svc,:where(body.glass) .monbtn,:where(body.glass) .live,:where(body.glass) .gear,:where(body.glass) .addbtn,:where(body.glass) .lay,:where(body.glass) .chip,:where(body.glass) .btns button,:where(body.glass) .sbtns button,:where(body.glass) .shd button,:where(body.glass) .pmenu button,:where(body.glass) .swt,:where(body.glass) .seg button{transition:transform .6s var(--spring),opacity .35s,background .3s,box-shadow .3s;}
+:where(body.glass) .prs{transform:scale(.94)}
+:where(body.glass) .svc.prs,:where(body.glass) .grph.prs{transform:scale(.92);transition:transform .5s cubic-bezier(.2,.8,.2,1),opacity .3s}
+:where(body.glass) .card.prs{transform:scale(.965)}
+:where(body.glass) .card.big.prs{transform:scale(.99)}
+:where(body.glass) .addbtn.prs{transform:scale(.88) rotate(90deg)}
+:where(body.glass) .gear svg{transition:transform .7s var(--spring)}
+:where(body.glass) .gear.prs svg{transform:rotate(75deg)}
+:where(body.glass) .swt.prs{transform:scale(.85)}
+:where(body.glass) .card,:where(body.glass) .netcard{border-radius:30px}
+:where(body.glass) .svc{border-radius:24px}
+:where(body.glass) .monbtn{border-radius:24px}
+:where(body.glass) .modal{border-radius:36px}
+:where(body.glass) .live{padding:7px 13px}
+:where(body.glass) .gear{width:36px;height:36px}
+:where(body.glass) .addbtn{width:58px;height:58px;border-radius:50%;font-size:30px}
+:where(body.glass) .lay{padding:7px 14px}
+:where(body.glass) .seg{border-radius:16px}
+:where(body.glass) .seg button{position:relative;border-radius:13px}
+:where(body.glass) .lay.on,:where(body.glass) .btns button.ok,:where(body.glass) .shd button.ok,:where(body.glass) .lay.on:active,:where(body.glass) .seg button.on{background:linear-gradient(180deg,rgba(255,255,255,.42),rgba(255,255,255,0) 58%),var(--acc);color:var(--acc-ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 8px 22px -8px var(--acc)}
+:where(body.glass) .btns button.del{background:linear-gradient(180deg,rgba(255,255,255,.38),rgba(255,255,255,0) 58%),#ff5d73;box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 8px 22px -8px #ff5d73}
+:where(body.glass) .btns button,:where(body.glass) .sbtns button{height:48px;border-radius:16px}
+:where(body.glass) .nm{font-weight:650}
+:where(body.glass) #hid .svc{opacity:.7}
+:where(body.glass) .svc.over{opacity:.32;border-style:none}
+:where(body.glass) .wide .svc{border-radius:12px}
+:where(body.glass) .svc.lifted,:where(body.glass) .grp.lifted{opacity:.15;transform:scale(.88)}
+:where(body.glass) .svc.ghost,:where(body.glass) .grph.ghost{background:linear-gradient(165deg,rgba(255,255,255,.3),rgba(255,255,255,.1)),rgba(30,36,60,.35);
+  -webkit-backdrop-filter:blur(24px) saturate(190%);backdrop-filter:blur(24px) saturate(190%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 28px 60px -8px rgba(0,0,0,.65);
+  transform:scale(1.1);animation:liftup .45s var(--spring);transition:none;}
+:where(body.glass) .ds,:where(body.glass) .gbox,:where(body.glass) .drv{background:rgba(255,255,255,.06);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),inset 0 0 0 .5px rgba(255,255,255,.06)}
+:where(body.glass) .ds{border-radius:16px}
+:where(body.glass) .pb,:where(body.glass) .cores div{background:rgba(255,255,255,.08);box-shadow:inset 0 1px 2px rgba(0,0,0,.25)}
+:where(body.glass) .pb i,:where(body.glass) .cores i{box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
+:where(body.glass) .track{stroke:rgba(255,255,255,.09)}
+:where(body.glass) .arc{transition:stroke-dashoffset 1.4s var(--soft),stroke .6s}
+:where(body.glass) .ringwrap::before{content:"";position:absolute;inset:17%;border-radius:50%;background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.16),rgba(255,255,255,.02) 70%);box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -10px 20px rgba(0,0,0,.18)}
+:where(body.glass) .sd{transition:background .5s,box-shadow .5s}
+:where(body.glass) .sd.up{box-shadow:0 0 0 3px rgba(52,224,161,.16),0 0 10px rgba(52,224,161,.9)}
+:where(body.glass) .sd.dn{box-shadow:0 0 0 3px rgba(255,93,115,.16),0 0 10px rgba(255,93,115,.9)}
+:where(body.glass) .sd.part{box-shadow:0 0 0 3px rgba(255,180,84,.16),0 0 10px rgba(255,180,84,.9)}
+:where(body.glass) .in{background:rgba(255,255,255,.06);border:0;border-radius:16px;box-shadow:inset 0 1px 3px rgba(0,0,0,.3),inset 0 0 0 .5px rgba(255,255,255,.14);transition:box-shadow .35s var(--soft),background .35s}
+:where(body.glass) .in:focus-within{background:rgba(255,255,255,.11);box-shadow:inset 0 1px 3px rgba(0,0,0,.25),0 0 0 1.5px var(--acc),0 0 22px -4px var(--acc)}
+:where(body.glass) .sw{background:rgba(120,120,135,.32);box-shadow:inset 0 1px 3px rgba(0,0,0,.3),inset 0 0 0 .5px rgba(255,255,255,.12);transition:background .4s var(--soft)}
+:where(body.glass) .sw.on{background:var(--acc)}
+:where(body.glass) .sw i{transition:transform .5s var(--spring),width .35s var(--spring),left .35s var(--spring),background .3s,box-shadow .3s}
+:where(body.glass) .sw:active i{width:30px;background:rgba(255,255,255,.6);box-shadow:inset 0 1px 1px rgba(255,255,255,.95),inset 0 -1px 2px rgba(0,0,0,.1),0 3px 10px rgba(0,0,0,.35)}
+:where(body.glass) .sw.on:active i{transform:translateX(10px)}
+:where(body.glass) .swt{transition:transform .5s var(--spring),box-shadow .3s,border-color .3s}
+:where(body.glass) .swt.on{transform:scale(1.08)}
+:where(body.glass) #ov,:where(body.glass) #mv,:where(body.glass) #rv,:where(body.glass) #gv,:where(body.glass) #pv,:where(body.glass) #cv,:where(body.glass) #sv{display:flex!important;visibility:hidden;opacity:0;pointer-events:none;background:rgba(0,0,0,.28);
+  -webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
+  transition:opacity .3s var(--soft),visibility 0s linear .35s,-webkit-backdrop-filter .35s,backdrop-filter .35s;}
+:where(body.glass) #ov.show,:where(body.glass) #mv.show,:where(body.glass) #rv.show,:where(body.glass) #gv.show,:where(body.glass) #pv.show,:where(body.glass) #cv.show,:where(body.glass) #sv.show{visibility:visible;opacity:1;pointer-events:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+  transition:opacity .25s var(--soft),visibility 0s,-webkit-backdrop-filter .4s,backdrop-filter .4s;}
+:where(body.glass) .modal{animation:none;transform:scale(.84) translateY(18px);opacity:0;transition:transform .3s var(--soft),opacity .22s}
+:where(body.glass) .show>.modal{transform:none;opacity:1;transition:transform .6s var(--spring),opacity .25s}
+:where(body.glass) #sv>.modal{transform:translateY(90px) scale(.96)}
+:where(body.glass) #sv.show>.modal{transform:none}
+:where(body.glass) .show>.modal>*{animation:rise .55s var(--spring) both}
+:where(body.glass) .show>.modal>*:nth-child(2){animation-delay:.03s}
+:where(body.glass) .show>.modal>*:nth-child(3){animation-delay:.06s}
+:where(body.glass) .show>.modal>*:nth-child(4){animation-delay:.09s}
+:where(body.glass) .show>.modal>*:nth-child(5){animation-delay:.12s}
+:where(body.glass) .show>.modal>*:nth-child(6){animation-delay:.15s}
+:where(body.glass) .show>.modal>*:nth-child(7){animation-delay:.18s}
+:where(body.glass) .show>.modal>*:nth-child(n+8){animation-delay:.21s}
+:where(body.glass) .show>.modal .btns.col button{animation:rise .55s var(--spring) both}
+:where(body.glass) .show>.modal .btns.col button:nth-child(2){animation-delay:.05s}
+:where(body.glass) .show>.modal .btns.col button:nth-child(3){animation-delay:.1s}
+:where(body.glass) .show>.modal .btns.col button:nth-child(4){animation-delay:.15s}
+:where(body.glass) .show>.modal .btns.col button:nth-child(n+5){animation-delay:.2s}
+:where(body.glass) .pmenu{background:linear-gradient(165deg,rgba(255,255,255,.16),rgba(255,255,255,.03) 55%,rgba(255,255,255,.07)),rgba(16,20,36,.8)}
+:where(body.glass) .pmenu{display:flex!important;visibility:hidden;opacity:0;transform:scale(.35) translate(-14px,-30px);transform-origin:14px 0;border-radius:22px;
+  transition:transform .3s var(--soft),opacity .18s,visibility 0s linear .3s;animation:none!important}
+:where(body.glass) .tw.open .pmenu{visibility:visible;opacity:1;transform:none;transition:transform .55s var(--spring),opacity .18s,visibility 0s;animation:none!important}
+:where(body.glass) .tw.open .pmenu button{animation:rise .5s var(--spring) both}
+:where(body.glass) .tw.open .pmenu button:nth-child(2){animation-delay:.06s}
+:where(body.glass) .pmenu button{border-radius:14px}
+:where(body.glass) .tchev{transition:transform .5s var(--spring)}
+:where(body.glass) .mon{transition:grid-template-rows .6s var(--soft)}
+:where(body.glass) .moninner{margin:0 -16px;padding:0 16px;opacity:0;transition:opacity .25s}
+:where(body.glass) .mon.open>.moninner{opacity:1;transition:opacity .5s .06s}
+:where(body.glass) .monpad{padding-bottom:16px}
+:where(body.glass) .gbody{padding-bottom:14px}
+:where(body.glass) .monbtn svg{transition:transform .6s var(--spring)}
+:where(body.glass) .toast{border-radius:22px;padding:12px 18px;transform:translate(-50%,40px) scale(.85);transition:opacity .3s,transform .6s var(--spring)}
+:where(body.glass) .toast.show{transform:translate(-50%,0) scale(1)}
+:where(body.glass) .detail.fresh>*{animation:rise .6s var(--spring) both}
+:where(body.glass) .detail.fresh>*:nth-child(2){animation-delay:.05s}
+:where(body.glass) .detail.fresh>*:nth-child(3){animation-delay:.1s}
+:where(body.glass) .detail.fresh>*:nth-child(4){animation-delay:.15s}
+:where(body.glass) .detail.fresh>*:nth-child(5){animation-delay:.2s}
+:where(body.glass) .detail.fresh>*:nth-child(n+6){animation-delay:.25s}
+:where(body.glass) .card.big .detail{animation:none}
+:where(body.glass) .enter{animation:rise .75s var(--spring) both;animation-delay:calc(var(--i,0) * 32ms)}
+:where(body.glass) .intro{animation:rise .9s var(--spring) both}
+body:where(.glass):not(.ready) .enter,body:where(.glass):not(.ready) .intro{animation-play-state:paused}
+:where(body.glass) .ssec.enter{animation-delay:calc(var(--i,0) * 55ms)}
+@media (prefers-reduced-motion:reduce){body:where(.glass) .blob,body:where(.glass) .b3{animation:none}body:where(.glass) .enter,body:where(.glass) .intro{animation-duration:.01s}}
+/* ---------- startup screen (Settings > Theme & look > Startup animation; works with either style) ---------- */
+#splash{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;background:var(--bg);overflow:hidden;
+  transition:opacity .7s var(--soft),transform .9s var(--soft),filter .7s var(--soft)}
+#splash.out{opacity:0;transform:scale(1.25);filter:blur(16px);pointer-events:none}
+.sp-glow{position:absolute;width:120vmax;height:120vmax;border-radius:50%;opacity:calc(var(--glowop) * 1.3);animation:spglow 2.4s var(--soft) both}
+.sp-g1{background:radial-gradient(circle,rgba(var(--g1),.7),rgba(var(--g1),0) 60%);top:-60vmax;left:-50vmax}
+.sp-g2{background:radial-gradient(circle,rgba(var(--g2),.7),rgba(var(--g2),0) 60%);bottom:-60vmax;right:-50vmax}
+@keyframes spglow{from{transform:scale(.4);opacity:0}}
+.sp-orb{position:relative;width:138px;height:138px;border-radius:42px;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(160deg,rgba(255,255,255,.22),rgba(255,255,255,.04) 55%,rgba(255,255,255,.1));
+  -webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(255,255,255,.08),0 30px 60px -12px rgba(0,0,0,.6);
+  animation:orbin 1s var(--spring) both;overflow:hidden}
+.sp-orb::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.2px;background:linear-gradient(140deg,rgba(255,255,255,.8),rgba(255,255,255,.1) 35%,rgba(255,255,255,0) 55%,rgba(255,255,255,.45));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+.sp-orb::after{content:"";position:absolute;top:-50%;left:-80%;width:60%;height:200%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);transform:rotate(20deg);animation:sweep 1.1s .55s var(--soft) both}
+@keyframes sweep{from{left:-80%}to{left:150%}}
+@keyframes orbin{0%{transform:scale(.2) rotate(-25deg);opacity:0;border-radius:69px}100%{transform:none;opacity:1}}
+.sp-orb svg{position:absolute;inset:13px;width:auto;height:auto;overflow:visible}
+.sp-tr{fill:none;stroke:rgba(255,255,255,.12);stroke-width:8}
+.sp-arc{fill:none;stroke:var(--acc);stroke-width:8;stroke-linecap:round;stroke-dasharray:301.6;stroke-dashoffset:301.6;transform:rotate(-90deg);transform-origin:60px 60px;filter:drop-shadow(0 0 8px var(--acc));animation:spdraw 1s .2s var(--soft) forwards}
+@keyframes spdraw{to{stroke-dashoffset:52}}
+.sp-b{position:relative;font-size:40px;font-weight:900;letter-spacing:-.05em;animation:spb .7s .4s var(--spring) both}
+@keyframes spb{from{opacity:0;transform:scale(.4)}}
+.sp-name{font-size:14px;font-weight:800;letter-spacing:.34em;opacity:.85;animation:spname 1s .45s var(--soft) both;padding-left:.34em}
+@keyframes spname{from{opacity:0;letter-spacing:1.1em;filter:blur(8px)}}
+body:not(.boot) #splash,body:not(.boot) #splash *{animation-play-state:paused!important}
+body:not(.splashon) #splash{display:none}
 </style></head><body>
-<div class="bg"><div class="blob b1"></div><div class="blob b2"></div></div>
+<div id="splash" onclick="skipSplash()"><div class="sp-glow sp-g1"></div><div class="sp-glow sp-g2"></div><div class="sp-orb"><svg viewBox="0 0 120 120"><circle class="sp-tr" cx="60" cy="60" r="48"/><circle class="sp-arc" cx="60" cy="60" r="48"/></svg><div class="sp-b">-b</div></div><div class="sp-name">-BOARD</div></div>
+<div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="b3"></div></div>
+<div class="topfade"></div>
 <main>
-<header><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot" id="dot"></div><span id="st">LIVE</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
-<div class="monwrap"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
+<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot" id="dot"></div><span id="st">LIVE</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
 <div id="grid"></div>
 <div class="netcard">
 <div class="net"><span class="arrow dn">&#8595;</span><b id="down">0 B/s</b><span>DOWNLOAD</span></div>
 <div class="net"><span class="arrow up">&#8593;</span><b id="up">0 B/s</b><span>UPLOAD</span></div>
 </div>
 </div></div></div></div>
-<div class="sechead"><div class="sec" id="sect">SERVICES</div><button class="lay" id="layb" onclick="toggleMode()">Widget layout</button></div>
+<div class="sechead intro" style="animation-delay:.14s"><div class="sec" id="sect">SERVICES</div><button class="lay" id="layb" onclick="toggleMode()">Widget layout</button></div>
 <div id="svc"></div>
 <div id="wextra" style="display:none"><div class="wnote" id="wnote">The large widget fits 24 buttons. Dimmed ones will not show. Press, hold and drag to reorder, or drag a button between the two panels to show or hide it.</div><div id="hidwrap" style="display:none"><div class="sec" style="margin:0 4px 8px">NOT ON WIDGET</div><div id="hid" class="wide"></div></div></div>
-<div class="addwrap" id="addwrap"><button class="addbtn" onclick="openAdd()">+</button></div>
+<div class="addwrap intro" style="animation-delay:.3s" id="addwrap"><button class="addbtn" onclick="openAdd()">+</button></div>
 </main>
 <div id="cv" onclick="if(event.target===this&&Date.now()>=ign)closePower()">
 <div class="modal">
@@ -2162,7 +2354,8 @@ function fmt(b){
 function card(id, label){
   if (cards[id]) { cards[id].l.textContent = label; return cards[id]; }
   var el = document.createElement("div");
-  el.className = "card";
+  el.className = "card enter";
+  el.style.setProperty("--i", Object.keys(cards).length);
   el.innerHTML = '<div class="ringwrap"><svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="arc" cx="60" cy="60" r="52"/></svg><div class="num">0<small>%</small></div></div><div class="lbl"></div><div class="detail"></div>';
   el.addEventListener("click", function(){ toggleCard(id); });
   document.getElementById("grid").appendChild(el);
@@ -2339,7 +2532,7 @@ function toggleMon(){
   monOpen = !monOpen;
   document.getElementById("mon").className = monOpen ? "mon open" : "mon";
   document.getElementById("monb").className = monOpen ? "monbtn open" : "monbtn";
-  if (monOpen) replay();
+  if (monOpen) { replay(); restagger(document.querySelectorAll("#grid .card, .netcard")); }
   // an enlarged card's details are only fetched while the panel is open
   if (expanded) location.href = "exp://go?k=" + (monOpen ? expanded : "");
 }
@@ -2379,6 +2572,18 @@ function saveRename(){
   el.addEventListener("contextmenu", function(e){ e.preventDefault(); });
 })();
 function toggleCard(id){
+  var els = [];
+  for (var k in cards) els.push(cards[k].el);
+  els.push(document.querySelector(".netcard"), document.querySelector(".sechead"), document.getElementById("svc"), document.getElementById("addwrap"));
+  flipEls(els, function(){ toggleCardRaw(id); }, { clip: true });
+  if (isGlass() && expanded && cards[expanded]) {
+    var dt = cards[expanded].det;
+    dt.classList.add("fresh");
+    clearTimeout(dt._ft);
+    dt._ft = setTimeout(function(){ dt.classList.remove("fresh"); }, 1100);
+  }
+}
+function toggleCardRaw(id){
   var o = cards[id];
   if (!o) return;
   if (expanded === id) {
@@ -2461,12 +2666,15 @@ function bindPress(a, sv, drag, moveEl){
 }
 function startDrag(){
   pTimer = null;
+  clearPress();
   fired = true;
   if (!pDrag) { ign = Date.now() + 450; showMenu(pSv); return; }
   dragging = true;
   moved = false;
   startOrder = sig();
-  var r = pH.getBoundingClientRect();
+  var r = pH.getBoundingClientRect(), rw = pH.offsetWidth, rh = pH.offsetHeight;
+  // measured while squished by the press (glass look): use the real size, centred on the same spot
+  r = { left: r.left + (r.width - rw) / 2, top: r.top + (r.height - rh) / 2, width: rw, height: rh };
   ox = sx - r.left; oy = sy - r.top;
   ghost = pH.cloneNode(true);
   ghost.className = pH === pEl ? "svc ghost" : "monbtn grph ghost";
@@ -2498,11 +2706,11 @@ function reorder(x, y){
       if (!isGrp && c.classList.contains("grp")) {
         var gb = c.querySelector(".mon.open .gbody");
         if (gb) {
-          var br = gb.getBoundingClientRect();
-          if (x >= br.left && x <= br.right && y >= br.top - 8 && y <= br.bottom + 8) continue;
+          var br = gb.getBoundingClientRect(), off = rectOf(c).top - c.getBoundingClientRect().top;
+          if (x >= br.left && x <= br.right && y >= br.top + off - 8 && y <= br.bottom + off + 8) continue;
         }
       }
-      r = c.getBoundingClientRect();
+      r = rectOf(c);
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
         var par = c.parentNode, before = false;
         if (pEl.parentNode === par) {
@@ -2512,8 +2720,10 @@ function reorder(x, y){
           }
         }
         // before === true: dragged item is currently ahead of c in the same panel, so move it after c
-        if (before) par.insertBefore(pEl, c.nextSibling);
-        else par.insertBefore(pEl, c);
+        moveFlip(function(){
+          if (before) par.insertBefore(pEl, c.nextSibling);
+          else par.insertBefore(pEl, c);
+        });
         markOverflow();
         return;
       }
@@ -2528,11 +2738,11 @@ function reorder(x, y){
     var lastC = null;
     for (i = 0; i < k.length; i++) if (k[i] !== pEl) lastC = k[i];
     if (!lastC) {
-      if (pEl.parentNode !== box) { box.appendChild(pEl); markOverflow(); }
+      if (pEl.parentNode !== box) { moveFlip(function(){ box.appendChild(pEl); }); markOverflow(); }
       return;
     }
-    if (y > lastC.getBoundingClientRect().bottom && box.lastElementChild !== pEl) {
-      box.appendChild(pEl);
+    if (y > rectOf(lastC).bottom && box.lastElementChild !== pEl) {
+      moveFlip(function(){ box.appendChild(pEl); });
       markOverflow();
       return;
     }
@@ -2658,6 +2868,7 @@ function toggleGroup(id){
   if (!w) return;
   w.querySelector(".grph").className = openG[id] ? "monbtn grph open" : "monbtn grph";
   w.querySelector(".mon").className = openG[id] ? "mon open" : "mon";
+  if (openG[id]) restagger(w.querySelectorAll(".gbody > .svc"));
 }
 function focusStack(id){
   if (!gmap[id]) return;
@@ -2709,7 +2920,15 @@ function draw(){
   document.getElementById("addwrap").style.display = wide ? "none" : "";
   markOverflow();
   applyDots();
+  if (animDraw) {
+    animDraw = false;
+    if (isGlass()) {
+      var all = [].slice.call(box.children).concat([].slice.call(hb.children));
+      all.forEach(function(e, i){ e.style.setProperty("--i", Math.min(i, 18)); e.classList.add("enter"); });
+    }
+  }
 }
+var animDraw = false;
 function renderServices(p){
   st = p;
   applyUi(p.ui);
@@ -2721,12 +2940,16 @@ function renderServices(p){
 }
 function toggleMode(){
   mode = mode === "dash" ? "widget" : "dash";
+  animDraw = true;
   draw();
 }
 function init(t, p){
   document.getElementById("title").textContent = t;
+  animDraw = true;
   renderServices(p);
   if (UI.monOpen && !monOpen) toggleMon();
+  // startup screen only when it's turned on in Settings
+  if (UI.splash) boot(); else skipSplash(true);
 }
 function showMenu(sv){
   if (sv.kind === "group") { openStack(sv); return; }
@@ -3002,7 +3225,7 @@ function applyUi(u){
 }
 
 // ---- Theme & look ----
-var LOOKK = ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize"];
+var LOOKK = ["theme", "accent", "glow", "movingBg", "cardStyle", "corners", "font", "buttonSize", "style"];
 function lookVars(look, U){
   var t = U.themes[look.theme] || U.themes.aurora;
   var a = U.accents[look.accent];
@@ -3033,6 +3256,7 @@ function applyLook(look, U){
   b.toggle("frnd", look.font === "rounded");
   b.toggle("fserif", look.font === "serif");
   b.toggle("compact", look.buttonSize === "compact");
+  b.toggle("glass", look.style === "glass");
 }
 
 // ---- Settings sheet (gear icon) ----
@@ -3457,6 +3681,11 @@ function sRender(){
 
   // ---------- THEME & LOOK ----------
   c = sSec(b, "THEME & LOOK");
+  sRadio(c, "STYLE", "style", [["classic", "Classic"], ["glass", "Liquid Glass"]], function(){ sChanged("style"); sRender(); });
+  sHint(c, f.style === "glass"
+    ? "Liquid Glass: iOS 26 style glass cards with a bright rim, a third background glow, springy animation on every press, menu and sheet, and glass rings on the widget."
+    : "Classic: the plain -board look. Switch to Liquid Glass for glass cards and animations.");
+  sToggle(c, "STARTUP ANIMATION", "splash", "A short animated -board logo when the dashboard opens (tap it to skip). Works with either style.");
   var accRow = null;
   var accItems = function(){
     var ta = (UI.themes[f.theme] || UI.themes.aurora).acc;
@@ -3509,6 +3738,7 @@ function sRender(){
   });
   bx.appendChild(b4);
   sHint(c, "Export copies all settings, buttons, stacks and layout to the clipboard (passwords stay on the phone). Import reads them back from the clipboard. Reset layout clears the button order and stacks but keeps your own buttons.");
+  if (!S.animated) { S.animated = true; restagger(b.children); }
 }
 
 function saveSettings(){
@@ -3531,6 +3761,123 @@ function saveSettings(){
     if (sMsg(r)) { S.saved = true; closeSettings(); }
   });
 }
+// ================= Liquid Glass motion (only while the glass look is on) =================
+function isGlass(){ return document.body.classList.contains("glass"); }
+function restagger(list){
+  if (!isGlass()) return;
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    e.classList.remove("enter");
+    void e.offsetWidth;
+    e.style.setProperty("--i", Math.min(i, 18));
+    e.classList.add("enter");
+  }
+}
+// entrance classes are removed when done (a finished transform would trap menus under other cards)
+document.addEventListener("animationend", function(e){
+  if (e.animationName === "rise" && e.target.classList) { e.target.classList.remove("enter", "intro"); }
+}, true);
+// FLIP: elements glide from where they were to where they end up
+function flipEls(els, fn, opts){
+  if (!isGlass()) { fn(); return; }
+  els = els.filter(Boolean);
+  var first = els.map(function(e){ return e.getBoundingClientRect(); });
+  fn();
+  els.forEach(function(e){ if (e._fa) { e._fa.cancel(); e._fa = null; } });
+  var last = els.map(function(e){ return e.getBoundingClientRect(); });
+  els.forEach(function(e, i){
+    if (!e.isConnected || !e.animate) return;
+    var a = first[i], l = last[i], dx = a.left - l.left, dy = a.top - l.top;
+    var k0 = { transform: "translate(" + dx + "px," + dy + "px)" }, k1 = { transform: "translate(0,0)" };
+    if (opts && opts.clip && (l.width > a.width + 1 || l.height > a.height + 1)) {
+      var rad = getComputedStyle(e).borderTopLeftRadius || "0px";
+      k0.clipPath = "inset(0px " + Math.max(0, l.width - a.width) + "px " + Math.max(0, l.height - a.height) + "px 0px round " + rad + ")";
+      k1.clipPath = "inset(0px 0px 0px 0px round " + rad + ")";
+    }
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && !k0.clipPath) return;
+    e._fa = e.animate([k0, k1], { duration: 620, easing: "cubic-bezier(.2,.9,.25,1.05)" });
+    e._fa.onfinish = function(){ e._fa = null; };
+  });
+}
+// drag reorder: neighbours slide out of the way; hit tests use their final spots
+function sTop(){ return (document.scrollingElement || document.body).scrollTop; }
+function moveFlip(fn){
+  if (!isGlass()) { fn(); return; }
+  var els = [].slice.call(document.querySelectorAll("#svc>*,#hid>*,.gbody>*"));
+  var anchor = els.map(function(e){ var p = e.parentNode; return p && p.classList.contains("gbody") ? p.closest(".grp") : null; });
+  var first = els.map(function(e){ return e.getBoundingClientRect(); });
+  var firstA = anchor.map(function(a){ return a ? a.getBoundingClientRect() : null; });
+  fn();
+  els.forEach(function(e){ if (e._fa) { e._fa.cancel(); e._fa = null; } });
+  var now = performance.now(), s0 = sTop();
+  var last = els.map(function(e){ return e.getBoundingClientRect(); });
+  els.forEach(function(e, i){
+    var l = last[i], f = first[i];
+    e._fr = { l: l.left, t: l.top, w: l.width, h: l.height, s: s0, end: now + 340 };
+    var dx = f.left - l.left, dy = f.top - l.top;
+    var na = e.parentNode && e.parentNode.classList.contains("gbody") ? e.parentNode.closest(".grp") : null;
+    if (na && na === anchor[i] && firstA[i]) {
+      var la = na.getBoundingClientRect();
+      dx -= firstA[i].left - la.left;
+      dy -= firstA[i].top - la.top;
+    }
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    if (!e.animate) return;
+    e._fa = e.animate([{ transform: "translate(" + dx + "px," + dy + "px)" }, { transform: "translate(0,0)" }], { duration: 340, easing: "cubic-bezier(.2,.9,.3,1)" });
+  });
+}
+function rectOf(e){
+  var r = e._fr;
+  if (r && performance.now() < r.end) {
+    var t = r.t - (sTop() - r.s);
+    return { left: r.l, right: r.l + r.w, top: t, bottom: t + r.h };
+  }
+  return e.getBoundingClientRect();
+}
+// press: squish + a glint where the finger lands (the styles only exist in the glass look)
+var PRESS = ".svc,.monbtn,.addbtn,.gear,.lay,.btns button,.sbtns button,.shd button,.chip,.pmenu button,.swt,.card,.live,.seg button";
+var prEl = null, prX = 0, prY = 0;
+function clearPress(){ if (prEl) { prEl.classList.remove("prs"); prEl = null; } }
+document.addEventListener("touchstart", function(e){
+  clearPress();
+  if (!isGlass()) return;
+  var el = e.target.closest && e.target.closest(PRESS);
+  if (!el || el.classList.contains("ghost")) return;
+  var t = e.touches[0], r = el.getBoundingClientRect();
+  prX = t.clientX; prY = t.clientY;
+  el.style.setProperty("--mx", (t.clientX - r.left) + "px");
+  el.style.setProperty("--my", (t.clientY - r.top) + "px");
+  el.classList.add("prs");
+  prEl = el;
+}, { passive: true });
+document.addEventListener("touchmove", function(e){
+  if (!prEl) return;
+  var t = e.touches[0];
+  if (Math.abs(t.clientX - prX) > 10 || Math.abs(t.clientY - prY) > 10) clearPress();
+}, { passive: true });
+document.addEventListener("touchend", function(){ setTimeout(clearPress, 70); }, { passive: true });
+document.addEventListener("touchcancel", clearPress, { passive: true });
+// startup screen (Settings > Theme & look > Startup animation)
+var booted = false, splashDone = false;
+function boot(){
+  if (booted) return;
+  booted = true;
+  document.body.classList.add("boot");
+  setTimeout(endSplash, 1350);
+}
+function endSplash(now){
+  if (splashDone) return;
+  splashDone = true;
+  var sp = document.getElementById("splash");
+  document.body.classList.add("ready");
+  if (!sp) return;
+  if (now) { sp.parentNode.removeChild(sp); return; }
+  sp.classList.add("out");
+  setTimeout(function(){ if (sp.parentNode) sp.parentNode.removeChild(sp); }, 950);
+}
+// now = true: no startup screen at all (turned off), removed without fading
+function skipSplash(now){ booted = true; document.body.classList.add("boot"); endSplash(now === true); }
+setTimeout(function(){ if (!booted) skipSplash(); }, 3000); // in case the data never arrives
 </script></body></html>`;
 
 async function showLiveDashboard(openStackId) {
@@ -3700,7 +4047,9 @@ async function showLiveDashboard(openStackId) {
     return true;
   };
 
-  await wv.loadHTML(LIVE_HTML);
+  // the chosen style and startup screen are set before the first paint (no flash of the other look)
+  const bodyCls = [SET.style === "glass" ? "glass" : "", SET.splash ? "splashon" : ""].join(" ").trim();
+  await wv.loadHTML(LIVE_HTML.replace("<body>", `<body class="${bodyCls}">`));
   await wv.evaluateJavaScript(
     `init(${JSON.stringify(getTitle())}, ${JSON.stringify(getPayload())})`,
     false
@@ -3710,7 +4059,8 @@ async function showLiveDashboard(openStackId) {
   // download any logos not saved yet (first run, or new ones) without holding up the dashboard
   refreshLogos(wv);
   // first run: no server yet, so go straight to Settings
-  if (!SET.baseUrl) await wv.evaluateJavaScript("setTimeout(openSettings, 400)", false);
+  // (after the startup screen, when it's on)
+  if (!SET.baseUrl) await wv.evaluateJavaScript(`setTimeout(openSettings, ${SET.splash ? 1700 : 400})`, false);
 
   let open = true;
   const presented = wv.present(true).then(() => {
