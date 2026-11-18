@@ -28,7 +28,7 @@
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
-// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208),
+// 2. Run it. Settings opens: pick http / https and type your server IP (e.g. 192.168.1.10; port 61208 is added),
 //    pick your server type, tap "Test connection", then Save.
 // 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
@@ -3635,6 +3635,59 @@ function sInputEl(val, ph, mode, type){
   w.appendChild(i);
   return { w: w, i: i };
 }
+// Address field: an http:// / https:// list plus the server's IP or domain (optionally :port and a path).
+// o: { scheme (the usual one), ports: { http, https } (added when no port is typed), ph, host (for an empty field) }
+// The full address (e.g. http://192.168.1.10:61208) is what's saved; the usual port is hidden while editing.
+function sUrl(parent, label, key, o, hint){
+  var f = sLabel(parent, label);
+  var sel = document.createElement("select");
+  ["http", "https"].forEach(function(x){
+    var op = document.createElement("option");
+    op.value = x;
+    op.textContent = x + "://";
+    sel.appendChild(op);
+  });
+  var chev = document.createElement("span");
+  chev.className = "chev";
+  chev.innerHTML = "&#9662;";
+  var x = sInputEl("", o.ph || "", "url");
+  var inp = x.i;
+  var portOf = function(sc){ return o.ports && o.ports[sc]; };
+  // the usual port is only added for IP addresses and local names; a public domain is usually behind a
+  // reverse proxy on the standard http / https port
+  var local = function(h){
+    return /^[0-9.]+$/.test(h) || /^[[]/.test(h) || h.indexOf(".") < 0 || /[.](local|lan|home|internal|localdomain|home[.]arpa|ts[.]net)$/i.test(h);
+  };
+  var cur = String(S.f[key] || ""), m = cur.match(/^(https?):[/][/](.*)$/i);
+  sel.value = m ? m[1].toLowerCase() : o.scheme;
+  var rest = m ? m[2] : "";
+  if (portOf(sel.value)) rest = rest.replace(new RegExp("^([^/:]+):" + portOf(sel.value) + "(?=/|$)"), "$1");
+  inp.value = rest;
+  function compose(){
+    var v = inp.value.trim();
+    var mm = v.match(/^(https?):[/][/](.*)$/i);
+    // a full address was typed or pasted: take its http / https over
+    if (mm) { sel.value = mm[1].toLowerCase(); v = mm[2].replace(/[/]+$/, ""); inp.value = v; }
+    v = v.replace(/[/]+$/, "");
+    var host = v;
+    if (!host) {
+      // empty: the usual address, unless the other http / https was picked
+      if (sel.value === o.scheme || !o.host) { S.f[key] = ""; return; }
+      host = o.host;
+    }
+    var hp = host.match(/^([^/:]+)(:[0-9]+)?(.*)$/);
+    var port = hp && !hp[2] && portOf(sel.value) && local(hp[1]) ? ":" + portOf(sel.value) : "";
+    S.f[key] = sel.value + "://" + (hp ? hp[1] + (hp[2] || "") + port + hp[3] : host);
+  }
+  inp.oninput = compose;
+  sel.onchange = compose;
+  x.w.insertBefore(chev, x.w.firstChild);
+  x.w.insertBefore(sel, chev);
+  f.appendChild(x.w);
+  if (hint) sHint(parent, hint);
+  return inp;
+}
+var URL_PORTS = { proxmox: { http: 8006, https: 8006 }, synology: { http: 5000, https: 5001 }, linux: { http: 61209, https: 61209 } };
 function sText(parent, label, key, ph, mode, hint){
   var f = sLabel(parent, label), x = sInputEl(S.f[key], ph, mode);
   x.i.oninput = function(){ S.f[key] = x.i.value.trim(); };
@@ -3808,7 +3861,7 @@ function sRender(){
 
   // ---------- SERVER ----------
   var c = sSec(b, "SERVER");
-  sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
+  sUrl(c, "GLANCES ADDRESS", "baseUrl", { scheme: "http", ports: { http: 61208, https: 61208 }, ph: "192.168.1.10 or a domain" }, "Pick http or https, then type the server's IP or name. Port 61208 is added for IP addresses and local names; type another one if yours differs (e.g. 192.168.1.10:8080). A public domain (behind a reverse proxy) gets no port added. Use your VPN address to see it away from home.");
   sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
   sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
   var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
@@ -3830,7 +3883,10 @@ function sRender(){
   var urlKey = P !== "none" ? PL[P].url : null;
   var defUrl = urlKey ? PL[P].def.replace("{h}", hostPh) : "";
   var addrField = function(label){
-    sText(c, label, urlKey, defUrl + (I.host ? " (default)" : ""), "url", "Leave empty for " + (I.host ? defUrl : "the Glances server with the usual port") + ".");
+    var ports = URL_PORTS[P], dsc = (PL[P].def.match(/^(https?)/) || [])[1] || "http";
+    var pp = ports ? (ports.http === ports.https ? "port " + ports.http : "port " + ports.http + " (http) or " + ports.https + " (https)") : "";
+    sUrl(c, label, urlKey, { scheme: dsc, ports: ports, host: I.host, ph: I.host ? I.host + " (the Glances server)" : "IP or domain" },
+      "Leave empty for " + (I.host ? defUrl : "the Glances server with the usual port") + ". Otherwise type only the IP or domain" + (pp ? "; for IP addresses and local names " + pp + " is added unless you type another" : "") + ".");
   };
   if (P === "none") {
     sHint(c, "Pick the system your server runs. It only changes how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.");

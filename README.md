@@ -44,7 +44,9 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 ## 2. Install the script
 
 1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
-2. Run it. Settings opens: enter the Glances address (e.g. `http://192.168.1.10:61208`), pick your **server type**, tap **Test connection**, then **Save**.
+2. Run it. Settings opens: in **Glances address** keep `http://` in the list and type only the server IP (e.g. `192.168.1.10`;
+   port 61208 is added for you), pick your **server type**, tap **Test connection**, then **Save**.
+   Every address field works this way: an http / https list plus the IP or name, with the usual port added for IP addresses and local names.
 3. Add a Scriptable widget to your home screen and pick this script.
 
 ## Looks
