@@ -3,6 +3,8 @@
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
 The whole app is one file: `board_Blank.js`.
 
+The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
+
 ## Works with
 
 | Server | Monitoring (CPU, RAM, drives, network, temperatures) | Reboot / Shut down |
