@@ -37,7 +37,8 @@ Logins are stored in the iOS Keychain. Enter a login ahead of time with **Enter 
 ## Several servers
 
 Swipe the server name left or right to switch servers. The dots under the name show how many there are and which
-one is on screen. Swipe left past the last one (or tap **+**) to add a server.
+one is on screen. Swipe left past the last one (or tap **+**) to add a server: it asks the same as Settings, in the same
+order (name, server type, server address, and the login if the type uses one, checked before the server is added).
 
 - Each server has its **own settings window** (the gear, titled with the server's name): server address and type,
   logins, Monitoring / Glances, and its own buttons, stacks and layout.
@@ -65,10 +66,11 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 ## 2. Install the script
 
 1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
-2. Run it. Settings opens: under **Server**, type the server's IP or name (e.g. `192.168.1.10`) and pick your **server type**.
-   Under **Monitoring**, leave the Glances address empty if Glances runs on the same server on port 61208, or turn
-   Monitoring off if you don't use Glances. Tap **Test connection**, then **Save**.
-   Every other address field has an http / https list plus the IP or name, with the usual port added for IP addresses and local names.
+2. Run it. Settings opens: under **Server**, give it a name, pick your **server type**, and type the **server address**:
+   an http / https list plus the IP or name, with a port only if it isn't the usual one for that type
+   (e.g. `192.168.1.10` or `192.168.1.10:90`). This one address is used for LIVE / OFFLINE, Reboot / Shut down and logins.
+   Tap **Enter login** if the type uses one. Under **Monitoring**, leave the Glances address empty if Glances runs on
+   the same server on port 61208, or turn Monitoring off if you don't use Glances. Tap **Test connection**, then **Save**.
 3. Add a Scriptable widget to your home screen and pick this script.
 
 ## Looks
@@ -87,8 +89,8 @@ Themes, accent colours, glow, corners, font and button size work with both style
 - **ZimaOS**: you're asked for your ZimaOS login the first time; it's saved in the iOS Keychain.
 - **TrueNAS**: your admin login (`truenas_admin`, or `root` on older versions). Use plain http on your home network or VPN,
   or https with a certificate the iPhone trusts (TrueNAS's own self-signed certificate doesn't work for its WebSocket API).
-- **Unraid**: `root` and your password. If Unraid redirects to an `https://...myunraid.net` address, -board tells you to use that address.
-- **Synology**: an administrator account without two-factor login. For https, enter `https://SERVER-IP:5001` as the Synology address.
+- **Unraid**: `root` and your password. If Unraid redirects to an `https://...myunraid.net` address, -board tells you to use that as the server address.
+- **Synology**: an administrator account without two-factor login. Pick https in the server address and port 5001 is used.
 - **OpenMediaVault**: an administrator account, `admin` by default.
 - **Proxmox**: you're asked for your Proxmox login (`root` or `root@pam`; any user with the `Sys.PowerMgmt` permission works).
   Accounts with two-factor login can't be used. In a cluster, enter the node name in Settings (otherwise it's found automatically).

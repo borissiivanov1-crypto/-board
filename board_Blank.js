@@ -29,8 +29,9 @@
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
-// 2. Run it. Settings opens: type your server's IP or name (e.g. 192.168.1.10), pick your server type,
-//    turn Monitoring off if you don't run Glances, tap "Test connection", then Save.
+// 2. Run it. Settings opens: give the server a name, pick its type, type its address (http / https + IP or name,
+//    with a port only if it isn't the usual one, e.g. 192.168.1.10:90) and its login if asked; turn Monitoring off
+//    if you don't run Glances, tap "Test connection", then Save.
 // 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
@@ -84,16 +85,18 @@ const CONFIG = {
 
 // Server types (Settings > Server). Monitoring works the same on all of them (Glances);
 // they only change how Reboot / Shut down reaches the server.
-// url: the setting with its address; def: the usual address ({h} = the server address); login: name in the login popup
-// (null = no login: the Linux helper uses its secret key)
+// The server address in Settings (http / https, IP or name, optional port) is what Reboot / Shut down uses.
+// scheme / ports: what's used when the address doesn't say (e.g. Proxmox: https, port 8006).
+// url: an older setting with a separate address for the server system (still honoured if it names another host).
+// login: name in the login popup (null = no login: the Linux helper uses its secret key)
 const PLATFORMS = {
-  zimaos: { name: "ZimaOS", login: "ZimaOS", url: "zimaUrl", def: "http://{h}" },
-  proxmox: { name: "Proxmox VE", short: "Proxmox", login: "Proxmox", url: "proxmoxUrl", def: "https://{h}:8006", userPh: "root@pam" },
-  truenas: { name: "TrueNAS", login: "TrueNAS", url: "truenasUrl", def: "http://{h}", userPh: "truenas_admin" },
-  unraid: { name: "Unraid", login: "Unraid", url: "unraidUrl", def: "http://{h}", userPh: "root" },
-  synology: { name: "Synology DSM", short: "Synology", login: "Synology", url: "synologyUrl", def: "http://{h}:5000" },
-  omv: { name: "OpenMediaVault", short: "OMV", login: "OpenMediaVault", url: "omvUrl", def: "http://{h}", userPh: "admin" },
-  linux: { name: "Linux", login: null, url: "helperUrl", def: "http://{h}:61209" },
+  zimaos: { name: "ZimaOS", login: "ZimaOS", url: "zimaUrl", scheme: "http", ports: {} },
+  proxmox: { name: "Proxmox VE", short: "Proxmox", login: "Proxmox", url: "proxmoxUrl", scheme: "https", ports: { http: 8006, https: 8006 }, userPh: "root@pam" },
+  truenas: { name: "TrueNAS", login: "TrueNAS", url: "truenasUrl", scheme: "http", ports: {}, userPh: "truenas_admin" },
+  unraid: { name: "Unraid", login: "Unraid", url: "unraidUrl", scheme: "http", ports: {}, userPh: "root" },
+  synology: { name: "Synology DSM", short: "Synology", login: "Synology", url: "synologyUrl", scheme: "http", ports: { http: 5000, https: 5001 } },
+  omv: { name: "OpenMediaVault", short: "OMV", login: "OpenMediaVault", url: "omvUrl", scheme: "http", ports: {}, userPh: "admin" },
+  linux: { name: "Linux", login: null, url: "helperUrl", scheme: "http", ports: { http: 61209, https: 61209 } },
 };
 const PLATFORM_KEYS = Object.keys(PLATFORMS);
 
@@ -112,7 +115,7 @@ let CUR = null;
 // Settings that belong to one server (everything else in Settings is shared by all servers), and the parts
 // of the data file each server has for itself (see "Servers" below)
 const SERVER_SETTING_KEYS = [
-  "serverHost", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
+  "serverHost", "serverScheme", "serverPort", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
   "truenasUrl", "unraidUrl", "synologyUrl", "omvUrl", "helperUrl", "showPower", "diskMounts", "maxDisks",
   "networkInterface", "monitoringOpen", "monitoringFixed", "tempLimits", "liveSeconds",
 ];
@@ -147,6 +150,8 @@ const GLOW_LEVELS = { off: 0, soft: 0.3, normal: 0.5, strong: 0.75 };
 // ---------- Settings (gear icon in the live dashboard) ----------
 const DEFAULTS = {
   serverHost: CONFIG.serverHost,
+  serverScheme: "",                // "" = the usual one for the server type, or "http" / "https"
+  serverPort: "",                  // "" = the usual one for the server type
   monitoring: CONFIG.monitoring,
   baseUrl: CONFIG.baseUrl,
   apiVersion: CONFIG.apiVersion,
@@ -205,8 +210,18 @@ function cleanSettings(raw) {
   out.baseUrl = out.baseUrl.replace(/\/+$/, "");
   // the server's IP or name only (a pasted address is trimmed to its host); settings from before it
   // existed take it from their Glances address
+  // the server address: IP or name, plus http / https and a port when they aren't the usual ones
   str("serverHost", 200);
-  out.serverHost = out.serverHost.replace(/^[a-z]+:\/\//i, "").replace(/[\/?#].*$/, "").replace(/^([^\[\]:]+):\d+$/, "$1");
+  out.serverScheme = ["http", "https"].includes(r.serverScheme) ? r.serverScheme : "";
+  out.serverPort = /^\d{1,5}$/.test(String(r.serverPort || "")) ? String(r.serverPort) : "";
+  const typed = out.serverHost.match(/^(https?):\/\//i);
+  if (typed && !out.serverScheme) out.serverScheme = typed[1].toLowerCase();
+  out.serverHost = out.serverHost.replace(/^[a-z]+:\/\//i, "").replace(/[\/?#].*$/, "");
+  const hp = out.serverHost.match(/^([^\[\]:]+):(\d+)$/);
+  if (hp) {
+    out.serverHost = hp[1];
+    if (!out.serverPort) out.serverPort = hp[2];
+  }
   if (!out.serverHost && out.baseUrl) out.serverHost = hostOf(out.baseUrl);
   bool("monitoring");
   num("apiVersion", 3, 4);
@@ -220,6 +235,18 @@ function cleanSettings(raw) {
     str(k);
     if (out[k] && !/^https?:\/\//i.test(out[k])) out[k] = "";
     out[k] = out[k].replace(/\/+$/, "");
+  }
+  // An older separate address for the server system on the same host becomes part of the server address
+  // (http / https and port), so there's only one address to keep up to date
+  const PLo = PLATFORMS[out.platform];
+  if (PLo && out[PLo.url] && out.serverHost && hostOf(out[PLo.url]).toLowerCase() === out.serverHost.toLowerCase()) {
+    const m = out[PLo.url].match(/^(https?):\/\/[^\/:]+(?::(\d+))?/i);
+    if (m && !out.serverScheme && !out.serverPort) {
+      const sc = m[1].toLowerCase();
+      out.serverScheme = sc === PLo.scheme ? "" : sc;
+      out.serverPort = m[2] && Number(m[2]) !== (PLo.ports[sc] || 0) ? m[2] : "";
+    }
+    out[PLo.url] = "";
   }
   str("proxmoxNode", 64);
   out.proxmoxNode = out.proxmoxNode.replace(/[^A-Za-z0-9._-]/g, "");
@@ -415,11 +442,12 @@ function setCurrentServer(id) {
   return true;
 }
 
-function addServer(name, host) {
+// own: the new server's settings (address, type ...)
+function addServer(name, own) {
   const st = readStore();
   const id = "s" + Date.now().toString(36);
   const n = st.servers.length + 1;
-  st.servers.push({ id, title: String(name || "").trim().slice(0, 20).toUpperCase() || "SERVER " + n, settings: { serverHost: String(host || "").trim(), platform: "none" } });
+  st.servers.push({ id, title: String(name || "").trim().slice(0, 20) || "SERVER " + n, settings: { platform: "none", ...(isObj(own) ? own : {}) } });
   writeStore(st);
   setCurrentServer(id);
   return id;
@@ -674,6 +702,7 @@ function getPayload() {
     host: serverHostOf(SET),
     servers: listServers(),
     cur: CUR,
+    platforms: PLATFORMS,
     ui: {
       cols: SET.columns,
       // the Reboot / Shut down menu needs a known server type
@@ -771,7 +800,17 @@ function savedLogin(platform) {
 // The address Reboot / Shut down uses for a server type: the one in Settings, or the usual one on the server address
 function platformBase(P, s = SET) {
   const pl = PLATFORMS[P];
-  return (s[pl.url] || pl.def.replace("{h}", serverHostOf(s) || "localhost")).replace(/\/+$/, "");
+  // an older separate address on another host still wins
+  if (s[pl.url]) return s[pl.url].replace(/\/+$/, "");
+  return serverUrlOf(s, P);
+}
+
+// The server address as a full address: its http / https and port, or the usual ones for the server type
+function serverUrlOf(s = SET, P = s.platform) {
+  const pl = PLATFORMS[P];
+  const scheme = s.serverScheme || (pl ? pl.scheme : "http");
+  const port = s.serverPort || (pl && pl.ports[scheme]) || "";
+  return `${scheme}://${serverHostOf(s) || "localhost"}${port ? ":" + port : ""}`;
 }
 
 const powerSent = (action) =>
@@ -1347,6 +1386,7 @@ async function settingsOp(d) {
   }
   if (d.op === "save") {
     data.settings = cleanSettings(d.s);
+    if (typeof d.title === "string" && d.title.trim()) data.title = d.title.trim().slice(0, 20);
     saveData(data);
     try {
       if (d.clearGpass && Keychain.contains(gpassKey())) Keychain.remove(gpassKey());
@@ -1903,15 +1943,33 @@ let statusBusy = false;
 let statusDirty = false;
 let lastStatus = 0;
 
+// One place on the server: a quick HEAD request; some servers turn HEAD away, so a refusal that isn't a
+// timeout gets one ordinary GET before the place counts as not answering
+async function reachProbe(url, timeout) {
+  const t0 = Date.now();
+  if (await pingUrl(url, timeout)) return true;
+  if (Date.now() - t0 >= timeout * 1000 - 200) return false; // timed out: nothing there
+  try {
+    const req = new Request(url);
+    req.allowInsecureRequest = true;
+    req.timeoutInterval = timeout;
+    await req.load();
+    return true;
+  } catch (e) {
+    return /certificate|secure connection|ssl|tls|bad response|bad server|malformed|could not be parsed/i.test(String((e && e.message) || e));
+  }
+}
+
 // ---------- Is the server reachable? (the LIVE / OFFLINE status) ----------
 // There is no ping on iOS, so this asks the usual places on the server at once: its web ports (80 / 443),
 // the server system's own address (Reboot / Shut down), Glances when Monitoring is on, and your service
 // buttons on that host. Any answer, even an error page, counts. Returns what answered first, or "" for none.
 const REACH_SECONDS = 10; // how often the dashboard checks
-async function serverReachable(s = SET, timeout = 3) {
+async function serverReachable(s = SET, timeout = 4) {
   const host = serverHostOf(s);
   if (!host) return "";
-  const urls = new Set([`http://${host}/`, `https://${host}/`]);
+  // the server address from Settings first (with its port), then the usual web ports
+  const urls = new Set([serverUrlOf(s) + "/", `http://${host}/`, `https://${host}/`]);
   if (PLATFORMS[s.platform]) urls.add(platformBase(s.platform, s) + "/");
   if (s.monitoring) urls.add(glancesUrl(s) + "/");
   try {
@@ -1921,7 +1979,7 @@ async function serverReachable(s = SET, timeout = 3) {
   return new Promise((resolve) => {
     let left = urls.size;
     for (const u of urls) {
-      pingUrl(u, timeout).then((ok) => {
+      reachProbe(u, timeout).then((ok) => {
         if (ok) resolve(label(u));
         else if (--left === 0) resolve("");
       });
@@ -2872,15 +2930,7 @@ body:not(.splashon) #splash{display:none}
 </div>
 </div>
 <div id="av" onclick="if(event.target===this&&Date.now()>=ign)closeAddServer()">
-<div class="modal">
-<h2>ADD SERVER</h2>
-<div class="cnote">Each server has its own address, type, logins, Monitoring, buttons and layout. Swipe the server name to switch between them.</div>
-<div class="f"><label>NAME</label><div class="in"><input id="asn" type="text" maxlength="20" placeholder="e.g. NAS" autocomplete="off"></div></div>
-<div class="f"><label>SERVER ADDRESS</label><div class="in"><input id="ash" type="text" inputmode="url" placeholder="192.168.1.20 or a name" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
-<div class="fh">You can fill in the rest (server type, Monitoring ...) in its Settings next.</div>
-<div class="err" id="aer"></div>
-<div class="btns"><button onclick="closeAddServer()">Cancel</button><button class="ok" onclick="submitAddServer()">Add</button></div>
-</div>
+<div class="modal" id="avm"></div>
 </div>
 <div id="rv" onclick="if(event.target===this&&Date.now()>=ign)closeRename()">
 <div class="modal">
@@ -3592,24 +3642,96 @@ function switchServer(t, p, dir){
     toggleMon();
   }
 }
+// Add server: the same questions in the same order as its Settings (name, type, address, login)
+var AS = null;
 function openAddServer(){
   togglePmenu(false);
-  document.getElementById("asn").value = "";
-  document.getElementById("ash").value = "";
-  document.getElementById("aer").textContent = "";
+  AS = { name: "", platform: "none", host: "", scheme: "", port: "", u: "", p: "", err: "", busy: false };
+  renderAddServer();
   document.getElementById("av").className = "show";
-  setTimeout(function(){ document.getElementById("asn").focus(); }, 80);
+  setTimeout(function(){ var n = document.getElementById("asn"); if (n) n.focus(); }, 80);
+}
+function renderAddServer(){
+  var m = document.getElementById("avm"), PL = st.platforms || {};
+  m.innerHTML = "";
+  var h = document.createElement("h2");
+  h.textContent = "ADD SERVER";
+  m.appendChild(h);
+  var note = document.createElement("div");
+  note.className = "cnote";
+  note.textContent = "Each server has its own address, type, logins, Monitoring, buttons and layout. Swipe the server name to switch between them.";
+  m.appendChild(note);
+  var field = function(label, val, ph, type, set, id){
+    var f = document.createElement("div");
+    f.className = "f";
+    var l = document.createElement("label");
+    l.textContent = label;
+    f.appendChild(l);
+    var x = sInputEl(val, ph, null, type);
+    if (id) x.i.id = id;
+    x.i.oninput = function(){ set(x.i.value); };
+    f.appendChild(x.w);
+    m.appendChild(f);
+    return x.i;
+  };
+  var hint = function(t){ var d = document.createElement("div"); d.className = "fh"; d.textContent = t; m.appendChild(d); };
+  field("NAME", AS.name, "e.g. NAS", "text", function(v){ AS.name = v; }, "asn").maxLength = 20;
+  var tl = document.createElement("div");
+  tl.className = "f";
+  tl.innerHTML = "<label>SERVER TYPE</label>";
+  tl.appendChild(radioRow(typeOpts(PL), AS.platform, function(v){ AS.platform = v; AS.scheme = ""; AS.err = ""; renderAddServer(); }));
+  m.appendChild(tl);
+  hint(TYPE_HINT[AS.platform] || TYPE_HINT.none);
+  serverAddrField(m, "SERVER ADDRESS", { PL: PL, platform: AS.platform, host: AS.host, scheme: AS.scheme, port: AS.port,
+    onChange: function(a){ AS.host = a.host; AS.scheme = a.scheme; AS.port = a.port; } });
+  var pl = PL[AS.platform];
+  if (pl && pl.login) {
+    field(pl.login.toUpperCase() + " USERNAME", AS.u, pl.userPh || "", "text", function(v){ AS.u = v; });
+    field(pl.login.toUpperCase() + " PASSWORD", AS.p, "", "password", function(v){ AS.p = v; });
+    hint("For Reboot / Shut down. Checked against the server before it's added, then stored in the iOS Keychain. Leave empty to be asked the first time.");
+  } else if (AS.platform === "linux") {
+    hint("After adding, its Settings open so you can set up the helper (one command over SSH).");
+  }
+  var er = document.createElement("div");
+  er.className = "err";
+  er.textContent = AS.err;
+  m.appendChild(er);
+  var bx = document.createElement("div");
+  bx.className = "btns";
+  var cb = document.createElement("button");
+  cb.textContent = "Cancel";
+  cb.onclick = closeAddServer;
+  var ob = document.createElement("button");
+  ob.className = "ok";
+  ob.textContent = AS.busy ? "Checking..." : "Add";
+  ob.onclick = submitAddServer;
+  bx.appendChild(cb);
+  bx.appendChild(ob);
+  m.appendChild(bx);
 }
 function closeAddServer(){
   document.getElementById("av").className = "";
   if (document.activeElement) document.activeElement.blur();
+  AS = null;
 }
 function submitAddServer(){
-  if (Date.now() < ign) return;
-  var n = document.getElementById("asn").value.trim(), h = document.getElementById("ash").value.trim();
-  if (!h) { document.getElementById("aer").textContent = "Enter the server's IP or name"; return; }
-  closeAddServer();
-  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: n, host: h, dir: 1 }));
+  if (Date.now() < ign || !AS || AS.busy) return;
+  var fail = function(t){ AS.err = t; renderAddServer(); };
+  if (AS.platform === "none") return fail("Pick the server type");
+  if (!AS.host.trim()) return fail("Enter the server's IP or name");
+  if ((AS.u.trim() && !AS.p) || (!AS.u.trim() && AS.p)) return fail("Enter both the username and the password, or neither");
+  AS.err = "";
+  AS.busy = true;
+  renderAddServer();
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: AS.name.trim(), platform: AS.platform, host: AS.host.trim(), scheme: AS.scheme, port: AS.port, u: AS.u.trim(), p: AS.p, dir: 1 }));
+}
+// the answer to Add: added (the server is on screen now) or what went wrong (the popup stays open)
+function addServerResult(r){
+  if (!AS) return;
+  if (r.ok) { closeAddServer(); return; }
+  AS.busy = false;
+  AS.err = r.error || "Couldn't add the server";
+  renderAddServer();
 }
 function renderServices(p){
   st = p;
@@ -3979,6 +4101,7 @@ function openSettings(){
     S.f = JSON.parse(JSON.stringify(r.s));
     S.gpass = "";
     S.clearGpass = false;
+    S.title = document.getElementById("title").textContent;
     S.loginOpen = null;
     S.lu = "";
     S.lp = "";
@@ -4090,7 +4213,82 @@ function sUrl(parent, label, key, o, hint){
   if (hint) sHint(parent, hint);
   return inp;
 }
-var URL_PORTS = { proxmox: { http: 8006, https: 8006 }, synology: { http: 5000, https: 5001 }, linux: { http: 61209, https: 61209 } };
+// ---- Shared by Settings and Add server: server types, the one server address field ----
+var PLATFORM_ORDER = ["zimaos", "proxmox", "truenas", "unraid", "synology", "omv", "linux"];
+var TYPE_HINT = {
+  none: "Pick the system your server runs. It decides how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.",
+  zimaos: "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.",
+  proxmox: "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.",
+  truenas: "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. With https, TrueNAS needs a certificate the iPhone trusts; plain http on your home network or VPN is fine.",
+  unraid: "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.",
+  synology: "Synology DSM: Reboot / Shut down use the DSM Web API with an administrator account. Nothing to install.",
+  omv: "OpenMediaVault: Reboot / Shut down use OpenMediaVault's own API with an administrator account (admin by default). Nothing to install.",
+  linux: "Linux (Debian, Ubuntu Server, Fedora ...): there's no web API for reboot, so -board uses a tiny helper service on the server, set up with one command over SSH from Settings. No login needed."
+};
+// a row of radio buttons (same look as in Settings)
+function radioRow(opts, value, onPick){
+  var row = document.createElement("div");
+  row.className = "seg segw";
+  row.setAttribute("role", "radiogroup");
+  opts.forEach(function(o){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", value === o[0] ? "true" : "false");
+    if (value === o[0]) b.className = "on";
+    b.innerHTML = "<i></i><span></span>";
+    b.querySelector("span").textContent = o[1];
+    b.onclick = function(){ if (value !== o[0]) onPick(o[0]); };
+    row.appendChild(b);
+  });
+  return row;
+}
+function typeOpts(PL){ return PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }); }
+// the hint under the server address: which port is used when none is typed
+function addrHint(PL, P){
+  var pl = PL[P], ports = pl ? pl.ports : {};
+  var usual = ports.http
+    ? " For " + (pl.short || pl.name) + ", port " + (ports.http === ports.https ? ports.http : ports.http + " (http) or " + ports.https + " (https)") + (P === "linux" ? " (the helper)" : "") + " is used unless you type another."
+    : "";
+  return "Pick http or https, then type the IP or name, plus a port if it isn't the usual one (e.g. 192.168.1.10:90)." + usual + " LIVE / OFFLINE checks this address, Reboot / Shut down use it, and Glances is looked for on it. Use your VPN address to reach it away from home.";
+}
+// The one server address field: http / https list + IP or name with an optional port.
+// o: { PL, platform, host, scheme ("" = the usual one), port, onChange({ host, scheme, port }) }
+function serverAddrField(parent, label, o){
+  var f = document.createElement("div");
+  f.className = "f";
+  var l = document.createElement("label");
+  l.textContent = label;
+  f.appendChild(l);
+  var usual = (o.PL[o.platform] || {}).scheme || "http";
+  var sel = document.createElement("select");
+  ["http", "https"].forEach(function(x){
+    var op = document.createElement("option");
+    op.value = x;
+    op.textContent = x + "://";
+    sel.appendChild(op);
+  });
+  sel.value = o.scheme || usual;
+  var chev = document.createElement("span");
+  chev.className = "chev";
+  chev.innerHTML = "&#9662;";
+  var x = sInputEl((o.host || "") + (o.port ? ":" + o.port : ""), "192.168.1.10 or a name", "url");
+  x.w.insertBefore(chev, x.w.firstChild);
+  x.w.insertBefore(sel, chev);
+  f.appendChild(x.w);
+  parent.appendChild(f);
+  function changed(){
+    var v = x.i.value.trim(), m = v.match(/^(https?):[/][/](.*)$/i);
+    // a full address was typed or pasted: its http / https goes into the list
+    if (m) { sel.value = m[1].toLowerCase(); v = m[2]; x.i.value = v; }
+    v = v.replace(/[/?#].*$/, "");
+    var hp = v.match(/^([^:]+)(?::([0-9]{1,5}))?$/);
+    o.onChange({ host: hp ? hp[1] : v, port: hp && hp[2] ? hp[2] : "", scheme: sel.value === usual ? "" : sel.value });
+  }
+  x.i.oninput = changed;
+  sel.onchange = changed;
+  return x.i;
+}
 function sText(parent, label, key, ph, mode, hint){
   var f = sLabel(parent, label), x = sInputEl(S.f[key], ph, mode);
   x.i.oninput = function(){ S.f[key] = x.i.value.trim(); };
@@ -4250,7 +4448,6 @@ function sMsg(r){
   return true;
 }
 
-var PLATFORM_ORDER = ["zimaos", "proxmox", "truenas", "unraid", "synology", "omv", "linux"];
 function sRender(){
   var b = sEl("sbody"), I = S.info, f = S.f;
   b.innerHTML = "";
@@ -4268,50 +4465,27 @@ function sRender(){
   b.appendChild(dv0);
 
   // ---------- SERVER ----------
+  // the same order as Add server: name, type, address, login
   var c = sSec(b, "SERVER");
-  var sh = sLabel(c, "SERVER ADDRESS"), shx = sInputEl(f.serverHost, "192.168.1.10 or a name", "url");
-  shx.i.oninput = function(){ S.f.serverHost = shx.i.value.trim(); };
-  sh.appendChild(shx.w);
-  sHint(c, "Your server's IP or name, without http:// or a port. Used for the LIVE / OFFLINE status (does anything on the server answer?), Reboot / Shut down, and as the usual address for Glances and the server system. Use your VPN address to reach it away from home.");
-  sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
-
-  // ---------- SERVER TYPE (only changes how Reboot / Shut down reaches the server) ----------
   var P = f.platform, hostPh = f.serverHost || I.host || "192.168.1.10", PL = I.platforms;
-  sRadio(c, "SERVER TYPE", "platform", PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }), function(){ sRender(); })
-    .querySelector(".seg").classList.add("segw");
-  var urlKey = P !== "none" ? PL[P].url : null;
-  var defUrl = urlKey ? PL[P].def.replace("{h}", hostPh) : "";
-  var addrField = function(label){
-    var ports = URL_PORTS[P], dsc = (PL[P].def.match(/^(https?)/) || [])[1] || "http";
-    var pp = ports ? (ports.http === ports.https ? "port " + ports.http : "port " + ports.http + " (http) or " + ports.https + " (https)") : "";
-    sUrl(c, label, urlKey, { scheme: dsc, ports: ports, host: f.serverHost || I.host, ph: hostPh + " (the server)" },
-      "Leave empty for " + defUrl + ". Otherwise type only the IP or domain" + (pp ? "; for IP addresses and local names " + pp + " is added unless you type another" : "") + ".");
-  };
-  if (P === "none") {
-    sHint(c, "Pick the system your server runs. It only changes how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.");
-  } else if (P === "zimaos") {
-    sHint(c, "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.");
-    addrField("ZIMAOS ADDRESS");
-  } else if (P === "proxmox") {
-    sHint(c, "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.");
-    addrField("PROXMOX ADDRESS");
+  var nmf = sLabel(c, "SERVER NAME"), nmx = sInputEl(S.title, "e.g. NAS", null);
+  nmx.i.maxLength = 20;
+  nmx.i.oninput = function(){ S.title = nmx.i.value; };
+  nmf.appendChild(nmx.w);
+  var tf = sLabel(c, "SERVER TYPE");
+  tf.appendChild(radioRow(typeOpts(PL), P, function(v){ f.platform = v; sRender(); }));
+  sHint(c, TYPE_HINT[P] || TYPE_HINT.none);
+  serverAddrField(c, "SERVER ADDRESS", { PL: PL, platform: P, host: f.serverHost, scheme: f.serverScheme, port: f.serverPort,
+    onChange: function(a){ f.serverHost = a.host; f.serverScheme = a.scheme; f.serverPort = a.port; } });
+  sHint(c, addrHint(PL, P));
+  // an older separate address for the server system on another host (still used until it's cleared)
+  if (P !== "none" && f[PL[P].url]) {
+    var ov = sRow(c, "Reboot / Shut down use " + f[PL[P].url], "A separate address from an older version of -board");
+    sChip(ov, "Use the server address", function(){ f[PL[P].url] = ""; sRender(); });
+  }
+  if (P === "proxmox") {
     sText(c, "NODE NAME", "proxmoxNode", "Automatic (e.g. pve)", null, "Only needed in a cluster: the node to reboot, as shown in the Proxmox web UI.");
-  } else if (P === "truenas") {
-    sHint(c, "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. TrueNAS 25.04 and newer are reached through their WebSocket API, older versions and CORE through the REST API. Accounts with two-factor login can't be used.");
-    addrField("TRUENAS ADDRESS");
-    sHint(c, "With https, TrueNAS needs a certificate the iPhone trusts (its own self-signed one won't work for the WebSocket). Plain http on your home network or VPN is fine.");
-  } else if (P === "unraid") {
-    sHint(c, "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.");
-    addrField("UNRAID ADDRESS");
-  } else if (P === "synology") {
-    sHint(c, "Synology DSM: Reboot / Shut down use the DSM Web API with an administrator account. Nothing to install. Accounts with two-factor login can't be used; make a separate administrator account for -board if yours has it.");
-    addrField("SYNOLOGY DSM ADDRESS");
-  } else if (P === "omv") {
-    sHint(c, "OpenMediaVault: Reboot / Shut down use OpenMediaVault's own API with an administrator account (admin by default). Nothing to install.");
-    addrField("OPENMEDIAVAULT ADDRESS");
-  } else {
-    sHint(c, "Debian, Ubuntu Server, Fedora and other systemd Linux have no web API for reboot, so -board uses a tiny helper service on the server: one Python 3 file, protected by a secret key that stays on this phone and the server.");
-    addrField("HELPER ADDRESS");
+  } else if (P === "linux") {
     var hb = sChip(c, I.logins.linux ? "Copy setup command" : "Create key & copy setup command", function(){
       var k = "";
       try {
@@ -4322,7 +4496,7 @@ function sRender(){
       sSend({ op: "helper", s: S.f, key: k }, function(r){ if (sMsg(r)) { I.logins.linux = true; st.hasLogin = (UI.platform === "linux") || st.hasLogin; sRender(); } });
     });
     hb.style.alignSelf = "flex-start";
-    sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address.");
+    sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address or port.");
   }
   if (P !== "linux" && P !== "none") {
     var LN = PL[P].login;
@@ -4383,6 +4557,7 @@ function sRender(){
       sSend({ op: "forget", platform: "linux" }, function(r){ if (sMsg(r)) { I.logins.linux = false; if (UI.platform === "linux") st.hasLogin = false; sRender(); } });
     });
   }
+  sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
   var res = document.createElement("div");
   res.className = "sres";
   var tb = sChip(c, "Test connection", function(){
@@ -4609,11 +4784,11 @@ function saveSettings(){
   }
   if (!String(f.serverHost || "").trim()) { sEl("serr").textContent = "Enter your server's IP or name (Settings > Server)"; return; }
   if (f.baseUrl && !/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
-  var urls = PLATFORM_ORDER.map(function(k){ return [S.info.platforms[k].url, S.info.platforms[k].name]; });
+  var urls = [];
   for (i = 0; i < urls.length; i++) {
     if (f[urls[i][0]] && !/^https?:\\/\\//i.test(f[urls[i][0]])) { sEl("serr").textContent = "The " + urls[i][1] + " address must start with http:// or https://"; return; }
   }
-  sSend({ op: "save", s: f, gpass: S.gpass, clearGpass: S.clearGpass }, function(r){
+  sSend({ op: "save", s: f, title: S.title, gpass: S.gpass, clearGpass: S.clearGpass }, function(r){
     if (sMsg(r)) { S.saved = true; closeSettings(); }
   });
 }
@@ -4922,11 +5097,38 @@ async function showLiveDashboard(openStackId) {
           const before = listServers().map((x) => x.id);
           let ok = false;
           if (d.act === "switch") ok = setCurrentServer(d.id);
-          else if (d.act === "add") ok = !!addServer(d.name, d.host);
+          else if (d.act === "add") {
+            // the new server's address and type; the login (if given) is checked before the server is added
+            const own = cleanSettings({
+              ...SET, serverHost: d.host, serverScheme: d.scheme, serverPort: d.port, platform: d.platform || "none",
+              proxmoxNode: "", baseUrl: "", username: "", diskMounts: [], networkInterface: "",
+              ...Object.fromEntries(PLATFORM_KEYS.map((k) => [PLATFORMS[k].url, ""])),
+            });
+            const withLogin = !!(DRIVERS[own.platform] && d.u && d.p);
+            if (withLogin) {
+              const r = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, own), own);
+              if (!r.ok) {
+                const error = (r.msg || "The login didn't work.") + (r.net ? " Check the address, or add the server without the login and enter it later." : "");
+                await wv.evaluateJavaScript(`addServerResult(${JSON.stringify({ ok: false, error })})`, false);
+                return;
+              }
+            }
+            const id = addServer(d.name, { serverHost: own.serverHost, serverScheme: own.serverScheme, serverPort: own.serverPort, platform: own.platform });
+            if (withLogin) {
+              Keychain.set(loginKeys(own.platform, id).user, d.u);
+              Keychain.set(loginKeys(own.platform, id).pass, d.p);
+            }
+            await wv.evaluateJavaScript(`addServerResult({ ok: true })`, false);
+            ok = true;
+            d.next = own.platform === "linux" ? "settings" : withLogin ? "Server added, login checked and saved" : "Server added";
+          }
           else if (d.act === "remove") ok = removeServer(d.id);
           if (!ok) return;
           await showServer(wv, before.indexOf(CUR) < 0 ? 1 : d.dir || 0);
-          if (d.act === "add") await wv.evaluateJavaScript("setTimeout(openSettings, 450)", false);
+          // Linux still needs its helper set up: straight to its settings
+          if (d.act === "add") {
+            await wv.evaluateJavaScript(d.next === "settings" ? "setTimeout(openSettings, 450)" : `toast(${JSON.stringify(d.next)}, 3000)`, false);
+          }
           if (d.act === "remove") await wv.evaluateJavaScript(`toast("Server removed", 2500)`, false);
         } catch (e) {}
       })();
@@ -4970,7 +5172,7 @@ async function showLiveDashboard(openStackId) {
       continue;
     }
     // a changed address is checked straight away
-    const rk = serverHostOf(SET) + "|" + SET.platform + "|" + SET.monitoring;
+    const rk = serverUrlOf(SET) + "|" + SET.platform + "|" + SET.monitoring + "|" + SET.baseUrl;
     if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > REACH_SECONDS * 1000)) {
       reachBusy = true;
       reachFor = rk;
