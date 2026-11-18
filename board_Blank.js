@@ -7,7 +7,8 @@
 // - The free Scriptable app on your iPhone.
 // - A home server running ZimaOS, Proxmox VE, TrueNAS, Unraid, Synology DSM, OpenMediaVault,
 //   or any mainstream Linux (Debian, Ubuntu Server, Fedora, ...).
-// - Glances running on your server with its web server / API turned on (default port 61208).
+// - Optional, for the Monitoring panel and the widget's gauges (Settings > Monitoring; on by default):
+//   Glances running on your server with its web server / API turned on (default port 61208).
 //   Docker (any OS):  docker run -d --name glances --restart unless-stopped -p 61208:61208 --pid host \
 //                       -e GLANCES_OPT="-w" -v /var/run/docker.sock:/var/run/docker.sock:ro nicolargo/glances
 //   (TrueNAS and Unraid: as a custom app / from Community Apps; Synology: Container Manager)
@@ -28,15 +29,16 @@
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
-// 2. Run it. Settings opens: pick http / https and type your server IP (e.g. 192.168.1.10; port 61208 is added),
-//    pick your server type, tap "Test connection", then Save.
+// 2. Run it. Settings opens: type your server's IP or name (e.g. 192.168.1.10), pick your server type,
+//    turn Monitoring off if you don't run Glances, tap "Test connection", then Save.
 // 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
 //
 // HOW TO USE
-// - Tap the widget to open the live dashboard. The CPU / RAM / storage cards and network speed sit in
-//   the "Monitoring" panel; tap a card for details, temperatures and a history graph.
+// - Tap the widget to open the live dashboard. LIVE / OFFLINE shows whether anything on the server answers.
+//   The CPU / RAM / storage cards and network speed sit in the fold-away "Monitoring" panel; tap a card for
+//   details, temperatures and a history graph. Monitoring off: no panel, no gauges, no requests to Glances.
 // - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack.
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
@@ -51,7 +53,9 @@
 // ---------- Default settings (change them here or in the dashboard's Settings) ----------
 const CONFIG = {
   title: "MY SERVER",
-  baseUrl: "",                          // your Glances address, e.g. "http://192.168.1.10:61208" (empty = asked on first run)
+  serverHost: "",                       // your server's IP or name, e.g. "192.168.1.10" (empty = asked on first run)
+  monitoring: true,                     // Monitoring panel and widget gauges from Glances; false = no Glances requests at all
+  baseUrl: "",                          // Glances address; empty = the server address on port 61208
   apiVersion: 4,                        // Glances 4.x = 4, Glances 3.x = 3
   username: "",                         // only if you enabled Glances auth
   password: "",
@@ -63,7 +67,7 @@ const CONFIG = {
   linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS / Proxmox page); empty = no button
   platform: "none",                     // server type for Reboot / Shut down, picked in Settings: "none" (not picked yet), "zimaos",
                                         // "proxmox", "truenas", "unraid", "synology", "omv" (OpenMediaVault) or "linux"
-  // Addresses used by Reboot / Shut down; empty = the Glances server with the usual port for that system
+  // Addresses used by Reboot / Shut down; empty = the server address with the usual port for that system
   zimaUrl: "",                          // ZimaOS: http, port 80
   proxmoxUrl: "",                       // Proxmox VE: https, port 8006
   proxmoxNode: "",                      // Proxmox node name; empty = found automatically
@@ -76,7 +80,7 @@ const CONFIG = {
 
 // Server types (Settings > Server). Monitoring works the same on all of them (Glances);
 // they only change how Reboot / Shut down reaches the server.
-// url: the setting with its address; def: the usual address ({h} = the Glances server); login: name in the login popup
+// url: the setting with its address; def: the usual address ({h} = the server address); login: name in the login popup
 // (null = no login: the Linux helper uses its secret key)
 const PLATFORMS = {
   zimaos: { name: "ZimaOS", login: "ZimaOS", url: "zimaUrl", def: "http://{h}" },
@@ -126,6 +130,8 @@ const GLOW_LEVELS = { off: 0, soft: 0.3, normal: 0.5, strong: 0.75 };
 
 // ---------- Settings (gear icon in the live dashboard) ----------
 const DEFAULTS = {
+  serverHost: CONFIG.serverHost,
+  monitoring: CONFIG.monitoring,
   baseUrl: CONFIG.baseUrl,
   apiVersion: CONFIG.apiVersion,
   username: CONFIG.username,
@@ -181,6 +187,12 @@ function cleanSettings(raw) {
   str("baseUrl");
   if (!/^https?:\/\/[^\/:]+/i.test(out.baseUrl)) out.baseUrl = "";
   out.baseUrl = out.baseUrl.replace(/\/+$/, "");
+  // the server's IP or name only (a pasted address is trimmed to its host); settings from before it
+  // existed take it from their Glances address
+  str("serverHost", 200);
+  out.serverHost = out.serverHost.replace(/^[a-z]+:\/\//i, "").replace(/[\/?#].*$/, "").replace(/^([^\[\]:]+):\d+$/, "$1");
+  if (!out.serverHost && out.baseUrl) out.serverHost = hostOf(out.baseUrl);
+  bool("monitoring");
   num("apiVersion", 3, 4);
   str("username", 100);
   // "none" = not picked yet. Settings saved by the older ZimaOS-only -board
@@ -250,6 +262,17 @@ function hostOf(url) {
   return m ? m[1] : "localhost";
 }
 
+// The server's IP or name ("" = not set up yet)
+function serverHostOf(s) {
+  return s.serverHost || (s.baseUrl ? hostOf(s.baseUrl) : "");
+}
+
+// Where Glances answers: the address in Settings, or the server on Glances' usual port 61208
+function glancesUrl(s) {
+  const h = serverHostOf(s);
+  return s.baseUrl || (h ? `http://${h}:61208` : "");
+}
+
 const GLANCES_PASS_KEY = "board-glances-pass";
 let SET = loadSettings();
 
@@ -258,11 +281,11 @@ let SET = loadSettings();
 // Optional fields: path ("/admin"), https (true)
 // logo: image URL for the button (emoji "icon" is the fallback). Logos come from
 // the free dashboard-icons set: https://github.com/homarr-labs/dashboard-icons
-let HOST = hostOf(SET.baseUrl); // buttons use the same server address as Glances
+let HOST = serverHostOf(SET) || "localhost"; // built-in buttons use the server address
 const LOGO_CDN = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
 // Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
 // You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "🎬", logo: LOGO_CDN + "jellyfin.png" }
-// (optional: path: "/admin", https: true). They use the same server address as Glances.
+// (optional: path: "/admin", https: true). They use the server address from Settings.
 const BUILTIN = [];
 function buildServices() {
   return BUILTIN.map((s) => ({
@@ -276,7 +299,7 @@ let SERVICES = buildServices();
 // After Settings are saved (or imported): use the new values right away
 function applySettings() {
   SET = loadSettings();
-  HOST = hostOf(SET.baseUrl);
+  HOST = serverHostOf(SET) || "localhost";
   SERVICES = buildServices();
 }
 
@@ -521,7 +544,7 @@ function getPayload() {
     cdn: LOGO_CDN,
     hasLogin: PLATFORMS[SET.platform] ? hasLogin() : false,
     title: getTitle(),
-    host: SET.baseUrl ? HOST : "",
+    host: serverHostOf(SET),
     ui: {
       cols: SET.columns,
       // the Reboot / Shut down menu needs a known server type
@@ -530,6 +553,7 @@ function getPayload() {
       login: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].login : null,  // name in the login popup; null = no login
       userPh: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].userPh || "" : "",
       widgetMax: SET.widgetRows * 4,
+      monitoring: SET.monitoring,
       monOpen: SET.monitoringOpen,
       monFixed: SET.monitoringFixed,
       look: lookSettings(SET),
@@ -596,10 +620,10 @@ function savedLogin(platform) {
   return { user: Keychain.get(k.user), pass: Keychain.get(k.pass) };
 }
 
-// The address Reboot / Shut down uses for a server type: the one in Settings, or the usual one on the Glances server
+// The address Reboot / Shut down uses for a server type: the one in Settings, or the usual one on the server address
 function platformBase(P, s = SET) {
   const pl = PLATFORMS[P];
-  return (s[pl.url] || pl.def.replace("{h}", hostOf(s.baseUrl))).replace(/\/+$/, "");
+  return (s[pl.url] || pl.def.replace("{h}", serverHostOf(s) || "localhost")).replace(/\/+$/, "");
 }
 
 const powerSent = (action) =>
@@ -710,7 +734,7 @@ async function pveNode(base, auth, s = SET) {
   }
   if (nodes.length === 1) return { node: nodes[0] };
   if (!nodes.length) return { error: "Proxmox didn't list any nodes. Enter the node name in Settings." };
-  const host = hostOf(s.baseUrl).toLowerCase();
+  const host = serverHostOf(s).toLowerCase();
   let hit = nodes.find((n) => n.toLowerCase() === host || host.startsWith(n.toLowerCase() + "."));
   if (!hit) {
     try {
@@ -1141,7 +1165,10 @@ async function testPower(s) {
 async function settingsOp(d) {
   const data = loadData();
   if (d.op === "load") {
-    const [fs, net] = await Promise.all([api("fs").catch(() => null), api("network").catch(() => null)]);
+    // the drive and network lists come from Glances (only asked when Monitoring is on)
+    const [fs, net] = SET.monitoring && serverHostOf(SET)
+      ? await Promise.all([api("fs").catch(() => null), api("network").catch(() => null)])
+      : [null, null];
     const mounts = Array.isArray(fs)
       ? fs
           .filter((x) => x && x.mnt_point && isRealDrive(x))
@@ -1158,9 +1185,9 @@ async function settingsOp(d) {
       ok: true,
       s: SET,
       defaults: DEFAULTS,
-      host: SET.baseUrl ? HOST : "",
+      host: serverHostOf(SET),
       hasBuiltin: BUILTIN.length > 0,
-      firstRun: !SET.baseUrl,
+      firstRun: !serverHostOf(SET),
       mounts,
       ifaces,
       hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
@@ -1185,24 +1212,30 @@ async function settingsOp(d) {
     // tests the values in the form, saved or not
     const s = cleanSettings(d.s);
     const lines = [];
-    if (!s.baseUrl) return { ok: true, lines: [{ ok: false, t: "Enter your Glances address first, e.g. http://192.168.1.10:61208" }] };
-    const t0 = Date.now();
-    try {
-      const q = await glancesRequest(s, "quicklook", d.gpass || null);
-      lines.push({ ok: true, t: `Glances: OK (${Date.now() - t0} ms${q && q.cpu_name ? ", " + q.cpu_name : ""})` });
-    } catch (e) {
-      // maybe it's the other Glances API version (distro packages are often Glances 3.x)
-      const other = s.apiVersion === 4 ? 3 : 4;
-      let otherOk = false;
+    if (!serverHostOf(s)) return { ok: true, lines: [{ ok: false, t: "Enter your server's IP or name first, e.g. 192.168.1.10" }] };
+    const reach = await serverReachable(s);
+    lines.push(reach
+      ? { ok: true, t: `Server: reachable (${reach} answered)` }
+      : { ok: false, t: `Server: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)` });
+    if (s.monitoring) {
+      const t0 = Date.now();
       try {
-        await glancesRequest({ ...s, apiVersion: other }, "quicklook", d.gpass || null);
-        otherOk = true;
-      } catch (e2) {}
-      lines.push(
-        otherOk
-          ? { ok: false, t: `Glances: answers with API version ${other}, not ${s.apiVersion}. Pick ${other} under GLANCES API VERSION.` }
-          : { ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, that Glances runs with -w, and your VPN if you're away from home)" }
-      );
+        const q = await glancesRequest(s, "quicklook", d.gpass || null);
+        lines.push({ ok: true, t: `Glances: OK (${Date.now() - t0} ms${q && q.cpu_name ? ", " + q.cpu_name : ""})` });
+      } catch (e) {
+        // maybe it's the other Glances API version (distro packages are often Glances 3.x)
+        const other = s.apiVersion === 4 ? 3 : 4;
+        let otherOk = false;
+        try {
+          await glancesRequest({ ...s, apiVersion: other }, "quicklook", d.gpass || null);
+          otherOk = true;
+        } catch (e2) {}
+        lines.push(
+          otherOk
+            ? { ok: false, t: `Glances: answers with API version ${other}, not ${s.apiVersion}. Pick ${other} under GLANCES API VERSION.` }
+            : { ok: false, t: "Glances: no answer at " + glancesUrl(s) + " (check the address and that Glances runs with -w, or turn Monitoring off)" }
+        );
+      }
     }
     lines.push(await testPower(s));
     return { ok: true, lines };
@@ -1456,13 +1489,16 @@ function glancesPass() {
 }
 
 async function glancesRequest(set, path, pass) {
-  const req = new Request(`${set.baseUrl}/api/${set.apiVersion}/${path}`);
+  const req = new Request(`${glancesUrl(set)}/api/${set.apiVersion}/${path}`);
   req.timeoutInterval = 5;
   if (set.username) {
     const token = Data.fromString(`${set.username}:${pass != null ? pass : glancesPass()}`).toBase64String();
     req.headers = { Authorization: `Basic ${token}` };
   }
-  return await req.loadJSON();
+  const j = await req.loadJSON();
+  const code = req.response && req.response.statusCode;
+  if (code && code >= 400) throw new Error(`Glances answered HTTP ${code}`);
+  return j;
 }
 
 // opts.disks / opts.net = false skip what a view doesn't show (the small widget only has CPU and RAM).
@@ -1710,6 +1746,32 @@ let statusBusy = false;
 let statusDirty = false;
 let lastStatus = 0;
 
+// ---------- Is the server reachable? (the LIVE / OFFLINE status) ----------
+// There is no ping on iOS, so this asks the usual places on the server at once: its web ports (80 / 443),
+// the server system's own address (Reboot / Shut down), Glances when Monitoring is on, and your service
+// buttons on that host. Any answer, even an error page, counts. Returns what answered first, or "" for none.
+const REACH_SECONDS = 10; // how often the dashboard checks
+async function serverReachable(s = SET, timeout = 3) {
+  const host = serverHostOf(s);
+  if (!host) return "";
+  const urls = new Set([`http://${host}/`, `https://${host}/`]);
+  if (PLATFORMS[s.platform]) urls.add(platformBase(s.platform, s) + "/");
+  if (s.monitoring) urls.add(glancesUrl(s) + "/");
+  try {
+    for (const sv of getServices(false)) if (hostOf(sv.url) === host && urls.size < 12) urls.add(sv.url);
+  } catch (e) {}
+  const label = (u) => (u.match(/^https?:\/\/[^\/]+/i) || [u])[0].replace(/^https?:\/\//i, "");
+  return new Promise((resolve) => {
+    let left = urls.size;
+    for (const u of urls) {
+      pingUrl(u, timeout).then((ok) => {
+        if (ok) resolve(label(u));
+        else if (--left === 0) resolve("");
+      });
+    }
+  });
+}
+
 // ---------- Temperatures (from the Glances sensors plugin) ----------
 function parseTemps(sens) {
   const all = (Array.isArray(sens) ? sens : []).filter(
@@ -1924,9 +1986,9 @@ function addSymbolText(parent, symbol, text, color) {
 
 // The slow part of the button grid (status checks, logo downloads). The widget starts it at the same
 // time as the stats request, so the two run side by side.
-async function prepareGrid() {
+async function prepareGrid(maxCells) {
   // Uses your widget layout (set in the live dashboard: Widget layout)
-  const list = widgetCells(getLayout());
+  const list = widgetCells(getLayout()).slice(0, maxCells || 99);
   // a stack pill needs the status of every button inside it
   const toCheck = [];
   for (const c of list) toCheck.push(...(c.kind === "group" ? c.members : [c]));
@@ -1941,7 +2003,8 @@ async function prepareGrid() {
     const up = s.members.filter((m) => status[m.id]).length;
     return up === s.members.length ? "#34e0a1" : up === 0 ? "#ff5d73" : "#ffb454";
   };
-  return { list, dotColor };
+  const upCount = toCheck.filter((x) => status[x.id]).length;
+  return { list, dotColor, upCount, total: toCheck.length, checked: SET.widgetStatusDots };
 }
 
 // Service buttons grid for the large widget (tap = open in Safari)
@@ -2006,12 +2069,12 @@ async function buildWidget() {
   w.url = URLScheme.forRunningScript(); // tap = live dashboard
 
   // not set up yet: ask to open the app
-  if (!SET.baseUrl) {
+  if (!serverHostOf(SET)) {
     const t = w.addText(getTitle());
     t.font = Font.heavyRoundedSystemFont(12);
     t.textColor = Color.white();
     w.addSpacer();
-    const m = w.addText("Tap to set up -board:\nenter your Glances address in Settings.");
+    const m = w.addText("Tap to set up -board:\nenter your server's address in Settings.");
     m.font = Font.systemFont(12);
     m.textColor = new Color("#ffffff", 0.75);
     w.addSpacer();
@@ -2026,15 +2089,22 @@ async function buildWidget() {
   title.textColor = Color.white();
   header.addSpacer();
 
-  // the large widget's button checks run while the stats load
-  const gridPrep = large ? prepareGrid().catch(() => null) : null;
-  let stats;
-  try {
-    // the small widget only shows CPU and RAM
-    stats = await getStats(small ? { disks: false, net: false } : {});
-  } catch (e) {
-    stats = null;
+  // everything runs side by side: is the server reachable, the buttons' checks and (with Monitoring) the stats.
+  // Without Monitoring the widget shows buttons instead of gauges (medium: 2 rows; small: a summary).
+  const mon = SET.monitoring;
+  const reachP = serverReachable(SET).catch(() => "");
+  const gridPrep = large || !mon ? prepareGrid(large ? 0 : small ? 0 : 8).catch(() => null) : null;
+  let stats = null;
+  if (mon) {
+    try {
+      // the small widget only shows CPU and RAM
+      stats = await getStats(small ? { disks: false, net: false } : {});
+    } catch (e) {
+      stats = null;
+    }
   }
+  // Glances answering means the server is up, so there's no need to wait for the other checks then
+  const reach = stats ? true : !!(await reachP);
 
   // status pill
   const pill = header.addStack();
@@ -2045,9 +2115,9 @@ async function buildWidget() {
   time.dateFormat = "HH:mm";
   const dot = pill.addText("●");
   dot.font = Font.systemFont(8);
-  dot.textColor = stats ? new Color("#34e0a1") : new Color("#ff5d73");
+  dot.textColor = reach ? new Color("#34e0a1") : new Color("#ff5d73");
   pill.addSpacer(4);
-  const pillText = pill.addText(stats ? time.string(new Date()) : "OFFLINE");
+  const pillText = pill.addText(reach ? time.string(new Date()) : "OFFLINE");
   pillText.font = Font.boldMonospacedSystemFont(10);
   pillText.textColor = Color.white();
 
@@ -2068,12 +2138,47 @@ async function buildWidget() {
     btn.addSpacer();
   }
 
+  // Monitoring off: service buttons (medium / large) or a summary (small)
+  if (!mon) {
+    const prep = await gridPrep;
+    if (small) {
+      w.addSpacer();
+      const big = w.addText(reach ? "ONLINE" : "OFFLINE");
+      big.font = Font.heavyRoundedSystemFont(20);
+      big.textColor = reach ? new Color("#34e0a1") : new Color("#ff5d73");
+      if (prep && prep.checked && prep.total) {
+        w.addSpacer(2);
+        const sub = w.addText(`${prep.upCount} of ${prep.total} services up`);
+        sub.font = Font.mediumSystemFont(11);
+        sub.textColor = new Color("#ffffff", 0.75);
+      }
+      w.addSpacer();
+    } else {
+      w.addSpacer(10);
+      if (prep && prep.list.length) addServiceGrid(w, prep);
+      else {
+        const m = w.addText(reach ? "Add service buttons in the dashboard with +." : "Can't reach the server.\nCheck the address in Settings, and your VPN if you're away from home.");
+        m.font = Font.systemFont(11);
+        m.textColor = new Color("#ffffff", 0.7);
+      }
+      w.addSpacer();
+    }
+    return w;
+  }
+
   if (!stats) {
     w.addSpacer();
-    const msg = w.addText("Can't reach the server.\nCheck the address in Settings, and your VPN if you're away from home.");
+    const msg = w.addText(reach
+      ? "The server is up, but Glances isn't answering.\nCheck the Glances address in Settings > Monitoring."
+      : "Can't reach the server.\nCheck the address in Settings, and your VPN if you're away from home.");
     msg.font = Font.systemFont(11);
     msg.textColor = new Color("#ffffff", 0.7);
     w.addSpacer();
+    if (large) {
+      const prep = await gridPrep;
+      if (prep && prep.list.length) addServiceGrid(w, prep);
+      w.addSpacer();
+    }
     return w;
   }
 
@@ -2140,8 +2245,11 @@ main{position:relative;min-height:100vh;padding:calc(env(safe-area-inset-top,0px
 header{display:flex;align-items:center;justify-content:space-between}
 h1{font-size:22px;font-weight:800;letter-spacing:.12em}
 .live{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.1)}
-.dot{width:8px;height:8px;border-radius:50%;background:#34e0a1;animation:pulse 1.6s ease-in-out infinite}
-.dot.off{background:#ff5d73;animation:none}
+.dot{width:8px;height:8px;border-radius:50%;background:#34e0a1;box-shadow:0 0 6px rgba(52,224,161,.7)}
+.dot.off{background:#ff5d73;box-shadow:0 0 6px rgba(255,93,115,.7)}
+.dot.wait{background:rgba(255,255,255,.35);box-shadow:none}
+#monst{flex:1;text-align:right;margin-right:10px;font-size:10px;letter-spacing:.1em;color:#ffb454;opacity:.9}
+body.nomon .monwrap{display:none}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,224,161,.7)}70%{box-shadow:0 0 0 9px rgba(52,224,161,0)}100%{box-shadow:0 0 0 0 rgba(52,224,161,0)}}
 #grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:18px 12px 14px;display:flex;flex-direction:column;align-items:center;gap:10px}
@@ -2549,8 +2657,8 @@ body:not(.splashon) #splash{display:none}
 <div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="b3"></div></div>
 <div class="topfade"></div>
 <main>
-<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot" id="dot"></div><span id="st">LIVE</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
-<div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
+<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><span id="monst"></span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
 <div id="grid"></div>
 <div class="netcard">
 <div class="net"><span class="arrow dn">&#8595;</span><b id="down">0 B/s</b><span>DOWNLOAD</span></div>
@@ -2675,9 +2783,19 @@ function tick(){
   }
   if (busy) requestAnimationFrame(tick); else running = false;
 }
+// LIVE / OFFLINE: whether the server answers at all (not just Glances)
+var reachKnown = false;
 function setStatus(ok){
+  reachKnown = true;
   document.getElementById("dot").className = ok ? "dot" : "dot off";
   document.getElementById("st").textContent = ok ? "LIVE" : "OFFLINE";
+}
+function setReach(ok){ setStatus(!!ok); }
+// Glances answering or not: shown on the Monitoring bar, separate from LIVE / OFFLINE
+function glancesState(ok){
+  document.getElementById("monst").textContent = ok ? "" : "NO DATA";
+  // a Glances answer also means the server is up
+  if (ok && !reachKnown) setStatus(true);
 }
 var HMAX = 100, hist = { t: [] }, last = null, dets = {}, expanded = null;
 function esc(t){ var d = document.createElement("div"); d.textContent = String(t); return d.innerHTML; }
@@ -2896,7 +3014,7 @@ function update(s){
   pushHist("cpu", s.cpu);
   pushHist("ram", s.ram);
   if (s.storage) pushHist("disk", s.storage.percent);
-  setStatus(true);
+  glancesState(true);
   put("cpu", "CPU", s.cpu);
   put("ram", "RAM", s.ram);
   if (s.storage) put("disk", "STORAGE", s.storage.percent);
@@ -2904,9 +3022,14 @@ function update(s){
   document.getElementById("up").textContent = fmt(s.net.up);
   if (expanded) renderDetail(expanded);
 }
+// setup: no server address yet; otherwise Glances didn't answer
 function offline(setup){
-  setStatus(false);
-  if (setup) document.getElementById("st").textContent = "SETUP";
+  if (setup) {
+    document.getElementById("dot").className = "dot wait";
+    document.getElementById("st").textContent = "SETUP";
+    return;
+  }
+  glancesState(false);
 }
 var ign = 0, editId = null, cur = null, delArmed = false;
 var pTimer = null, sx = 0, sy = 0, lastX = 0, lastY = 0, pEl = null, pSv = null;
@@ -3233,7 +3356,7 @@ function init(t, p){
   document.getElementById("title").textContent = t;
   animDraw = true;
   renderServices(p);
-  if (UI.monOpen && !monOpen) toggleMon();
+  if (UI.monOpen && !monOpen && UI.monitoring !== false) toggleMon();
   // startup screen only when it's turned on in Settings
   if (UI.splash) boot(); else skipSplash(true);
 }
@@ -3500,8 +3623,10 @@ function applyUi(u){
   applyLook(u.look, u);
   document.body.classList.toggle("c3", u.cols === 3);
   // Monitoring always open: the fold button is hidden and the panel stays open
+  // Monitoring off: the panel is gone (and Scriptable stops asking Glances)
+  document.body.classList.toggle("nomon", u.monitoring === false);
   document.body.classList.toggle("monfixed", !!u.monFixed);
-  if (u.monFixed && !monOpen) toggleMon();
+  if (u.monFixed && !monOpen && u.monitoring !== false) toggleMon();
   var tw = document.getElementById("tw");
   tw.classList.toggle("nop", !u.power);
   if (!u.power) togglePmenu(false);
@@ -3855,29 +3980,20 @@ function sRender(){
   if (I.firstRun) {
     var wel = document.createElement("div");
     wel.className = "cnote";
-    wel.textContent = "Welcome to -board. Enter the address of your Glances server below, tap Test connection, then Save. After that, add your services with the + button.";
+    wel.textContent = "Welcome to -board. Enter your server's IP or name below, pick its server type, tap Test connection, then Save. After that, add your services with the + button.";
     b.appendChild(wel);
   }
 
   // ---------- SERVER ----------
   var c = sSec(b, "SERVER");
-  sUrl(c, "GLANCES ADDRESS", "baseUrl", { scheme: "http", ports: { http: 61208, https: 61208 }, ph: "192.168.1.10 or a domain" }, "Pick http or https, then type the server's IP or name. Port 61208 is added for IP addresses and local names; type another one if yours differs (e.g. 192.168.1.10:8080). A public domain (behind a reverse proxy) gets no port added. Use your VPN address to see it away from home.");
-  sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
-  sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
-  var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
-  px.i.oninput = function(){ S.gpass = px.i.value; };
-  pf.appendChild(px.w);
-  if (I.hasGpass) {
-    var cg = sChip(c, "Remove saved Glances password", function(){
-      S.clearGpass = !S.clearGpass;
-      cg.textContent = S.clearGpass ? "Will be removed when you save (tap to undo)" : "Remove saved Glances password";
-    });
-    cg.style.alignSelf = "flex-start";
-  }
+  var sh = sLabel(c, "SERVER ADDRESS"), shx = sInputEl(f.serverHost, "192.168.1.10 or a name", "url");
+  shx.i.oninput = function(){ S.f.serverHost = shx.i.value.trim(); };
+  sh.appendChild(shx.w);
+  sHint(c, "Your server's IP or name, without http:// or a port. Used for the LIVE / OFFLINE status (does anything on the server answer?), Reboot / Shut down, and as the usual address for Glances and the server system. Use your VPN address to reach it away from home.");
   sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
 
   // ---------- SERVER TYPE (only changes how Reboot / Shut down reaches the server) ----------
-  var P = f.platform, hostPh = I.host || "192.168.1.10", PL = I.platforms;
+  var P = f.platform, hostPh = f.serverHost || I.host || "192.168.1.10", PL = I.platforms;
   sRadio(c, "SERVER TYPE", "platform", PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }), function(){ sRender(); })
     .querySelector(".seg").classList.add("segw");
   var urlKey = P !== "none" ? PL[P].url : null;
@@ -3885,8 +4001,8 @@ function sRender(){
   var addrField = function(label){
     var ports = URL_PORTS[P], dsc = (PL[P].def.match(/^(https?)/) || [])[1] || "http";
     var pp = ports ? (ports.http === ports.https ? "port " + ports.http : "port " + ports.http + " (http) or " + ports.https + " (https)") : "";
-    sUrl(c, label, urlKey, { scheme: dsc, ports: ports, host: I.host, ph: I.host ? I.host + " (the Glances server)" : "IP or domain" },
-      "Leave empty for " + (I.host ? defUrl : "the Glances server with the usual port") + ". Otherwise type only the IP or domain" + (pp ? "; for IP addresses and local names " + pp + " is added unless you type another" : "") + ".");
+    sUrl(c, label, urlKey, { scheme: dsc, ports: ports, host: f.serverHost || I.host, ph: hostPh + " (the server)" },
+      "Leave empty for " + defUrl + ". Otherwise type only the IP or domain" + (pp ? "; for IP addresses and local names " + pp + " is added unless you type another" : "") + ".");
   };
   if (P === "none") {
     sHint(c, "Pick the system your server runs. It only changes how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.");
@@ -4006,53 +4122,77 @@ function sRender(){
 
   // ---------- MONITORING ----------
   c = sSec(b, "MONITORING");
-  var dl = sLabel(c, "DRIVES IN THE STORAGE CARD");
-  if (I.mounts && I.mounts.length) {
-    var shown = I.mounts.slice();
-    f.diskMounts.forEach(function(m){
-      if (!shown.some(function(x){ return x.mnt === m; })) shown.push({ mnt: m, missing: true });
+  var mt = document.createElement("div");
+  mt.className = "tg";
+  mt.innerHTML = "<label>MONITORING (GLANCES)</label>";
+  mt.appendChild(sSwitch(!!f.monitoring, function(v){ f.monitoring = v; sRender(); }));
+  c.appendChild(mt);
+  sHint(c, f.monitoring
+    ? "CPU, RAM, storage and network from Glances, in a fold-away panel on the dashboard and as gauges on the widget."
+    : "Off: no Monitoring panel, no gauges on the widget (it shows your service buttons instead), and -board sends no requests to Glances. The LIVE / OFFLINE status still works.");
+  if (f.monitoring) {
+    var gh = f.serverHost || I.host;
+    sUrl(c, "GLANCES ADDRESS", "baseUrl", { scheme: "http", ports: { http: 61208, https: 61208 }, host: gh, ph: gh ? gh + " (the server)" : "IP or name" }, "Leave empty for " + (gh ? "http://" + gh + ":61208" : "the server address on port 61208") + ". Otherwise pick http or https and type the IP or name; port 61208 is added for IP addresses and local names unless you type another. A public domain (behind a reverse proxy) gets no port added.");
+    sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
+    sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
+    var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
+    px.i.oninput = function(){ S.gpass = px.i.value; };
+    pf.appendChild(px.w);
+    if (I.hasGpass) {
+      var cg = sChip(c, "Remove saved Glances password", function(){
+        S.clearGpass = !S.clearGpass;
+        cg.textContent = S.clearGpass ? "Will be removed when you save (tap to undo)" : "Remove saved Glances password";
+      });
+      cg.style.alignSelf = "flex-start";
+    }
+    var dl = sLabel(c, "DRIVES IN THE STORAGE CARD");
+    if (I.mounts && I.mounts.length) {
+      var shown = I.mounts.slice();
+      f.diskMounts.forEach(function(m){
+        if (!shown.some(function(x){ return x.mnt === m; })) shown.push({ mnt: m, missing: true });
+      });
+      shown.forEach(function(m){
+        var sub = m.missing ? "Not found in Glances right now" : sSize(m.size) + (m.dev ? " · " + m.dev : "") + (m.size ? " · " + Math.round(m.used / m.size * 100) + "% used" : "");
+        var row = sRow(dl, m.mnt, sub);
+        row.appendChild(sSwitch(f.diskMounts.indexOf(m.mnt) >= 0, function(on){
+          f.diskMounts = f.diskMounts.filter(function(x){ return x !== m.mnt; });
+          if (on) f.diskMounts.push(m.mnt);
+        }));
+      });
+      sHint(c, "None picked = pick automatically. Paths are as the Glances container sees them.");
+    } else {
+      var dx = sInputEl(f.diskMounts.join(", "), "/, /mnt/data", null);
+      dx.i.oninput = function(){ f.diskMounts = dx.i.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean); };
+      dl.appendChild(dx.w);
+      sHint(c, "Couldn't reach Glances to list the drives, so type the paths, separated by commas. Empty = pick automatically.");
+    }
+    sNum(c, "MAX DRIVES WHEN PICKED AUTOMATICALLY", "maxDisks", "3");
+    var ifo = [["", "Automatic (the busiest)"]];
+    (I.ifaces || []).forEach(function(n){ ifo.push([n, n]); });
+    if (f.networkInterface && !ifo.some(function(o){ return o[0] === f.networkInterface; })) ifo.push([f.networkInterface, f.networkInterface]);
+    sSelect(c, "NETWORK INTERFACE", "networkInterface", ifo, I.ifaces ? null : "Couldn't reach Glances to list the interfaces.");
+    sToggle(c, "OPEN MONITORING ON START", "monitoringOpen");
+    sToggle(c, "KEEP MONITORING ALWAYS OPEN", "monitoringFixed", "Removes the Monitoring button, so the cards and network speed always show.");
+    sNum(c, "DASHBOARD UPDATES EVERY (SECONDS)", "liveSeconds", "3", "Lower = smoother graphs, more battery while the dashboard is open.");
+    var tl = sLabel(c, "TEMPERATURE COLOURS (°C)");
+    var th = document.createElement("div");
+    th.className = "trow th";
+    th.innerHTML = "<span></span><span>ORANGE FROM</span><span>RED FROM</span>";
+    tl.appendChild(th);
+    [["cpu", "CPU"], ["nvme", "NVMe"], ["hdd", "HDD"]].forEach(function(k){
+      var r = document.createElement("div");
+      r.className = "trow";
+      var lb = document.createElement("b");
+      lb.textContent = k[1];
+      r.appendChild(lb);
+      ["warm", "hot"].forEach(function(w){
+        var x = sInputEl(f.tempLimits[k[0]][w], "", "numeric");
+        x.i.oninput = function(){ f.tempLimits[k[0]][w] = x.i.value.trim(); };
+        r.appendChild(x.w);
+      });
+      tl.appendChild(r);
     });
-    shown.forEach(function(m){
-      var sub = m.missing ? "Not found in Glances right now" : sSize(m.size) + (m.dev ? " · " + m.dev : "") + (m.size ? " · " + Math.round(m.used / m.size * 100) + "% used" : "");
-      var row = sRow(dl, m.mnt, sub);
-      row.appendChild(sSwitch(f.diskMounts.indexOf(m.mnt) >= 0, function(on){
-        f.diskMounts = f.diskMounts.filter(function(x){ return x !== m.mnt; });
-        if (on) f.diskMounts.push(m.mnt);
-      }));
-    });
-    sHint(c, "None picked = pick automatically. Paths are as the Glances container sees them.");
-  } else {
-    var dx = sInputEl(f.diskMounts.join(", "), "/, /mnt/data", null);
-    dx.i.oninput = function(){ f.diskMounts = dx.i.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean); };
-    dl.appendChild(dx.w);
-    sHint(c, "Couldn't reach Glances to list the drives, so type the paths, separated by commas. Empty = pick automatically.");
   }
-  sNum(c, "MAX DRIVES WHEN PICKED AUTOMATICALLY", "maxDisks", "3");
-  var ifo = [["", "Automatic (the busiest)"]];
-  (I.ifaces || []).forEach(function(n){ ifo.push([n, n]); });
-  if (f.networkInterface && !ifo.some(function(o){ return o[0] === f.networkInterface; })) ifo.push([f.networkInterface, f.networkInterface]);
-  sSelect(c, "NETWORK INTERFACE", "networkInterface", ifo, I.ifaces ? null : "Couldn't reach Glances to list the interfaces.");
-  sToggle(c, "OPEN MONITORING ON START", "monitoringOpen");
-  sToggle(c, "KEEP MONITORING ALWAYS OPEN", "monitoringFixed", "Removes the Monitoring button, so the cards and network speed always show.");
-  sNum(c, "DASHBOARD UPDATES EVERY (SECONDS)", "liveSeconds", "3", "Lower = smoother graphs, more battery while the dashboard is open.");
-  var tl = sLabel(c, "TEMPERATURE COLOURS (°C)");
-  var th = document.createElement("div");
-  th.className = "trow th";
-  th.innerHTML = "<span></span><span>ORANGE FROM</span><span>RED FROM</span>";
-  tl.appendChild(th);
-  [["cpu", "CPU"], ["nvme", "NVMe"], ["hdd", "HDD"]].forEach(function(k){
-    var r = document.createElement("div");
-    r.className = "trow";
-    var lb = document.createElement("b");
-    lb.textContent = k[1];
-    r.appendChild(lb);
-    ["warm", "hot"].forEach(function(w){
-      var x = sInputEl(f.tempLimits[k[0]][w], "", "numeric");
-      x.i.oninput = function(){ f.tempLimits[k[0]][w] = x.i.value.trim(); };
-      r.appendChild(x.w);
-    });
-    tl.appendChild(r);
-  });
 
   // ---------- WIDGET ----------
   c = sSec(b, "WIDGET");
@@ -4163,7 +4303,8 @@ function saveSettings(){
     if (!n(t.warm) || !n(t.hot)) { sEl("serr").textContent = "Use whole numbers for the temperatures"; return; }
     if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
   }
-  if (!/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
+  if (!String(f.serverHost || "").trim()) { sEl("serr").textContent = "Enter your server's IP or name (Settings > Server)"; return; }
+  if (f.baseUrl && !/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
   var urls = PLATFORM_ORDER.map(function(k){ return [S.info.platforms[k].url, S.info.platforms[k].name]; });
   for (i = 0; i < urls.length; i++) {
     if (f[urls[i][0]] && !/^https?:\\/\\//i.test(f[urls[i][0]])) { sEl("serr").textContent = "The " + urls[i][1] + " address must start with http:// or https://"; return; }
@@ -4471,29 +4612,49 @@ async function showLiveDashboard(openStackId) {
   refreshLogos(wv);
   // first run: no server yet, so go straight to Settings
   // (after the startup screen, when it's on)
-  if (!SET.baseUrl) await wv.evaluateJavaScript(`setTimeout(openSettings, ${SET.splash ? 1700 : 400})`, false);
+  if (!serverHostOf(SET)) await wv.evaluateJavaScript(`setTimeout(openSettings, ${SET.splash ? 1700 : 400})`, false);
 
   let open = true;
   const presented = wv.present(true).then(() => {
     open = false;
   });
 
+  // LIVE / OFFLINE: is anything on the server answering? Checked in the background every REACH_SECONDS.
+  let reachBusy = false;
+  let lastReach = 0;
+  let reachFor = "";
   while (open) {
-    if (!SET.baseUrl) {
+    if (!serverHostOf(SET)) {
       await wv.evaluateJavaScript("offline(true)", false);
       await sleep(1000);
       continue;
     }
-    try {
-      const stats = await getStats({ fsMaxAge: 10000 });
-      lastStats = stats;
-      await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
-    } catch (e) {
-      await wv.evaluateJavaScript("offline()", false);
+    // a changed address is checked straight away
+    const rk = serverHostOf(SET) + "|" + SET.platform + "|" + SET.monitoring;
+    if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > REACH_SECONDS * 1000)) {
+      reachBusy = true;
+      reachFor = rk;
+      serverReachable(SET)
+        .then((r) => wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r)})`, false))
+        .catch(() => {})
+        .then(() => {
+          reachBusy = false;
+          lastReach = Date.now();
+        });
     }
-    try {
-      await pushDetail(wv);
-    } catch (e) {}
+    // Monitoring off: no requests to Glances at all
+    if (SET.monitoring) {
+      try {
+        const stats = await getStats({ fsMaxAge: 10000 });
+        lastStats = stats;
+        await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
+      } catch (e) {
+        await wv.evaluateJavaScript("offline()", false);
+      }
+      try {
+        await pushDetail(wv);
+      } catch (e) {}
+    }
     if (!statusBusy && (statusDirty || Date.now() - lastStatus > SET.statusSeconds * 1000)) {
       statusBusy = true;
       statusDirty = false;

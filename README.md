@@ -7,7 +7,13 @@ The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx)
 
 ## Works with
 
-Monitoring (CPU, RAM, drives, network, temperatures) comes from Glances and works on every server.
+-board needs your **server's IP or name** (Settings > Server). The **LIVE / OFFLINE** status shows whether anything
+on the server answers: its web ports, the server system's own address, Glances and your service buttons.
+
+**Monitoring** (CPU, RAM, drives, network, temperatures) comes from Glances and works on every server. It's optional:
+turn it off in *Settings > Monitoring* and the Monitoring panel and widget gauges go away, and -board sends no requests
+to Glances (the widget then shows your service buttons). The panel is folded away by default.
+
 Reboot / Shut down depends on the system the server runs:
 
 | Server | Reboot / Shut down |
@@ -28,7 +34,7 @@ Accounts with two-factor login can't be used for Reboot / Shut down; make a sepa
 Logins are stored in the iOS Keychain. Enter a login ahead of time with **Enter login** under the server type in Settings
 (it is checked against the server before it is saved), or wait to be asked the first time you use Reboot / Shut down.
 
-## 1. Run Glances on the server
+## 1. Run Glances on the server (optional, for Monitoring)
 
 Docker (any OS):
 
@@ -44,9 +50,10 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 ## 2. Install the script
 
 1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
-2. Run it. Settings opens: in **Glances address** keep `http://` in the list and type only the server IP (e.g. `192.168.1.10`;
-   port 61208 is added for you), pick your **server type**, tap **Test connection**, then **Save**.
-   Every address field works this way: an http / https list plus the IP or name, with the usual port added for IP addresses and local names.
+2. Run it. Settings opens: under **Server**, type the server's IP or name (e.g. `192.168.1.10`) and pick your **server type**.
+   Under **Monitoring**, leave the Glances address empty if Glances runs on the same server on port 61208, or turn
+   Monitoring off if you don't use Glances. Tap **Test connection**, then **Save**.
+   Every other address field has an http / https list plus the IP or name, with the usual port added for IP addresses and local names.
 3. Add a Scriptable widget to your home screen and pick this script.
 
 ## Looks
