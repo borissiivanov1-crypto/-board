@@ -3,6 +3,9 @@
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
 The whole app is one file: `board_Blank.js`.
 
+**Android:** a native version (Kotlin + Jetpack Compose) is in [`android/`](android/). Install
+[`android/dist/board.apk`](android/dist/board.apk); see [Android app](#android-app) below.
+
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
 ## Works with
@@ -107,3 +110,29 @@ Themes, accent colours, glow, corners, font and button size work with both style
   sudo systemctl disable --now board-power
   sudo rm /usr/local/bin/board-power /etc/board-power.key /etc/systemd/system/board-power.service
   ```
+
+## Android app
+
+[`android/`](android/) is a native Android port of the script (Kotlin, Jetpack Compose, a Jetpack Glance home screen widget)
+with the same features, logic and look: several servers, LIVE / OFFLINE, Glances monitoring with the enlarged cards
+(history graph, per-core load, top processes, drives, temperatures), service buttons with up/down dots, stacks,
+drag to rearrange, Widget layout, Reboot / Shut down for ZimaOS, Proxmox, TrueNAS, Unraid, Synology, OpenMediaVault
+and Linux (the same helper setup command), every theme and accent, Classic and Liquid Glass, the startup animation,
+and Settings with Test connection.
+
+**Install:** copy [`android/dist/board.apk`](android/dist/board.apk) to the phone and open it (allow installing from
+that source when asked). Android 8.0 or newer. The APK is signed with a development key, so it installs
+directly but isn't from the Play Store.
+
+Differences from the iPhone version:
+- **Settings move between the two.** *Settings > Data > Export* on either one copies the same format, and *Import*
+  on the other reads it (all servers, buttons, stacks and layout; passwords stay on each phone).
+- Logins are stored encrypted on the phone (Android Keystore) instead of the iOS Keychain.
+- **Widget:** add it from the home screen's widget list. It asks which server to show (the Scriptable Parameter);
+  long-press it and pick *Reconfigure* to change it on Android 12 and newer. Resize it for the small, medium or
+  large layout. Android refreshes widgets at most every 15 minutes in the background; opening -board refreshes them too.
+- Self-signed https certificates are accepted for every request (as the script does for the server systems).
+- The *Rounded* font option uses Android's sans-serif (SF Pro Rounded is Apple-only).
+
+**Build it yourself:** with JDK 17+ and the Android SDK (platform 35), run `./gradlew assembleRelease` in `android/`;
+the APK is `app/build/outputs/apk/release/app-release.apk`. `./gradlew testReleaseUnitTest` runs the unit tests.
