@@ -199,13 +199,11 @@ final class Dashboard: NSObject, WKNavigationDelegate {
     }
 
     // ---------- Requests from the page ----------
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let url = action.request.url, let scheme = url.scheme?.lowercased(),
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        guard let url = navigationAction.request.url, let scheme = url.scheme?.lowercased(),
               ["add", "del", "exp", "ord", "grp", "wrd", "ttl", "set", "pwr", "srv", "open"].contains(scheme) else {
-            decisionHandler(.allow)
-            return
+            return .allow
         }
-        decisionHandler(.cancel)
         let raw = url.absoluteString
         func arg(_ name: String) -> String {
             guard let r = raw.range(of: "?\(name)=") else { return "" }
@@ -213,6 +211,7 @@ final class Dashboard: NSObject, WKNavigationDelegate {
             return v.removingPercentEncoding ?? v
         }
         handle(scheme, arg)
+        return .cancel
     }
 
     private func handle(_ scheme: String, _ arg: (String) -> String) {

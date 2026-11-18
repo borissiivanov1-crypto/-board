@@ -106,10 +106,10 @@ func cleanSettings(_ raw: Any?) -> J {
     let r = raw as? J ?? J()
     let D = DEFAULTS
     var out = J()
-    func strv(_ k: String, _ max: Int = 300) { out[k] = (r[k] as? String).map { clip(trim($0), max) } ?? D[k] }
-    func boolv(_ k: String) { out[k] = isBool(r[k]) ? (r[k] as! NSNumber).boolValue : D[k] }
+    func strv(_ k: String, _ max: Int = 300) { out[k] = (r[k] as? String).map { clip(trim($0), max) } ?? (D[k] as? String ?? "") }
+    func boolv(_ k: String) { out[k] = isBool(r[k]) ? (r[k] as! NSNumber).boolValue : (D[k] as? Bool ?? false) }
     func numv(_ k: String, _ lo: Int, _ hi: Int) { out[k] = clampNum(r[k], lo, hi, D[k] as! Int) }
-    func pick(_ k: String, _ allowed: [String]) { out[k] = (r[k] as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? D[k] }
+    func pick(_ k: String, _ allowed: [String]) { out[k] = (r[k] as? String).flatMap { allowed.contains($0) ? $0 : nil } ?? (D[k] as? String ?? "") }
 
     strv("baseUrl")
     var baseUrl = out["baseUrl"] as! String

@@ -320,7 +320,8 @@ enum Power {
         } else {
             var user = str(d, "u"), pass = str(d, "p"), saved = false
             if (user.isEmpty || pass.isEmpty) && Logins.hasLogin(P) { (user, pass) = Logins.saved(P); saved = true }
-            r = user.isEmpty || pass.isEmpty ? PowerResult(ok: false, msg: "", auth: true) : await driver(P, a, user, pass, platformBase(P, s), s)
+            if user.isEmpty || pass.isEmpty { r = PowerResult(ok: false, msg: "", auth: true) }
+            else { r = await driver(P, a, user, pass, platformBase(P, s), s) }
             if r.auth && saved { Logins.forget(P) }
             if !r.auth && !r.net && !saved && !user.isEmpty && !pass.isEmpty { Logins.save(P, user, pass) }
         }

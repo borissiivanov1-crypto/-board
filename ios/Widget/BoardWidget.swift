@@ -90,13 +90,15 @@ struct Provider: AppIntentTimelineProvider {
         let layout = store.getLayout(sid)
         // everything runs side by side: is the server reachable, the buttons' checks and (with Monitoring) the stats
         async let reachT = Net.serverReachable(s, layout.all)
-        async let gridT: ([Cell], Int, Int)? = large || !e.monitoring ? prepareGrid(s, sid, layout, small ? 0 : large ? 99 : 8) : nil
+        let mon = e.monitoring
+        async let gridT: ([Cell], Int, Int)? = large || !mon ? prepareGrid(s, sid, layout, small ? 0 : large ? 99 : 8) : nil
         if e.monitoring {
             // the small widget only shows CPU and RAM
             e.stats = try? await Glances(s, serverId: sid).getStats(disks: !small, net: !small)
         }
         // Glances answering means the server is up
-        e.reach = e.stats != nil ? true : !(await reachT).isEmpty
+        let reach = await reachT
+        e.reach = e.stats != nil || !reach.isEmpty
         if let g = await gridT { e.cells = g.0; e.upCount = g.1; e.total = g.2 }
         e.checked = bool(s, "widgetStatusDots")
         return e
@@ -155,7 +157,7 @@ struct Glass: ViewModifier {
     let radius: CGFloat
     var k: Double = 1
     var flat: Double = 0.1
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         if glass {
             content.background(
                 RoundedRectangle(cornerRadius: radius + 1, style: .continuous)
@@ -278,11 +280,11 @@ struct BoardWidgetView: View {
         if let s = st["storage"] as? J { items.append(("STORAGE", n0(s, "percent"))) }
         let shown = small ? Array(items.prefix(2)) : items
         return HStack(spacing: 0) {
-            ForEach(Array(shown.enumerated()), id: \.offset) { i, it in
+            ForEach(0..<shown.count, id: \.self) { i in
                 if i > 0 { Spacer(minLength: 0) }
                 VStack(spacing: 2) {
-                    Ring(pct: it.1, glass: e.glass)
-                    Text(it.0).font(.system(size: 9, weight: .bold, design: .rounded)).foregroundColor(.white.opacity(0.7))
+                    Ring(pct: shown[i].1, glass: e.glass)
+                    Text(shown[i].0).font(.system(size: 9, weight: .bold, design: .rounded)).foregroundColor(.white.opacity(0.7))
                 }
             }
         }

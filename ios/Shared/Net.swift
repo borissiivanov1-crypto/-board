@@ -68,8 +68,9 @@ final class Net: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
         for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
         if let b = body { r.httpBody = Data(b.utf8) }
         let s = follow ? shared.session : shared.noRedirect
+        let req = r
         return try await withTimeout(timeout + 0.5) {
-            let (d, resp) = try await s.data(for: r)
+            let (d, resp) = try await s.data(for: req)
             let h = resp as? HTTPURLResponse
             return Resp(code: h?.statusCode ?? 0, data: d, http: h)
         }

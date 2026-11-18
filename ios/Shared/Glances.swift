@@ -75,7 +75,7 @@ final class Glances {
             list = fs.filter(isRealDrive).sorted { n0($0, "size") > n0($1, "size") }
                 .filter { seen.insert(driveKey(str($0, "device_name"), str($0, "fs_type"))).inserted }
         }
-        return list.prefix(mounts.isEmpty ? int(s, "maxDisks") : 12).map { d in
+        return list.prefix(mounts.isEmpty ? int(s, "maxDisks") : 12).map { d -> J in
             let mnt = str(d, "mnt_point")
             return ["name": mnt == "/" ? "Root" : (mnt.split(separator: "/").last.map(String.init) ?? mnt),
                     "percent": n0(d, "percent"), "used": n0(d, "used"), "size": n0(d, "size"),
@@ -86,8 +86,9 @@ final class Glances {
     func pickNetwork(_ net: [J]) -> J {
         func total(_ n: J) -> Double { (num(n["bytes_recv"]) ?? num(n["rx"]) ?? 0) + (num(n["bytes_sent"]) ?? num(n["tx"]) ?? 0) }
         let want = str(s, "networkInterface")
-        let iface = !want.isEmpty ? net.first { str($0, "interface_name") == want }
-            : net.filter { !test(str($0, "interface_name"), SKIP_IFACE) }.max { total($0) < total($1) }
+        var iface: J?
+        if !want.isEmpty { iface = net.first(where: { str($0, "interface_name") == want }) }
+        else { iface = net.filter({ !test(str($0, "interface_name"), SKIP_IFACE) }).max(by: { total($0) < total($1) }) }
         guard let i = iface else { return ["down": 0, "up": 0] }
         let dt = (num(i["time_since_update"]) ?? 1) == 0 ? 1 : (num(i["time_since_update"]) ?? 1)
         return ["down": num(i["bytes_recv_rate_per_sec"]) ?? n0(i, "rx") / dt, "up": num(i["bytes_sent_rate_per_sec"]) ?? n0(i, "tx") / dt]
@@ -143,14 +144,17 @@ final class Glances {
         if key == "disk" {
             let rows = (try? await arr("diskio")) ?? []
             let disks = objs(stats["disks"])
-            let io: [Any] = disks.map { disk in
+            let io: [Any] = disks.map { disk -> Any in
                 let base = str(disk, "device").components(separatedBy: "/").last ?? ""
                 guard let row = rows.first(where: { str($0, "disk_name") == base }) else { return NSNull() }
                 let dt = n0(row, "time_since_update") == 0 ? 1 : n0(row, "time_since_update")
                 return ["read": num(row["read_bytes_rate_per_sec"]) ?? n0(row, "read_bytes") / dt, "write": num(row["write_bytes_rate_per_sec"]) ?? n0(row, "write_bytes") / dt] as J
             }
             let t: J? = (try? await arr("sensors")).map(parseTemps)
-            let temps: [Any] = disks.map { d in t.flatMap { driveTemp(d, $0) } ?? NSNull() }
+            let temps: [Any] = disks.map { d -> Any in
+                if let t = t, let x = driveTemp(d, t) { return x }
+                return NSNull()
+            }
             return ["kind": "disk", "io": io, "temps": temps, "nvme": t?["nvme"] ?? [Any](), "hdd": t?["hdd"] ?? [Any]()]
         }
         return nil
