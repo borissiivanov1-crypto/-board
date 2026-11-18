@@ -14,9 +14,8 @@
 //   Debian / Ubuntu / Proxmox host without Docker:  sudo apt install glances, then run "glances -w"
 //   (older distro packages are Glances 3.x: pick API version 3 in Settings).
 //   A Glances container only sees the drives you give it, so mount each drive you want to watch.
-// - Optional: the Reboot / Shut down menu. -board works out which system your server runs once you enter the
-//   Glances address (from what Glances reports and the server's usual web pages) and shows only its settings.
-//   You can also pick the type yourself in Settings > Server.
+// - Optional: the Reboot / Shut down menu. Pick the system your server runs in Settings > Server > Server type;
+//   Settings then shows only that system's options.
 //   ZimaOS   - your ZimaOS login. Nothing to install.
 //   Proxmox  - the Proxmox VE API (port 8006) with your Proxmox login, e.g. root@pam. Nothing to install.
 //   TrueNAS  - your TrueNAS login, over its WebSocket API (25.04+) or REST API (older, CORE). Nothing to install.
@@ -29,8 +28,8 @@
 //
 // SET UP
 // 1. In Scriptable, tap +, paste this whole script and give it a name.
-// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208);
-//    the server type is detected. Tap "Test connection", then Save.
+// 2. Run it. Settings opens: enter your Glances address (e.g. http://192.168.1.10:61208),
+//    pick your server type, tap "Test connection", then Save.
 // 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
@@ -62,7 +61,7 @@ const CONFIG = {
   refreshMinutes: 5,
   widgetStatusDots: true,               // up/down dots on the large widget buttons (adds ~2s of checking per widget refresh)
   linkUrl: "",                          // corner button on the widget (e.g. your ZimaOS / Proxmox page); empty = no button
-  platform: "auto",                     // server type for Reboot / Shut down: "auto" (found from the address), "zimaos",
+  platform: "none",                     // server type for Reboot / Shut down, picked in Settings: "none" (not picked yet), "zimaos",
                                         // "proxmox", "truenas", "unraid", "synology", "omv" (OpenMediaVault) or "linux"
   // Addresses used by Reboot / Shut down; empty = the Glances server with the usual port for that system
   zimaUrl: "",                          // ZimaOS: http, port 80
@@ -184,11 +183,11 @@ function cleanSettings(raw) {
   out.baseUrl = out.baseUrl.replace(/\/+$/, "");
   num("apiVersion", 3, 4);
   str("username", 100);
-  // "auto" = not known yet (found from the address). Settings saved by the older ZimaOS-only -board
+  // "none" = not picked yet. Settings saved by the older ZimaOS-only -board
   // (they have showPower but no platform) stay on ZimaOS, so their Reboot menu keeps working.
-  out.platform = PLATFORMS[r.platform] || r.platform === "auto"
+  out.platform = PLATFORMS[r.platform]
     ? r.platform
-    : typeof r.showPower === "boolean" ? "zimaos" : PLATFORMS[DEFAULTS.platform] ? DEFAULTS.platform : "auto";
+    : r.platform === "none" || r.platform === "auto" ? "none" : typeof r.showPower === "boolean" ? "zimaos" : PLATFORMS[DEFAULTS.platform] ? DEFAULTS.platform : "none";
   for (const k of PLATFORM_KEYS.map((x) => PLATFORMS[x].url)) {
     str(k);
     if (out[k] && !/^https?:\/\//i.test(out[k])) out[k] = "";
@@ -990,67 +989,6 @@ async function helperPower(action) {
   return { ok: true, msg: powerSent(action) };
 }
 
-// ---------- Which system is the server running? ----------
-// Uses what Glances reports (kernel and distribution names) and a few quick, read-only looks at the usual
-// web pages and APIs: Proxmox on port 8006, Synology's API on 5000 / 5001, the web page on port 80 / 443
-// (TrueNAS, Unraid, OpenMediaVault and ZimaOS name themselves there) and the -board power helper.
-// Returns { platform (null = couldn't tell), why, url (an address to use instead of the usual one, or "") }.
-async function detectPlatform(s, gpass) {
-  const host = hostOf(s.baseUrl);
-  const probe = async (url) => {
-    const req = nasRequest(url, "GET", 4);
-    try {
-      const body = (await req.loadString()) || "";
-      return { code: (req.response && req.response.statusCode) || 0, body: body.slice(0, 20000), url: (req.response && req.response.url) || url };
-    } catch (e) {
-      return null;
-    }
-  };
-  const synoQ = "/webapi/query.cgi?api=SYNO.API.Info&version=1&method=query&query=SYNO.API.Auth";
-  const [sys, pve, syno, synos, web, webs, helper] = await Promise.all([
-    glancesRequest(s, "system", gpass).catch(() => null),
-    probe(`https://${host}:8006/`),
-    probe(`http://${host}:5000${synoQ}`),
-    probe(`https://${host}:5001${synoQ}`),
-    probe(`http://${host}/`),
-    probe(`https://${host}/`),
-    probe(`http://${host}:${HELPER_PORT}/health`),
-  ]);
-  const kern = String((sys && sys.os_version) || "");
-  const distro = String((sys && (sys.linux_distro || sys.hr_name)) || "");
-  const osName = String((sys && sys.os_name) || "");
-  const said = kern + " " + distro;
-  const origin = (u) => (String(u).match(/^https?:\/\/[^\/]+/i) || [""])[0];
-  // the web page that names the system; a page reached over https (or after a redirect) becomes the address
-  const page = (re) => {
-    for (const p of [web, webs]) {
-      if (p && re.test(p.body)) {
-        const o = origin(p.url);
-        return { url: o && o !== `http://${host}` ? o : "" };
-      }
-    }
-    return null;
-  };
-  const synoOk = (p) => p && /"success"\s*:\s*true/.test(p.body);
-  const res = (platform, why, url) => ({ platform, why, url: url || "" });
-  let p;
-  if (/pve/i.test(kern)) return res("proxmox", `Glances reports a Proxmox kernel (${kern})`);
-  if (pve && /proxmox/i.test(pve.body)) return res("proxmox", "Proxmox's web interface answers on port 8006");
-  if (/truenas/i.test(said)) return res("truenas", `Glances reports a TrueNAS system (${kern || distro})`, (page(/truenas/i) || {}).url);
-  if ((p = page(/truenas/i))) return res("truenas", "the server's web page is TrueNAS", p.url);
-  if (/unraid/i.test(said)) return res("unraid", `Glances reports an Unraid kernel (${kern})`, (page(/unraid|lime\s*technology/i) || {}).url);
-  if ((p = page(/unraid|lime\s*technology/i))) return res("unraid", "the server's web page is Unraid", p.url);
-  if (synoOk(syno)) return res("synology", "Synology's DSM answers on port 5000");
-  if (synoOk(synos)) return res("synology", "Synology's DSM answers on port 5001", `https://${host}:5001`);
-  if (/openmediavault/i.test(said)) return res("omv", `Glances reports ${distro}`, (page(/openmediavault/i) || {}).url);
-  if ((p = page(/openmediavault/i))) return res("omv", "the server's web page is OpenMediaVault", p.url);
-  if (/zimaos/i.test(said)) return res("zimaos", `Glances reports ${distro}`);
-  if ((p = page(/zimaos/i))) return res("zimaos", "the server's web page is ZimaOS", p.url);
-  if (helper && (helper.code === 200 || helper.code === 401)) return res("linux", "the -board power helper answers on port " + HELPER_PORT);
-  if (/linux/i.test(osName) || distro) return res("linux", `Glances reports ${distro || "Linux"}, with no NAS system on top`);
-  return { platform: null, why: sys ? `Glances reports ${osName || "an unknown system"}` : "Glances didn't answer at that address", url: "" };
-}
-
 // The helper: one Python 3 file (standard library only) run by systemd as root.
 // It only answers requests that carry the secret key, and only knows /health, /reboot and /shutdown.
 const HELPER_PY = `#!/usr/bin/env python3
@@ -1146,7 +1084,7 @@ async function handlePower(d) {
   const P = SET.platform;
   let r;
   if (!PLATFORMS[P]) {
-    r = { ok: false, msg: "-board doesn't know your server type yet. Open Settings > Server to detect or pick it." };
+    r = { ok: false, msg: "Pick your server type first: Settings > Server > Server type." };
   } else if (P === "linux") {
     r = await helperPower(a);
   } else {
@@ -1173,7 +1111,7 @@ async function handlePower(d) {
 // One line for "Test connection" about the Reboot / Shut down side of the chosen server type
 async function testPower(s) {
   const P = s.platform;
-  if (!PLATFORMS[P]) return { ok: false, t: "Server type: not known yet, so Reboot / Shut down is off. Pick it under SERVER TYPE." };
+  if (!PLATFORMS[P]) return { ok: false, t: "Server type: not picked yet, so Reboot / Shut down is off. Pick it under SERVER TYPE." };
   const name = PLATFORMS[P].name;
   const base = platformBase(P, s);
   if (P === "linux") {
@@ -1266,31 +1204,13 @@ async function settingsOp(d) {
           : { ok: false, t: "Glances: no answer at " + s.baseUrl + " (check the address, that Glances runs with -w, and your VPN if you're away from home)" }
       );
     }
-    // server type not known yet: work it out first (the form takes it over)
-    let det = null;
-    if (!PLATFORMS[s.platform]) {
-      det = await detectPlatform(s, d.gpass || null);
-      if (det.platform) {
-        s.platform = det.platform;
-        if (det.url && !s[PLATFORMS[det.platform].url]) s[PLATFORMS[det.platform].url] = det.url;
-        lines.push({ ok: true, t: `Server type: ${PLATFORMS[det.platform].name} (${det.why})` });
-      } else {
-        lines.push({ ok: false, t: `Server type: couldn't tell (${det.why}). Pick it under SERVER TYPE.` });
-      }
-    }
     lines.push(await testPower(s));
-    return { ok: true, lines, det };
+    return { ok: true, lines };
   }
   if (d.op === "forget") {
     const P = PLATFORMS[d.platform] ? d.platform : SET.platform;
     forgetLogin(P);
     return { ok: true, msg: P === "linux" ? "Helper key forgotten" : PLATFORMS[P].login + " login forgotten" };
-  }
-  if (d.op === "detect") {
-    // which system is at the address typed in the form (saved or not)
-    const s = cleanSettings(d.s);
-    if (!s.baseUrl) return { ok: true, det: { platform: null, why: "no Glances address yet", url: "" } };
-    return { ok: true, det: await detectPlatform(s, d.gpass || null) };
   }
   if (d.op === "helper") {
     // Linux power helper: keep the saved key (or save the new one made in the dashboard) and copy the setup command
@@ -3635,13 +3555,8 @@ function openSettings(){
     S.f = JSON.parse(JSON.stringify(r.s));
     S.gpass = "";
     S.clearGpass = false;
-    S.det = null;
-    S.detFor = "";
-    S.autoPicked = false;
     sEl("ssave").style.display = "";
     sRender();
-    // server type not known yet but an address is: work it out straight away
-    if (S.f.platform === "auto" && /^https?:\\/\\/[^\\/:]+/i.test(S.f.baseUrl)) sDetect();
   });
 }
 function closeSettings(){
@@ -3855,29 +3770,6 @@ function sMsg(r){
 }
 
 var PLATFORM_ORDER = ["zimaos", "proxmox", "truenas", "unraid", "synology", "omv", "linux"];
-// take over a detection result: the type, and an address when the usual one isn't right (e.g. https)
-function sApplyDet(det){
-  S.det = det;
-  S.detFor = S.f.baseUrl;
-  if (!det || !det.platform) return;
-  S.f.platform = det.platform;
-  S.autoPicked = true;
-  var k = S.info.platforms[det.platform].url;
-  if (det.url && !S.f[k]) S.f[k] = det.url;
-}
-// force: run even when the type was picked by hand
-function sDetect(force){
-  if (S.busy) return;
-  S.det = { busy: true };
-  sRender();
-  sSend({ op: "detect", s: S.f, gpass: S.gpass }, function(r){
-    if (!r.ok) { S.det = null; sRender(); return; }
-    if (force || S.f.platform === "auto" || S.autoPicked) sApplyDet(r.det);
-    else { S.det = r.det; S.detFor = S.f.baseUrl; }
-    sRender();
-  });
-}
-
 function sRender(){
   var b = sEl("sbody"), I = S.info, f = S.f;
   b.innerHTML = "";
@@ -3891,11 +3783,7 @@ function sRender(){
 
   // ---------- SERVER ----------
   var c = sSec(b, "SERVER");
-  var gin = sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
-  // a new address: work out the server type again (unless it was picked by hand)
-  gin.addEventListener("change", function(){
-    if (/^https?:\\/\\/[^\\/:]+/i.test(S.f.baseUrl) && S.f.baseUrl !== S.detFor && (S.f.platform === "auto" || S.autoPicked)) sDetect();
-  });
+  sText(c, "GLANCES ADDRESS", "baseUrl", "http://192.168.1.10:61208", "url", "Where Glances runs, with its port (61208 by default). Use your VPN address to see it away from home.");
   sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
   sText(c, "GLANCES USERNAME", "username", "Only if Glances has a password");
   var pf = sLabel(c, "GLANCES PASSWORD"), px = sInputEl(S.gpass, I.hasGpass ? "Saved. Leave empty to keep it" : "Optional", null, "password");
@@ -3912,36 +3800,15 @@ function sRender(){
 
   // ---------- SERVER TYPE (only changes how Reboot / Shut down reaches the server) ----------
   var P = f.platform, hostPh = I.host || "192.168.1.10", PL = I.platforms;
-  var tl = sLabel(c, "SERVER TYPE");
-  var dst = document.createElement("div");
-  dst.className = "sres";
-  var dm = S.det, line = null;
-  if (dm && dm.busy) line = { ok: true, t: "Working out which system the server runs..." };
-  else if (dm && dm.platform) line = { ok: true, t: "Detected " + PL[dm.platform].name + ": " + dm.why + "." + (P !== dm.platform ? " You picked " + PL[P].name + " instead." : "") };
-  else if (dm) line = { ok: false, t: "Couldn't tell the server type (" + dm.why + "). Pick it below." };
-  else if (P === "auto") line = { ok: false, t: "Not known yet. Enter the Glances address above and -board works it out." };
-  if (line) {
-    var dd = document.createElement("div");
-    if (!line.ok) dd.className = "bad";
-    dd.innerHTML = "<i></i><span></span>";
-    dd.querySelector("span").textContent = line.t;
-    dst.appendChild(dd);
-    tl.appendChild(dst);
-  }
-  var seg = sRadio(c, "", "platform", PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }), function(){ S.autoPicked = false; sRender(); });
-  seg.querySelector(".seg").classList.add("segw");
-  seg.removeChild(seg.querySelector("label"));
-  if (/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl) && !(dm && dm.busy)) {
-    var db = sChip(c, P === "auto" ? "Detect server type" : "Detect again", function(){ sDetect(true); });
-    db.style.alignSelf = "flex-start";
-  }
-  var urlKey = P !== "auto" ? PL[P].url : null;
+  sRadio(c, "SERVER TYPE", "platform", PLATFORM_ORDER.map(function(k){ return [k, PL[k].short || PL[k].name]; }), function(){ sRender(); })
+    .querySelector(".seg").classList.add("segw");
+  var urlKey = P !== "none" ? PL[P].url : null;
   var defUrl = urlKey ? PL[P].def.replace("{h}", hostPh) : "";
   var addrField = function(label){
     sText(c, label, urlKey, defUrl + (I.host ? " (default)" : ""), "url", "Leave empty for " + (I.host ? defUrl : "the Glances server with the usual port") + ".");
   };
-  if (P === "auto") {
-    sHint(c, "Reboot / Shut down appear once the server type is known. -board looks at what Glances reports and at the server's usual web pages; nothing is changed on the server.");
+  if (P === "none") {
+    sHint(c, "Pick the system your server runs. It only changes how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.");
   } else if (P === "zimaos") {
     sHint(c, "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.");
     addrField("ZIMAOS ADDRESS");
@@ -3977,7 +3844,7 @@ function sRender(){
     hb.style.alignSelf = "flex-start";
     sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address.");
   }
-  if (P !== "linux" && P !== "auto") {
+  if (P !== "linux" && P !== "none") {
     var LN = PL[P].login;
     if (I.logins[P]) {
       var zr = sRow(c, LN + " login saved", "Stored in the iOS Keychain");
@@ -3994,13 +3861,12 @@ function sRender(){
     });
   }
   var res = document.createElement("div");
-  res.className = "sres stest";
+  res.className = "sres";
   var tb = sChip(c, "Test connection", function(){
     res.innerHTML = '<div><span>Testing...</span></div>';
     sSend({ op: "test", s: S.f, gpass: S.gpass }, function(r){
       res.innerHTML = "";
       if (!r.ok) { res.textContent = r.error || "Test failed"; return; }
-      if (r.det && S.f.platform === "auto") { sApplyDet(r.det); sRender(); res = sEl("sbody").querySelector(".stest"); }
       r.lines.forEach(function(l){
         var d = document.createElement("div");
         if (!l.ok) d.className = "bad";
@@ -4479,23 +4345,6 @@ async function showLiveDashboard(openStackId) {
   if (openStackId) await wv.evaluateJavaScript(`focusStack(${JSON.stringify(openStackId)})`, false);
   // download any logos not saved yet (first run, or new ones) without holding up the dashboard
   refreshLogos(wv);
-  // server type not known yet (e.g. settings from before it existed): work it out in the background
-  if (SET.baseUrl && !PLATFORMS[SET.platform]) {
-    (async () => {
-      try {
-        const det = await detectPlatform(SET);
-        if (!det.platform || PLATFORMS[SET.platform]) return;
-        const data = loadData();
-        const ns = { ...SET, platform: det.platform };
-        if (det.url && !ns[PLATFORMS[det.platform].url]) ns[PLATFORMS[det.platform].url] = det.url;
-        data.settings = cleanSettings(ns);
-        saveData(data);
-        applySettings();
-        await pushServices(wv);
-        await wv.evaluateJavaScript(`toast(${JSON.stringify("Server type detected: " + PLATFORMS[det.platform].name)}, 3500)`, false);
-      } catch (e) {}
-    })();
-  }
   // first run: no server yet, so go straight to Settings
   // (after the startup screen, when it's on)
   if (!SET.baseUrl) await wv.evaluateJavaScript(`setTimeout(openSettings, ${SET.splash ? 1700 : 400})`, false);

@@ -20,11 +20,9 @@ Reboot / Shut down depends on the system the server runs:
 | **OpenMediaVault** | OpenMediaVault's API with an administrator account (`admin`). Nothing to install |
 | **Linux** (Debian, Ubuntu Server, Fedora ...) | A tiny helper service. Settings gives you a one-time setup command |
 
-**The server type is detected for you.** A new install starts neutral. Once you enter the Glances address,
--board looks at what Glances reports (the kernel and distribution names; for example `-pve`, `+truenas` and
-`-Unraid` kernels) and takes a quick, read-only look at the server's usual web pages and APIs (Proxmox on 8006,
-Synology DSM on 5000 / 5001, the web page on 80 / 443, the -board helper on 61209). Settings then shows only that
-system's options. You can always pick another type by hand, and **Detect again** re-runs it.
+**Pick your server type** in *Settings > Server > Server type* (ZimaOS, Proxmox, TrueNAS, Unraid, Synology, OMV or Linux).
+A new install has none picked, so there's no Reboot / Shut down menu until you choose one. Settings then shows
+only that system's options.
 
 Accounts with two-factor login can't be used for Reboot / Shut down; make a separate administrator account for -board.
 Logins are stored in the iOS Keychain.
@@ -45,7 +43,7 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 ## 2. Install the script
 
 1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
-2. Run it. Settings opens: enter the Glances address (e.g. `http://192.168.1.10:61208`). The **server type** is detected; check it, tap **Test connection**, then **Save**.
+2. Run it. Settings opens: enter the Glances address (e.g. `http://192.168.1.10:61208`), pick your **server type**, tap **Test connection**, then **Save**.
 3. Add a Scriptable widget to your home screen and pick this script.
 
 ## Looks
@@ -65,7 +63,7 @@ Themes, accent colours, glow, corners, font and button size work with both style
 - **TrueNAS**: your admin login (`truenas_admin`, or `root` on older versions). Use plain http on your home network or VPN,
   or https with a certificate the iPhone trusts (TrueNAS's own self-signed certificate doesn't work for its WebSocket API).
 - **Unraid**: `root` and your password. If Unraid redirects to an `https://...myunraid.net` address, -board tells you to use that address.
-- **Synology**: an administrator account without two-factor login. https on port 5001 is detected too.
+- **Synology**: an administrator account without two-factor login. For https, enter `https://SERVER-IP:5001` as the Synology address.
 - **OpenMediaVault**: an administrator account, `admin` by default.
 - **Proxmox**: you're asked for your Proxmox login (`root` or `root@pam`; any user with the `Sys.PowerMgmt` permission works).
   Accounts with two-factor login can't be used. In a cluster, enter the node name in Settings (otherwise it's found automatically).
