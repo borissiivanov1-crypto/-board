@@ -43,6 +43,10 @@
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
 // - Hold the server name to rename it. Tap it for Reboot / Shut down (asks to confirm).
+// - Several servers: swipe the server name left / right to switch (the dots under it show how many and which
+//   one is on screen); swipe left past the last one, or tap +, to add a server. Each server has its own
+//   settings window (gear icon): address, type, logins, Monitoring, buttons and layout. Theme, widget and
+//   button options are shared. A widget shows the server named or numbered in its Parameter (Edit Widget).
 // - Settings > Theme & look > Style: "Classic" (default) or "Liquid Glass" (iOS 26 style glass, springy
 //   animation on every press, menu and sheet, glass rings on the widget). "Startup animation" adds a short
 //   animated logo when the dashboard opens. Both are off by default.
@@ -102,8 +106,20 @@ const TEMP_DEFAULTS = {
   hdd: { warm: 45, hot: 55 },
 };
 
-// In-memory copy of the data file (declared before anything reads the settings)
+// In-memory copy of the data file, and the server shown (declared before anything reads the settings)
 let dataRaw = null;
+let CUR = null;
+// Settings that belong to one server (everything else in Settings is shared by all servers), and the parts
+// of the data file each server has for itself (see "Servers" below)
+const SERVER_SETTING_KEYS = [
+  "serverHost", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
+  "truenasUrl", "unraidUrl", "synologyUrl", "omvUrl", "helperUrl", "showPower", "diskMounts", "maxDisks",
+  "networkInterface", "monitoringOpen", "monitoringFixed", "tempLimits", "liveSeconds",
+];
+const SERVER_PARTS = ["custom", "edits", "hidden", "order", "widgetOrder", "widgetHidden", "groups"];
+function isObj(x) {
+  return !!x && typeof x === "object" && !Array.isArray(x);
+}
 
 // ---------- Themes (Settings > Theme & look) ----------
 // g1 / g2: the two background glows (r,g,b). panel / panel2: popup and dropdown backgrounds.
@@ -273,7 +289,7 @@ function glancesUrl(s) {
   return s.baseUrl || (h ? `http://${h}:61208` : "");
 }
 
-const GLANCES_PASS_KEY = "board-glances-pass";
+CUR = initialServer();
 let SET = loadSettings();
 
 // Services shown as buttons in the live dashboard.
@@ -322,46 +338,157 @@ function readDataFile() {
   return dataRaw;
 }
 
-function loadData() {
-  const empty = { custom: [], edits: {}, hidden: [], order: [], widgetOrder: [], widgetHidden: [], title: "", groups: [] };
+// ---------- Servers ----------
+// The data file holds every server:
+//   { v: 2, current (the server shown last), settings (shared by all servers),
+//     servers: [ { id, title, settings (this server's own), custom, edits, hidden, order, widgetOrder, widgetHidden, groups } ] }
+// loadData() / saveData() work on one server at a time (CUR) in the same shape as before:
+// the shared and the server's own settings come merged in .settings.
+// A file from before there were several servers becomes server 1 ("s1").
+
+function readStore() {
+  let d = {};
   try {
     const raw = readDataFile();
-    if (!raw) return empty;
-    let d = JSON.parse(raw);
-    if (Array.isArray(d)) d = { custom: d };
-    d.custom = (d.custom || []).map((c, i) => (c.id ? c : { ...c, id: "c:legacy" + i }));
-    d.edits = d.edits || {};
-    d.hidden = d.hidden || [];
-    d.order = Array.isArray(d.order) ? d.order : [];
-    d.widgetOrder = Array.isArray(d.widgetOrder) ? d.widgetOrder : [];
-    d.widgetHidden = Array.isArray(d.widgetHidden) ? d.widgetHidden : [];
-    d.title = typeof d.title === "string" ? d.title : "";
-    d.settings = d.settings && typeof d.settings === "object" && !Array.isArray(d.settings) ? d.settings : {};
-    // stacks: { id: "g:…", name, logo, expand (show members on the widget), members: [button ids] }
-    d.groups = (Array.isArray(d.groups) ? d.groups : [])
-      .filter((g) => g && typeof g.id === "string")
-      .map((g) => ({
-        id: g.id,
-        name: String(g.name || "Stack").slice(0, 24),
-        logo: String(g.logo || ""),
-        expand: !!g.expand,
-        members: Array.isArray(g.members) ? g.members.filter((x) => typeof x === "string") : [],
-      }));
-    return d;
+    d = raw ? JSON.parse(raw) : {};
   } catch (e) {
-    return empty;
+    d = {};
   }
+  if (Array.isArray(d)) d = { custom: d };
+  if (!Array.isArray(d.servers)) {
+    const st = isObj(d.settings) ? d.settings : {};
+    const own = {};
+    const shared = {};
+    for (const k of Object.keys(st)) (SERVER_SETTING_KEYS.includes(k) ? own : shared)[k] = st[k];
+    const s1 = { id: "s1", title: typeof d.title === "string" ? d.title : "", settings: own };
+    for (const k of SERVER_PARTS) if (d[k] !== undefined) s1[k] = d[k];
+    d = { v: 2, current: "s1", settings: shared, servers: [s1] };
+  }
+  d.settings = isObj(d.settings) ? d.settings : {};
+  d.servers = d.servers.filter((x) => isObj(x) && typeof x.id === "string");
+  if (!d.servers.length) d.servers = [{ id: "s1", title: "", settings: {} }];
+  for (const x of d.servers) x.settings = isObj(x.settings) ? x.settings : {};
+  if (!d.servers.some((x) => x.id === d.current)) d.current = d.servers[0].id;
+  return d;
 }
 
-// Dashboard / widget name (renamed by holding the header in the live dashboard)
-function getTitle() {
-  return loadData().title || CONFIG.title;
-}
-
-function saveData(d) {
-  const raw = JSON.stringify(d);
+function writeStore(st) {
+  const raw = JSON.stringify(st);
   FileManager.local().writeString(dataPath(), raw);
   dataRaw = raw;
+}
+
+function curServer(st) {
+  return st.servers.find((x) => x.id === CUR) || st.servers.find((x) => x.id === st.current) || st.servers[0];
+}
+
+// [{ id, title }] in order, with the name each one shows
+function listServers() {
+  return readStore().servers.map((x, i) => ({ id: x.id, title: x.title || (i === 0 ? CONFIG.title : "SERVER " + (i + 1)) }));
+}
+
+// Which server this run starts on. The widget: its Parameter (Edit Widget) as the server's name or number
+// (1, 2, ...), else the first server. The dashboard: ?server= from the widget, else the one shown last.
+function initialServer() {
+  const st = readStore();
+  const inWidget = typeof config !== "undefined" && config.runsInWidget;
+  const want = String((inWidget ? args.widgetParameter : (args.queryParameters || {}).server) || "").trim();
+  if (want) {
+    const n = Number(want);
+    const hit =
+      st.servers.find((x) => x.id === want) ||
+      (Number.isInteger(n) && n >= 1 ? st.servers[n - 1] : null) ||
+      st.servers.find((x, i) => (x.title || (i === 0 ? CONFIG.title : "")).toLowerCase() === want.toLowerCase());
+    if (hit) return hit.id;
+  }
+  return inWidget ? st.servers[0].id : st.current;
+}
+
+// Show another server (remembered for the next time the dashboard opens)
+function setCurrentServer(id) {
+  const st = readStore();
+  if (!st.servers.some((x) => x.id === id)) return false;
+  CUR = id;
+  st.current = id;
+  writeStore(st);
+  applySettings();
+  return true;
+}
+
+function addServer(name, host) {
+  const st = readStore();
+  const id = "s" + Date.now().toString(36);
+  const n = st.servers.length + 1;
+  st.servers.push({ id, title: String(name || "").trim().slice(0, 20).toUpperCase() || "SERVER " + n, settings: { serverHost: String(host || "").trim(), platform: "none" } });
+  writeStore(st);
+  setCurrentServer(id);
+  return id;
+}
+
+// Removes a server, its buttons and layout, and the logins saved for it
+function removeServer(id) {
+  const st = readStore();
+  if (st.servers.length < 2) return false;
+  const i = st.servers.findIndex((x) => x.id === id);
+  if (i < 0) return false;
+  forgetServerKeys(id);
+  st.servers.splice(i, 1);
+  const next = st.servers[Math.min(i, st.servers.length - 1)].id;
+  st.current = next;
+  writeStore(st);
+  CUR = next;
+  applySettings();
+  return true;
+}
+
+function loadData() {
+  const st = readStore();
+  const sv = curServer(st);
+  const d = { title: typeof sv.title === "string" ? sv.title : "", settings: { ...st.settings, ...sv.settings } };
+  for (const k of SERVER_PARTS) d[k] = sv[k];
+  d.custom = (Array.isArray(d.custom) ? d.custom : []).map((c, i) => (c.id ? c : { ...c, id: "c:legacy" + i }));
+  d.edits = isObj(d.edits) ? d.edits : {};
+  d.hidden = Array.isArray(d.hidden) ? d.hidden : [];
+  d.order = Array.isArray(d.order) ? d.order : [];
+  d.widgetOrder = Array.isArray(d.widgetOrder) ? d.widgetOrder : [];
+  d.widgetHidden = Array.isArray(d.widgetHidden) ? d.widgetHidden : [];
+  // stacks: { id: "g:…", name, logo, expand (show members on the widget), members: [button ids] }
+  d.groups = (Array.isArray(d.groups) ? d.groups : [])
+    .filter((g) => g && typeof g.id === "string")
+    .map((g) => ({
+      id: g.id,
+      name: String(g.name || "Stack").slice(0, 24),
+      logo: String(g.logo || ""),
+      expand: !!g.expand,
+      members: Array.isArray(g.members) ? g.members.filter((x) => typeof x === "string") : [],
+    }));
+  return d;
+}
+
+// Dashboard / widget name of the current server (renamed by holding the header in the live dashboard)
+function getTitle() {
+  const st = readStore();
+  const sv = curServer(st);
+  return sv.title || (st.servers.indexOf(sv) === 0 ? CONFIG.title : "SERVER " + (st.servers.indexOf(sv) + 1));
+}
+
+// Saves the current server's part (and the shared settings) back into the file
+function saveData(d) {
+  const st = readStore();
+  const sv = curServer(st);
+  if (typeof d.title === "string") sv.title = d.title;
+  for (const k of SERVER_PARTS) if (d[k] !== undefined) sv[k] = d[k];
+  if (isObj(d.settings)) {
+    const own = {};
+    const shared = { ...st.settings };
+    for (const k of Object.keys(d.settings)) {
+      if (SERVER_SETTING_KEYS.includes(k)) own[k] = d.settings[k];
+      else shared[k] = d.settings[k];
+    }
+    sv.settings = own;
+    st.settings = shared;
+  }
+  writeStore(st);
 }
 
 function splitUrl(url) {
@@ -545,6 +672,8 @@ function getPayload() {
     hasLogin: PLATFORMS[SET.platform] ? hasLogin() : false,
     title: getTitle(),
     host: serverHostOf(SET),
+    servers: listServers(),
+    cur: CUR,
     ui: {
       cols: SET.columns,
       // the Reboot / Shut down menu needs a known server type
@@ -585,7 +714,26 @@ const LOGIN_KEYS = {
   synology: { user: "board-syno-user", pass: "board-syno-pass" },
   omv: { user: "board-omv-user", pass: "board-omv-pass" },
 };
-const HELPER_KEY = "board-helper-key";
+const HELPER_KEY_NAME = "board-helper-key";
+const GLANCES_PASS_NAME = "board-glances-pass";
+
+// Every server keeps its own logins. Server 1 ("s1") uses the names from before there were several servers.
+function kname(base, id = CUR) {
+  return !id || id === "s1" ? base : `${base}@${id}`;
+}
+function loginKeys(platform, id = CUR) {
+  const k = LOGIN_KEYS[platform];
+  return k ? { user: kname(k.user, id), pass: kname(k.pass, id) } : null;
+}
+const helperKey = (id = CUR) => kname(HELPER_KEY_NAME, id);
+const gpassKey = (id = CUR) => kname(GLANCES_PASS_NAME, id);
+
+// Everything saved in the Keychain for one server (when it's removed)
+function forgetServerKeys(id) {
+  const names = [helperKey(id), gpassKey(id)];
+  for (const p of Object.keys(LOGIN_KEYS)) names.push(loginKeys(p, id).user, loginKeys(p, id).pass);
+  for (const n of names) kcRemove(n);
+}
 const HELPER_PORT = 61209;
 
 function kcHas(k) {
@@ -604,19 +752,19 @@ function kcRemove(k) {
 
 // Linux: "logged in" = the helper's secret key is saved
 function hasLogin(platform = SET.platform) {
-  if (platform === "linux") return kcHas(HELPER_KEY);
-  const k = LOGIN_KEYS[platform];
+  if (platform === "linux") return kcHas(helperKey());
+  const k = loginKeys(platform);
   return !!k && kcHas(k.user) && kcHas(k.pass);
 }
 
 function forgetLogin(platform = SET.platform) {
-  if (platform === "linux") return kcRemove(HELPER_KEY);
-  const k = LOGIN_KEYS[platform];
+  if (platform === "linux") return kcRemove(helperKey());
+  const k = loginKeys(platform);
   if (k) for (const x of Object.values(k)) kcRemove(x);
 }
 
 function savedLogin(platform) {
-  const k = LOGIN_KEYS[platform];
+  const k = loginKeys(platform);
   return { user: Keychain.get(k.user), pass: Keychain.get(k.pass) };
 }
 
@@ -1006,7 +1154,7 @@ async function helperPower(action) {
     return { ok: false, msg: "Set up the power helper first: Settings > Server > Copy setup command." };
   }
   const base = helperBase();
-  const code = await helperCall(base, Keychain.get(HELPER_KEY), action === "off" ? "/shutdown" : "/reboot", "POST");
+  const code = await helperCall(base, Keychain.get(helperKey()), action === "off" ? "/shutdown" : "/reboot", "POST");
   if (!code) return { ok: false, msg: "Can't reach the power helper at " + base + ". Is it set up on the server?" };
   if (code === 401) return { ok: false, msg: "The helper refused the key. Copy the setup command from Settings and run it again." };
   if (code >= 300) return { ok: false, msg: `The helper didn't accept the command (HTTP ${code}).` };
@@ -1123,8 +1271,8 @@ async function handlePower(d) {
     else r = await DRIVERS[P](a, user, pass, platformBase(P), SET);
     if (r.auth && saved) forgetLogin(P);
     if (!r.auth && !r.net && !saved && user && pass) {
-      Keychain.set(LOGIN_KEYS[P].user, user);
-      Keychain.set(LOGIN_KEYS[P].pass, pass);
+      Keychain.set(loginKeys(P).user, user);
+      Keychain.set(loginKeys(P).pass, pass);
     }
   }
   r.a = a;
@@ -1140,7 +1288,7 @@ async function testPower(s) {
   const base = platformBase(P, s);
   if (P === "linux") {
     if (!hasLogin("linux")) return { ok: false, t: "Power helper: not set up yet (tap Copy setup command)" };
-    const code = await helperCall(base, Keychain.get(HELPER_KEY), "/health", "GET");
+    const code = await helperCall(base, Keychain.get(helperKey()), "/health", "GET");
     if (code === 200) return { ok: true, t: "Power helper: OK at " + base };
     if (code === 401) return { ok: false, t: "Power helper: answers, but refused the key. Run the setup command again." };
     return { ok: false, t: "Power helper: no answer at " + base + (code ? ` (HTTP ${code})` : "") };
@@ -1179,7 +1327,7 @@ async function settingsOp(d) {
       : null;
     let hasGpass = false;
     try {
-      hasGpass = Keychain.contains(GLANCES_PASS_KEY);
+      hasGpass = Keychain.contains(gpassKey());
     } catch (e) {}
     return {
       ok: true,
@@ -1201,8 +1349,8 @@ async function settingsOp(d) {
     data.settings = cleanSettings(d.s);
     saveData(data);
     try {
-      if (d.clearGpass && Keychain.contains(GLANCES_PASS_KEY)) Keychain.remove(GLANCES_PASS_KEY);
-      if (d.gpass) Keychain.set(GLANCES_PASS_KEY, d.gpass);
+      if (d.clearGpass && Keychain.contains(gpassKey())) Keychain.remove(gpassKey());
+      if (d.gpass) Keychain.set(gpassKey(), d.gpass);
     } catch (e) {}
     applySettings();
     statusDirty = true;
@@ -1254,8 +1402,8 @@ async function settingsOp(d) {
       const why = r.msg || "no answer at " + base;
       return { ok: false, error: (r.net ? why + ". The login wasn't saved: try again when the server can be reached." : why) };
     }
-    Keychain.set(LOGIN_KEYS[P].user, user);
-    Keychain.set(LOGIN_KEYS[P].pass, pass);
+    Keychain.set(loginKeys(P).user, user);
+    Keychain.set(loginKeys(P).pass, pass);
     const extra = (String(r.msg || "").match(/\(([^)]*)\)\s*$/) || [])[1];
     return { ok: true, msg: `${PLATFORMS[P].login} login checked and saved` + (extra ? ` (${extra})` : "") };
   }
@@ -1269,9 +1417,9 @@ async function settingsOp(d) {
     const s = cleanSettings(d.s);
     if (!hasLogin("linux")) {
       if (!/^[a-f0-9]{32,128}$/.test(String(d.key || ""))) return { ok: false, error: "Couldn't make a key. Try again." };
-      Keychain.set(HELPER_KEY, d.key);
+      Keychain.set(helperKey(), d.key);
     }
-    Pasteboard.copy(helperSetupScript(Keychain.get(HELPER_KEY), helperPort(s)));
+    Pasteboard.copy(helperSetupScript(Keychain.get(helperKey()), helperPort(s)));
     return { ok: true, msg: "Setup command copied. Paste it into an SSH session on the server.", hasKey: true };
   }
   if (d.op === "restore") {
@@ -1288,8 +1436,9 @@ async function settingsOp(d) {
     return { ok: true, msg: "Logo cache cleared. Logos download again now." };
   }
   if (d.op === "export") {
-    Pasteboard.copy(JSON.stringify({ board: 1, exported: new Date().toISOString(), data }, null, 2));
-    return { ok: true, msg: "Settings copied to the clipboard. Passwords are not included." };
+    // every server, its buttons and layout, and the shared settings
+    Pasteboard.copy(JSON.stringify({ board: 2, exported: new Date().toISOString(), data: readStore() }, null, 2));
+    return { ok: true, msg: "All servers' settings copied to the clipboard. Passwords are not included." };
   }
   if (d.op === "import") {
     let obj;
@@ -1300,8 +1449,16 @@ async function settingsOp(d) {
     }
     const imp = obj && obj.board && obj.data && typeof obj.data === "object" ? obj.data : null;
     if (!imp) return { ok: false, error: "The clipboard doesn't contain exported settings." };
-    saveData(imp);
-    saveData(loadData()); // store it in the normal, cleaned-up form
+    if (Array.isArray(imp.servers)) {
+      // every server (an export from this version): replaces all of them
+      dataRaw = JSON.stringify(imp);
+      const st = readStore();
+      writeStore(st);
+      CUR = st.current;
+    } else {
+      // an export from before there were several servers: goes into the server shown now
+      saveData({ ...imp, settings: { ...loadData().settings, ...(isObj(imp.settings) ? imp.settings : {}) } });
+    }
     applySettings();
     statusDirty = true;
     return { ok: true, msg: "Settings imported", reload: true };
@@ -1483,7 +1640,7 @@ async function api(path) {
 
 function glancesPass() {
   try {
-    if (Keychain.contains(GLANCES_PASS_KEY)) return Keychain.get(GLANCES_PASS_KEY);
+    if (Keychain.contains(gpassKey())) return Keychain.get(gpassKey());
   } catch (e) {}
   return CONFIG.password;
 }
@@ -2030,7 +2187,7 @@ function addServiceGrid(w, prep) {
       // a stack pill opens the live dashboard with that stack open
       pill.url =
         s.kind === "group"
-          ? URLScheme.forRunningScript() + "?stack=" + encodeURIComponent(s.id)
+          ? URLScheme.forRunningScript() + "?server=" + encodeURIComponent(CUR) + "&stack=" + encodeURIComponent(s.id)
           : s.url;
       if (SET.widgetStatusDots) {
         const dot = pill.addText("●");
@@ -2066,7 +2223,7 @@ async function buildWidget() {
   w.backgroundImage = backgroundImage();
   w.setPadding(12, 14, 12, 14);
   w.refreshAfterDate = new Date(Date.now() + SET.refreshMinutes * 60 * 1000);
-  w.url = URLScheme.forRunningScript(); // tap = live dashboard
+  w.url = URLScheme.forRunningScript() + "?server=" + encodeURIComponent(CUR); // tap = live dashboard on this server
 
   // not set up yet: ask to open the app
   if (!serverHostOf(SET)) {
@@ -2250,6 +2407,15 @@ h1{font-size:22px;font-weight:800;letter-spacing:.12em}
 .dot.wait{background:rgba(255,255,255,.35);box-shadow:none}
 #monst{flex:1;text-align:right;margin-right:10px;font-size:10px;letter-spacing:.1em;color:#ffb454;opacity:.9}
 body.nomon .monwrap{display:none}
+/* server dots under the name (swipe the name to change server; the + adds one) */
+.sdots{display:flex;align-items:center;gap:7px;margin:-8px 2px 0;min-height:16px}
+.sdots i{display:block;width:7px;height:7px;border-radius:4px;background:rgba(255,255,255,.28);transition:width .3s,background .3s;cursor:pointer}
+.sdots i.on{width:20px;background:var(--acc)}
+.sdots b{font-size:15px;font-weight:600;line-height:1;opacity:.45;padding:0 4px;cursor:pointer}
+@keyframes tslide{from{opacity:0;transform:translateX(var(--sx,0))}}
+.tslide{animation:tslide .35s cubic-bezier(.22,1,.36,1)}
+.shd h2 small{display:block;font-size:10px;font-weight:700;letter-spacing:.14em;opacity:.55;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sdiv{font-size:11px;font-weight:800;letter-spacing:.16em;opacity:.5;text-align:center;margin:6px 0 -6px}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,224,161,.7)}70%{box-shadow:0 0 0 9px rgba(52,224,161,0)}100%{box-shadow:0 0 0 0 rgba(52,224,161,0)}}
 #grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:24px;padding:18px 12px 14px;display:flex;flex-direction:column;align-items:center;gap:10px}
@@ -2386,8 +2552,8 @@ img.ic{width:26px;height:26px;object-fit:contain;display:block;pointer-events:no
 .cnote{font-size:13px;opacity:.65;line-height:1.4;text-align:center;padding:0 4px}
 .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 24px);z-index:30;max-width:86vw;padding:10px 16px;border-radius:18px;background:rgba(30,38,64,.96);border:1px solid rgba(255,255,255,.14);box-shadow:0 10px 30px rgba(0,0,0,.4);font-size:13px;font-weight:600;text-align:center;opacity:0;transform:translate(-50%,20px);transition:opacity .25s,transform .25s;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
-#ov,#mv,#rv,#gv,#pv,#cv{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
-#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show{display:flex}
+#ov,#mv,#rv,#gv,#pv,#cv,#av{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
+#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show,#av.show{display:flex}
 .modal{width:min(86vw,340px);padding:22px 18px 18px;border-radius:30px;background:rgba(30,38,64,.94);border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:12px;animation:pop .22s cubic-bezier(.22,1,.36,1)}
 @keyframes pop{from{transform:scale(.9);opacity:0}}
 .modal h2{font-size:17px;font-weight:800;letter-spacing:.06em;text-align:center}
@@ -2575,10 +2741,10 @@ body:where(.glass).noanim .b3{animation:none}
 :where(body.glass) .sw.on:active i{transform:translateX(10px)}
 :where(body.glass) .swt{transition:transform .5s var(--spring),box-shadow .3s,border-color .3s}
 :where(body.glass) .swt.on{transform:scale(1.08)}
-:where(body.glass) #ov,:where(body.glass) #mv,:where(body.glass) #rv,:where(body.glass) #gv,:where(body.glass) #pv,:where(body.glass) #cv,:where(body.glass) #sv{display:flex!important;visibility:hidden;opacity:0;pointer-events:none;background:rgba(0,0,0,.28);
+:where(body.glass) #ov,:where(body.glass) #mv,:where(body.glass) #rv,:where(body.glass) #gv,:where(body.glass) #pv,:where(body.glass) #cv,:where(body.glass) #av,:where(body.glass) #sv{display:flex!important;visibility:hidden;opacity:0;pointer-events:none;background:rgba(0,0,0,.28);
   -webkit-backdrop-filter:blur(0);backdrop-filter:blur(0);
   transition:opacity .3s var(--soft),visibility 0s linear .35s,-webkit-backdrop-filter .35s,backdrop-filter .35s;}
-:where(body.glass) #ov.show,:where(body.glass) #mv.show,:where(body.glass) #rv.show,:where(body.glass) #gv.show,:where(body.glass) #pv.show,:where(body.glass) #cv.show,:where(body.glass) #sv.show{visibility:visible;opacity:1;pointer-events:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+:where(body.glass) #ov.show,:where(body.glass) #mv.show,:where(body.glass) #rv.show,:where(body.glass) #gv.show,:where(body.glass) #pv.show,:where(body.glass) #cv.show,:where(body.glass) #av.show,:where(body.glass) #sv.show{visibility:visible;opacity:1;pointer-events:auto;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
   transition:opacity .25s var(--soft),visibility 0s,-webkit-backdrop-filter .4s,backdrop-filter .4s;}
 :where(body.glass) .modal{animation:none;transform:scale(.84) translateY(18px);opacity:0;transition:transform .3s var(--soft),opacity .22s}
 :where(body.glass) .show>.modal{transform:none;opacity:1;transition:transform .6s var(--spring),opacity .25s}
@@ -2658,6 +2824,7 @@ body:not(.splashon) #splash{display:none}
 <div class="topfade"></div>
 <main>
 <header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<div class="sdots intro" id="sdots" style="animation-delay:.04s"></div>
 <div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><span id="monst"></span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
 <div id="grid"></div>
 <div class="netcard">
@@ -2686,7 +2853,7 @@ body:not(.splashon) #splash{display:none}
 <div class="toast" id="toast"></div>
 <div id="sv" onclick="if(event.target===this&&Date.now()>=ign)closeSettings()">
 <div class="modal smod">
-<div class="shd"><button onclick="closeSettings()">Cancel</button><h2>SETTINGS</h2><button class="ok" id="ssave" onclick="saveSettings()">Save</button></div>
+<div class="shd"><button onclick="closeSettings()">Cancel</button><h2 id="sttl">SETTINGS</h2><button class="ok" id="ssave" onclick="saveSettings()">Save</button></div>
 <div class="serr" id="serr"></div>
 <div id="sbody"><div class="swait">Loading...</div></div>
 </div>
@@ -2702,6 +2869,17 @@ body:not(.splashon) #splash{display:none}
 <div class="tg" id="wtg"><label>SHOW ON WIDGET</label><div class="sw on" id="sw2" onclick="toggleWidget()"><i></i></div></div>
 <div class="err" id="er"></div>
 <div class="btns"><button onclick="closeAdd()">Cancel</button><button class="ok" id="okb" onclick="submitAdd()">Add</button></div>
+</div>
+</div>
+<div id="av" onclick="if(event.target===this&&Date.now()>=ign)closeAddServer()">
+<div class="modal">
+<h2>ADD SERVER</h2>
+<div class="cnote">Each server has its own address, type, logins, Monitoring, buttons and layout. Swipe the server name to switch between them.</div>
+<div class="f"><label>NAME</label><div class="in"><input id="asn" type="text" maxlength="20" placeholder="e.g. NAS" autocomplete="off"></div></div>
+<div class="f"><label>SERVER ADDRESS</label><div class="in"><input id="ash" type="text" inputmode="url" placeholder="192.168.1.20 or a name" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="fh">You can fill in the rest (server type, Monitoring ...) in its Settings next.</div>
+<div class="err" id="aer"></div>
+<div class="btns"><button onclick="closeAddServer()">Cancel</button><button class="ok" onclick="submitAddServer()">Add</button></div>
 </div>
 </div>
 <div id="rv" onclick="if(event.target===this&&Date.now()>=ign)closeRename()">
@@ -3338,10 +3516,106 @@ function draw(){
   }
 }
 var animDraw = false;
+// ---- Servers: the dots under the name, swiping the name, adding a server ----
+function idxOf(id){
+  var l = st.servers || [];
+  for (var i = 0; i < l.length; i++) if (l[i].id === id) return i;
+  return -1;
+}
+function renderDots(){
+  var box = document.getElementById("sdots");
+  if (!box) return;
+  box.innerHTML = "";
+  (st.servers || []).forEach(function(sv){
+    var i = document.createElement("i");
+    if (sv.id === st.cur) i.className = "on";
+    i.setAttribute("aria-label", sv.title);
+    i.onclick = function(){ if (sv.id !== st.cur) goServer(sv.id, idxOf(sv.id) > idxOf(st.cur) ? 1 : -1); };
+    box.appendChild(i);
+  });
+  var plus = document.createElement("b");
+  plus.textContent = "+";
+  plus.setAttribute("aria-label", "Add server");
+  plus.onclick = openAddServer;
+  box.appendChild(plus);
+}
+function goServer(id, dir){
+  togglePmenu(false);
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "switch", id: id, dir: dir }));
+}
+// swipe the name: left = next server (past the last one: add a server), right = previous
+(function(){
+  var tw = document.getElementById("tw"), x0 = 0, y0 = 0, t0 = 0;
+  tw.addEventListener("touchstart", function(e){ var t = e.touches[0]; x0 = t.clientX; y0 = t.clientY; t0 = Date.now(); }, { passive: true });
+  tw.addEventListener("touchend", function(e){
+    var t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+    if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - t0 > 800) return;
+    ign = Date.now() + 450; // a swipe isn't a tap (Reboot menu) or a hold (rename)
+    var l = st.servers || [], i = idxOf(st.cur);
+    if (dx < 0) { if (i >= 0 && i < l.length - 1) goServer(l[i + 1].id, 1); else openAddServer(); }
+    else if (i > 0) goServer(l[i - 1].id, -1);
+  }, { passive: true });
+})();
+// another server is on screen: drop what was shown for the last one and draw this one
+function switchServer(t, p, dir){
+  hist = { t: [] };
+  dets = {};
+  last = null;
+  if (expanded && cards[expanded]) { cards[expanded].el.classList.remove("big"); cards[expanded].det.innerHTML = ""; }
+  expanded = null;
+  document.getElementById("grid").innerHTML = "";
+  cards = {};
+  svcUp = {};
+  openG = {};
+  mode = "dash";
+  reachKnown = false;
+  document.getElementById("dot").className = "dot wait";
+  document.getElementById("st").textContent = "...";
+  document.getElementById("monst").textContent = "";
+  document.getElementById("down").textContent = fmt(0);
+  document.getElementById("up").textContent = fmt(0);
+  togglePmenu(false);
+  var h = document.getElementById("title");
+  h.textContent = t;
+  h.classList.remove("tslide");
+  void h.offsetWidth;
+  h.style.setProperty("--sx", (dir > 0 ? 44 : dir < 0 ? -44 : 0) + "px");
+  h.classList.add("tslide");
+  animDraw = true;
+  renderServices(p);
+  // the Monitoring panel follows this server's settings
+  if (monOpen && (UI.monitoring === false || (!UI.monOpen && !UI.monFixed))) {
+    monOpen = false;
+    document.getElementById("mon").className = "mon";
+    document.getElementById("monb").className = "monbtn";
+  } else if (!monOpen && UI.monitoring !== false && (UI.monOpen || UI.monFixed)) {
+    toggleMon();
+  }
+}
+function openAddServer(){
+  togglePmenu(false);
+  document.getElementById("asn").value = "";
+  document.getElementById("ash").value = "";
+  document.getElementById("aer").textContent = "";
+  document.getElementById("av").className = "show";
+  setTimeout(function(){ document.getElementById("asn").focus(); }, 80);
+}
+function closeAddServer(){
+  document.getElementById("av").className = "";
+  if (document.activeElement) document.activeElement.blur();
+}
+function submitAddServer(){
+  if (Date.now() < ign) return;
+  var n = document.getElementById("asn").value.trim(), h = document.getElementById("ash").value.trim();
+  if (!h) { document.getElementById("aer").textContent = "Enter the server's IP or name"; return; }
+  closeAddServer();
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: n, host: h, dir: 1 }));
+}
 function renderServices(p){
   st = p;
   applyUi(p.ui);
   if (p.title) document.getElementById("title").textContent = p.title;
+  renderDots();
   gmap = {};
   (st.dash || []).forEach(function(x){ if (x.kind === "group") gmap[x.id] = x; });
   if (dragging) { pendingDraw = true; return; }
@@ -3690,6 +3964,10 @@ function setReply(rq, r){
 function openSettings(){
   if (Date.now() < ign) return;
   togglePmenu(false);
+  // the settings window of the server on screen
+  var tt = sEl("sttl");
+  tt.innerHTML = "SETTINGS<small></small>";
+  tt.querySelector("small").textContent = document.getElementById("title").textContent;
   S = { busy: false };
   sEl("serr").textContent = "";
   sEl("sbody").innerHTML = '<div class="swait">Loading...</div>';
@@ -3984,6 +4262,11 @@ function sRender(){
     b.appendChild(wel);
   }
 
+  var dv0 = document.createElement("div");
+  dv0.className = "sdiv";
+  dv0.textContent = "THIS SERVER";
+  b.appendChild(dv0);
+
   // ---------- SERVER ----------
   var c = sSec(b, "SERVER");
   var sh = sLabel(c, "SERVER ADDRESS"), shx = sInputEl(f.serverHost, "192.168.1.10 or a name", "url");
@@ -4118,7 +4401,22 @@ function sRender(){
   });
   tb.style.alignSelf = "flex-start";
   c.appendChild(res);
-  sHint(c, "Tests the values above, even before you save them.");
+  sHint(c, "Tests the server, Glances (below) and Reboot / Shut down with the values in this form, even before you save them.");
+  if ((st.servers || []).length > 1) {
+    var rbx = document.createElement("div");
+    rbx.className = "sbtns";
+    c.appendChild(rbx);
+    var rb = document.createElement("button");
+    rb.className = "rtxt";
+    sArmed(rb, "Remove this server", "Tap again to remove " + document.getElementById("title").textContent, function(){
+      var id = st.cur;
+      S.saved = true;
+      closeSettings();
+      location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "remove", id: id, dir: -1 }));
+    });
+    rbx.appendChild(rb);
+    sHint(c, "Removes this server's settings, logins, buttons and layout from the phone. Your other servers stay.");
+  }
 
   // ---------- MONITORING ----------
   c = sSec(b, "MONITORING");
@@ -4195,7 +4493,13 @@ function sRender(){
   }
 
   // ---------- WIDGET ----------
+  var dv1 = document.createElement("div");
+  dv1.className = "sdiv";
+  dv1.textContent = "SHARED BY ALL SERVERS";
+  b.appendChild(dv1);
+
   c = sSec(b, "WIDGET");
+  sHint(c, "Each widget shows one server: long-press the widget, Edit Widget, and type the server's name or number (1 = the first) under Parameter. Empty = the first server.");
   sNum(c, "REFRESH EVERY (MINUTES)", "refreshMinutes", "5", "iOS decides the exact moment, so this is the shortest gap, not a promise.");
   sText(c, "CORNER BUTTON LINK", "linkUrl", "https://... (empty = no button)", "url", "A small button in the widget corner, e.g. your ZimaOS or Proxmox page.");
   sToggle(c, "STATUS DOTS ON THE WIDGET", "widgetStatusDots", "Each widget refresh checks every button, which takes a couple of seconds.");
@@ -4432,6 +4736,19 @@ function skipSplash(now){ booted = true; document.body.classList.add("boot"); en
 setTimeout(function(){ if (!booted) skipSplash(); }, 3000); // in case the data never arrives
 </script></body></html>`;
 
+// Changing the server on screen: everything fetched for the last one is dropped, then the page redraws
+let GEN = 0;
+async function showServer(wv, dir) {
+  GEN++;
+  fsCache = null;
+  lastStats = null;
+  expanded = null;
+  statusDirty = true;
+  lastStatus = 0;
+  await wv.evaluateJavaScript(`switchServer(${JSON.stringify(getTitle())}, ${JSON.stringify(getPayload())}, ${Number(dir) || 0})`, false);
+  refreshLogos(wv);
+}
+
 async function showLiveDashboard(openStackId) {
   const sleep = (ms) => new Promise((resolve) => Timer.schedule(ms, false, resolve));
   const wv = new WebView();
@@ -4566,7 +4883,9 @@ async function showLiveDashboard(openStackId) {
         try {
           await wv.evaluateJavaScript(`setReply(${JSON.stringify(d.rq)}, ${JSON.stringify(r)})`, false);
           // anything that changes buttons, logos or layout is redrawn right away
-          if (r.ok && ["save", "restore", "clearlogos", "import", "reset"].includes(d.op)) {
+          if (r.ok && d.op === "import") {
+            await showServer(wv, 0);
+          } else if (r.ok && ["save", "restore", "clearlogos", "reset"].includes(d.op)) {
             await pushServices(wv);
             refreshLogos(wv);
           }
@@ -4588,6 +4907,27 @@ async function showLiveDashboard(openStackId) {
         }
         try {
           await wv.evaluateJavaScript(`powerResult(${JSON.stringify(r)})`, false);
+        } catch (e) {}
+      })();
+      return false;
+    }
+    // switch / add / remove a server (swipe the server name, the dots, or Settings)
+    if (req.url.startsWith("srv://")) {
+      (async () => {
+        let d = {};
+        try {
+          d = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3)));
+        } catch (e) {}
+        try {
+          const before = listServers().map((x) => x.id);
+          let ok = false;
+          if (d.act === "switch") ok = setCurrentServer(d.id);
+          else if (d.act === "add") ok = !!addServer(d.name, d.host);
+          else if (d.act === "remove") ok = removeServer(d.id);
+          if (!ok) return;
+          await showServer(wv, before.indexOf(CUR) < 0 ? 1 : d.dir || 0);
+          if (d.act === "add") await wv.evaluateJavaScript("setTimeout(openSettings, 450)", false);
+          if (d.act === "remove") await wv.evaluateJavaScript(`toast("Server removed", 2500)`, false);
         } catch (e) {}
       })();
       return false;
@@ -4634,8 +4974,9 @@ async function showLiveDashboard(openStackId) {
     if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > REACH_SECONDS * 1000)) {
       reachBusy = true;
       reachFor = rk;
+      const g = GEN;
       serverReachable(SET)
-        .then((r) => wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r)})`, false))
+        .then((r) => (g === GEN ? wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r)})`, false) : null))
         .catch(() => {})
         .then(() => {
           reachBusy = false;
@@ -4644,12 +4985,15 @@ async function showLiveDashboard(openStackId) {
     }
     // Monitoring off: no requests to Glances at all
     if (SET.monitoring) {
+      const g = GEN;
       try {
         const stats = await getStats({ fsMaxAge: 10000 });
-        lastStats = stats;
-        await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
+        if (g === GEN) {
+          lastStats = stats;
+          await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
+        }
       } catch (e) {
-        await wv.evaluateJavaScript("offline()", false);
+        if (g === GEN) await wv.evaluateJavaScript("offline()", false);
       }
       try {
         await pushDetail(wv);
@@ -4658,8 +5002,9 @@ async function showLiveDashboard(openStackId) {
     if (!statusBusy && (statusDirty || Date.now() - lastStatus > SET.statusSeconds * 1000)) {
       statusBusy = true;
       statusDirty = false;
+      const g = GEN;
       checkServices(getServices(false), SET.pingTimeout)
-        .then((m) => wv.evaluateJavaScript(`setUp(${JSON.stringify(m)})`, false))
+        .then((m) => (g === GEN ? wv.evaluateJavaScript(`setUp(${JSON.stringify(m)})`, false) : null))
         .catch(() => {})
         .then(() => {
           statusBusy = false;

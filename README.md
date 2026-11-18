@@ -34,6 +34,21 @@ Accounts with two-factor login can't be used for Reboot / Shut down; make a sepa
 Logins are stored in the iOS Keychain. Enter a login ahead of time with **Enter login** under the server type in Settings
 (it is checked against the server before it is saved), or wait to be asked the first time you use Reboot / Shut down.
 
+## Several servers
+
+Swipe the server name left or right to switch servers. The dots under the name show how many there are and which
+one is on screen. Swipe left past the last one (or tap **+**) to add a server.
+
+- Each server has its **own settings window** (the gear, titled with the server's name): server address and type,
+  logins, Monitoring / Glances, and its own buttons, stacks and layout.
+- Theme & look, the widget's refresh and rows, button options and export / import are **shared by all servers**
+  (shown under "Shared by all servers" in every settings window).
+- A **widget** shows one server: long-press it, **Edit Widget**, and type the server's name or number (`1`, `2` ...)
+  under **Parameter**. Empty = the first server. Tapping the widget opens the dashboard on that server.
+- **Remove this server** is at the bottom of its Server settings. Export / import covers every server.
+
+Existing setups become server 1 with everything kept, including saved logins.
+
 ## 1. Run Glances on the server (optional, for Monitoring)
 
 Docker (any OS):
