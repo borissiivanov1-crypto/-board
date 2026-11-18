@@ -3,6 +3,9 @@
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
 The whole app is one file: `board_Blank.js`.
 
+**iPhone app:** a real app (Swift, with a home screen widget) that you install for free with SideStore or AltStore;
+see [iPhone app (SideStore / AltStore)](#iphone-app-sidestore--altstore) below.
+
 **Android:** a native version (Kotlin + Jetpack Compose) is in [`android/`](android/). Install
 [`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
 [Android user manual](board_User_Manual_Android.docx). See also [Android app](#android-app) below.
@@ -139,3 +142,31 @@ Differences from the iPhone version:
 
 **Build it yourself:** with JDK 17+ and the Android SDK (platform 35), run `./gradlew assembleRelease` in `android/`;
 the APK is `app/build/outputs/apk/release/app-release.apk`. `./gradlew testReleaseUnitTest` runs the unit tests.
+
+## iPhone app (SideStore / AltStore)
+
+[`ios/`](ios/) is a native iPhone app version of the script. Its dashboard is the script's own page (so it looks and
+behaves exactly the same), backed by a Swift port of the script's logic, plus a WidgetKit home screen widget. It needs
+no Scriptable and no paid Apple account: you install it with SideStore or AltStore, which sign it with your own free
+Apple ID.
+
+GitHub Actions builds it on every change ([workflow](.github/workflows/ios.yml)) and publishes the latest build to the
+[`ios-latest` release](../../releases/tag/ios-latest), together with a SideStore / AltStore source.
+
+**Install:**
+1. Install **SideStore** (or **AltStore**) on the iPhone, following its own setup guide (it needs a computer once, for
+   the first install).
+2. In SideStore, open **Sources**, tap **+** and add this source:
+   `https://github.com/borissiivanov1-crypto/-board/releases/download/ios-latest/apps.json`
+3. Open the source and install **-board**. On iOS 16 and newer, turn on **Developer Mode** when iOS asks
+   (Settings > Privacy & Security > Developer Mode) and restart.
+4. Open -board: Settings opens by itself on first run, as in the script. To bring your setup over from Scriptable,
+   use *Settings > Data > Export settings* there and *Import settings* in the app.
+5. Add the widget: hold the home screen > **Edit** > **Add Widget** > **-board**. Hold it > **Edit Widget** to pick the
+   server (name or number), as with the Scriptable widget's Parameter.
+
+**Keep it working:** with a free Apple ID an app signed this way stops opening after 7 days unless it's refreshed;
+SideStore refreshes it from the phone (open SideStore and tap **Refresh** at least once a week). New builds of -board
+show up as updates in SideStore. A free Apple ID allows only a few sideloaded apps at a time.
+
+The app needs iOS 17 or newer.
