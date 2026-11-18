@@ -286,7 +286,7 @@ object Store {
                 logo = s.optString("logo", ""), url = url, custom = s.optBoolean("custom"),
                 scheme = u.scheme, addr = u.host + u.path, label = if (port.isNotEmpty()) ":$port" else u.host,
                 onWidget = s.getString("id") !in d.widgetHidden,
-                zima = s.optString("zima", ""),
+                zima = s.optString("zima", "").ifEmpty { s.optString("app", "") },
             )
         }
         return if (forDashboard) sortByOrder(list, d.order) else list
@@ -447,11 +447,11 @@ object Store {
     fun addZimaApps(apps: List<ZApp>, host: String) {
         if (apps.isEmpty()) return
         val data = loadData()
-        var t = System.currentTimeMillis()
+        var n = 0
+        val t = System.currentTimeMillis()
         for (a in apps) {
-            val item = makeCustom(a.title, a.scheme, (a.host.ifEmpty { host }) + a.path, a.port, a.icon)
-            item.put("id", "c:" + t++).put("zima", a.id)
-            data.custom.add(item)
+            data.custom.add(JSONObject().put("id", "c:$t-${n++}").put("name", a.title.take(24)).put("port", a.port).put("icon", "📦")
+                .put("logo", a.icon).put("custom", true).put("zima", a.id).put("app", a.id).put("url", Zima.appUrl(a, host)))
             Logos.clearFail(a.icon)
         }
         saveData(data)

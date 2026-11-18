@@ -741,25 +741,21 @@ fun Detail(vm: BoardVM, id: String) {
                 } else if (dd != null && zd.isNullOrEmpty()) {
                     Caps("NO DRIVE TEMPERATURES REPORTED BY GLANCES", 10.sp, .35f, Modifier.fillMaxWidth())
                 }
-                // ZimaOS: each drive's health check and temperature (no drivetemp module needed)
+                // ZimaOS: each drive's SMART health and temperature (no drivetemp module needed)
                 if (!zd.isNullOrEmpty()) Column {
-                    Dh("DRIVE HEALTH")
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (x in zd) Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color.White.copy(alpha = .05f)).padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                T(x.name.ifEmpty { x.path }, 14.sp, FontWeight.Bold, maxLines = 1)
-                                val sub = listOf(x.model, x.type).filter { it.isNotEmpty() }.joinToString(" · ")
-                                if (sub.isNotEmpty()) T(sub, 11.sp, alpha = .5f, maxLines = 1)
+                    Dh("DRIVE HEALTH (ZIMAOS)")
+                    for (x in zd) {
+                        val k = if (x.path.contains("nvme") || x.name.startsWith("nvme")) "nvme" else if (x.type.equals("SSD", true)) "ssd" else "hdd"
+                        val zs = ArrayList<Triple<String, String, Color?>>()
+                        zs.add(Triple(if (x.health == false) "FAILING" else "OK", "SMART", if (x.health == false) RED else GREEN))
+                        x.temp?.let { zs.add(Triple("${Math.round(it)} °C", "TEMP", tcol(it, if (k == "hdd") "hdd" else "nvme"))) }
+                        zs.add(Triple(k.uppercase(), "TYPE", null))
+                        Column(Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(alpha = .05f)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                T(x.model.ifEmpty { x.name }, 15.sp, FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1)
+                                T(x.name + if (x.size > 0) " · ${sz(x.size)}" else "", 12.sp, alpha = .7f, maxLines = 1)
                             }
-                            x.temp?.let { t ->
-                                val k = if (x.type.equals("SSD", true) || x.path.contains("nvme")) "nvme" else "hdd"
-                                T("${Math.round(t)} °C", 14.sp, FontWeight.Bold, tcol(t, k) ?: Color.White)
-                                Spacer(Modifier.width(12.dp))
-                            }
-                            T(when (x.health) { true -> "OK"; false -> "FAILING"; null -> "-" }, 12.sp, FontWeight.ExtraBold, when (x.health) { true -> GREEN; false -> RED; null -> Color.White.copy(alpha = .5f) }, spacing = 1.sp)
+                            StatGrid(zs)
                         }
                     }
                 }

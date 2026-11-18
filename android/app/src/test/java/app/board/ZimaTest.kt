@@ -20,7 +20,7 @@ class ZimaTest {
         assertEquals("8096", a.port)
         assertEquals("/web", a.path)
         assertEquals(true, a.running)
-        assertNull(Zima.parseApp(JSONObject("""{"name":"x","app_type":"link"}""")))
+        assertEquals(false, Zima.parseApp(JSONObject("""{"name":"x","app_type":"link"}"""))!!.controllable)
     }
 
     @Test fun linksByPortOrId() {
@@ -28,6 +28,18 @@ class ZimaTest {
         assertNull(Zima.appFor(svc("http://other.host:8096"), apps, "192.168.1.10"))
         assertNull(Zima.appFor(svc("http://192.168.1.10:9999"), apps, "192.168.1.10"))
         assertEquals("immich", Zima.appFor(svc("https://photos.example.com", zima = "immich"), apps, "192.168.1.10")?.id)
+        // two apps on one port: not linked; no port = the usual one for http / https
+        val two = apps + ZApp("other", "Other", "", "8096", "http", "", "running", "", "v2app", "other")
+        assertNull(Zima.appFor(svc("http://192.168.1.10:8096"), two, "192.168.1.10"))
+        val web = listOf(ZApp("web", "Web", "", "80", "http", "", "running", "", "v2app", "web"))
+        assertEquals("web", Zima.appFor(svc("http://192.168.1.10"), web, "192.168.1.10")?.id)
+        assertEquals("http://192.168.1.10/web", Zima.appUrl(web[0].copy(path = "/web"), "192.168.1.10"))
+    }
+
+    @Test fun controllableAndRunning() {
+        val a = Zima.parseApp(JSONObject("""{"name":"x","app_type":"v2app","status":"Up (healthy)","is_uncontrolled":true}"""))!!
+        assertEquals(true, a.running)
+        assertEquals(false, a.controllable)
     }
 
     @Test fun matchesMountsToDrives() {

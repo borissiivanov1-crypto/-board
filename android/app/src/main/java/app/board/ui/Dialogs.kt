@@ -57,7 +57,7 @@ fun typeOpts() = PLATFORM_ORDER.map { it to PLATFORMS[it]!!.shortName }
 
 val TYPE_HINT = mapOf(
     "none" to "Pick the system your server runs. It decides how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.",
-    "zimaos" to "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.",
+    "zimaos" to "ZimaOS: your ZimaOS login is used for Reboot / Shut down, the app controls (hold a button: Start / Stop / Restart / Logs / Update), app updates, adding apps from ZimaOS, CPU power draw and drive health. Nothing to install.",
     "proxmox" to "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.",
     "truenas" to "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. Self-signed https certificates are accepted; plain http on your home network or VPN is fine too.",
     "unraid" to "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.",
@@ -110,7 +110,7 @@ fun AddServiceDialog(vm: BoardVM, sv: Service?, onClose: () -> Unit, onPickZima:
     val scope = rememberCoroutineScope()
     Modal(onClose) {
         ModalTitle(if (sv != null) "EDIT SERVICE" else "ADD SERVICE")
-        if (sv == null && vm.isZima) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Chip("Pick from ZimaOS apps") { onPickZima() } }
+        if (sv == null && vm.zimaReady) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Chip("Pick from ZimaOS apps") { onPickZima() } }
         Labeled("SERVICE NAME") { Field(name, { name = it }, "e.g. Jellyfin", maxLength = 24) }
         Labeled("ADDRESS") {
             Field(addr, { addr = it }, if (usePort) serverHostOrDefault(vm) else "app.example.com", keyboard = KeyboardType.Uri, leading = { SchemePick(scheme) { scheme = it } })
@@ -177,37 +177,32 @@ suspend fun loadPreview(url: String): ImageBitmap? = withContext(Dispatchers.IO)
 fun MenuDialog(vm: BoardVM, sv: Service, onClose: () -> Unit, onStack: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit, onLogs: (ZApp) -> Unit) {
     var armed by remember { mutableStateOf(false) }
     var stopArmed by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    // a ZimaOS server: make sure the app list is there to link the button by port
-    LaunchedEffect(sv.id) { if (vm.zimaReady && vm.zApps == null) vm.loadZApps() }
     val app = vm.zAppFor(sv)
-    fun run(action: String, busyText: String) {
+    fun run(action: String, busy: String) {
         val a = app ?: return
         onClose()
-        vm.showToast(busyText, 60000)
-        vm.viewModelScope.launch { vm.showToast(vm.zAction(a, action), 3500) }
+        vm.showToast("$busy ${a.title}...", 120000)
+        vm.viewModelScope.launch { vm.showToast(vm.zAction(a, action), 4000) }
     }
     Modal(onClose) {
         ModalTitle(sv.name)
-        if (app != null) Note("ZimaOS app · " + if (app.running) "running" else app.status.ifEmpty { "stopped" })
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (app != null && app.controllable) {
-                if (app.running) {
-                    Btn(if (stopArmed) "Tap again to stop" else "Stop", BtnKind.RedText, Modifier.fillMaxWidth()) {
-                        if (!stopArmed) stopArmed = true else run("stop", "Stopping ${app.title}...")
-                    }
-                } else Btn("Start", BtnKind.GreenText, Modifier.fillMaxWidth()) { run("start", "Starting ${app.title}...") }
-                Btn("Restart", modifier = Modifier.fillMaxWidth()) { run("restart", "Restarting ${app.title}...") }
-            }
-            if (app != null) Btn("Logs", modifier = Modifier.fillMaxWidth()) { onLogs(app) }
-            if (app != null && app.controllable) {
-                val upd = vm.zUpdateFor(app)
-                Btn(if (upd != null) "Update ↑" else "Update", if (upd != null) BtnKind.GreenText else BtnKind.Plain, Modifier.fillMaxWidth()) {
-                    onClose()
-                    vm.showToast("Updating ${app.title}...", 60000)
-                    vm.viewModelScope.launch { vm.showToast(vm.zUpdate(app.id, app.title).second, 4000) }
+        if (app != null) {
+            val upd = vm.zUpdatable(app)
+            Note("ZimaOS app · " + (if (app.running) "running" else app.status.ifEmpty { "stopped" }) + if (upd) " · update available" else "")
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (app.controllable) {
+                    if (app.running) {
+                        Btn(if (stopArmed) "Tap again to stop" else "Stop", BtnKind.RedText, Modifier.fillMaxWidth()) {
+                            if (!stopArmed) stopArmed = true else run("stop", "Stopping")
+                        }
+                        Btn("Restart", modifier = Modifier.fillMaxWidth()) { run("restart", "Restarting") }
+                    } else Btn("Start", BtnKind.GreenText, Modifier.fillMaxWidth()) { run("start", "Starting") }
                 }
+                Btn("Logs", modifier = Modifier.fillMaxWidth()) { onLogs(app) }
+                if (upd && app.controllable) Btn("Update", BtnKind.GreenText, Modifier.fillMaxWidth()) { run("update", "Updating") }
             }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Btn(if (sv.group != null) "Change stack" else "Add to stack", modifier = Modifier.fillMaxWidth()) { onStack() }
             Btn("Edit", BtnKind.GreenText, Modifier.fillMaxWidth()) { onEdit() }
             Btn(if (armed) "Tap again to delete" else "Delete", BtnKind.RedText, Modifier.fillMaxWidth()) { if (!armed) armed = true else onDelete() }
@@ -251,28 +246,30 @@ fun LogsDialog(vm: BoardVM, app: ZApp, onClose: () -> Unit) {
 // ---------- ZimaOS app updates (the "↑ 2 updates" chip) ----------
 @Composable
 fun UpdatesDialog(vm: BoardVM, onClose: () -> Unit) {
-    val busy = remember { mutableStateMapOf<String, String>() }
+    val state = remember { mutableStateMapOf<String, String>() }
+    // the list as it was when the popup opened (an app stays listed with its result after updating)
+    val list = remember { vm.zUpdates }
     Modal(onClose) {
         ModalTitle("APP UPDATES")
-        val list = vm.zUpdates
-        if (list.isEmpty()) Note("All apps are up to date.")
-        else Note("Newer versions in the ZimaOS App Store. Updating pulls the new version and restarts the app.")
+        Note("Newer versions in the ZimaOS App Store. Updating pulls the new image and recreates the app; its data stays.")
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            for (u in list) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                AppIcon(u.icon)
+            for (a in list) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                AppIcon(a.icon)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    T(u.title, 15.sp, FontWeight.Bold, maxLines = 1)
-                    if (u.version.isNotEmpty()) T(u.version, 11.sp, alpha = .5f, maxLines = 1)
+                    T(a.title, 15.sp, FontWeight.Bold, maxLines = 1)
+                    T("Update available", 11.sp, alpha = .5f, maxLines = 1)
                 }
                 Spacer(Modifier.width(8.dp))
-                val st = busy[u.id]
-                Btn(st ?: "Update", BtnKind.Ok, Modifier.width(104.dp), enabled = st == null, height = 38.dp) {
-                    busy[u.id] = "Updating"
+                val st = state[a.id]
+                Chip(st ?: "Update") {
+                    if (st != null) return@Chip
+                    state[a.id] = "Updating..."
                     vm.viewModelScope.launch {
-                        val r = vm.zUpdate(vm.zUpdateApp(u), u.title)
-                        busy.remove(u.id)
-                        vm.showToast(r.second, 4000)
+                        val r = vm.zAction(a, "update")
+                        val ok = r.contains("update started")
+                        state[a.id] = if (ok) "Started" else "Failed"
+                        if (!ok) vm.showToast(r, 6000)
                     }
                 }
             }
@@ -293,10 +290,11 @@ fun ZimaPickDialog(vm: BoardVM, onClose: () -> Unit) {
         Note("Your installed ZimaOS apps. Pick the ones to add as buttons; they get the app's address, logo and the Start / Stop / Logs controls.")
         val apps = vm.zApps.orEmpty()
         val taken = vm.layout.all.mapNotNull { vm.zAppFor(it)?.id }.toSet()
+        // Add says how many are picked
         when {
             loading -> Note("Loading your apps...")
             err != null -> ErrText(err!!)
-            apps.isEmpty() -> Note("No apps are installed on this ZimaOS server.")
+            apps.isEmpty() -> Note("No apps installed on ZimaOS.")
             else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 for (a in apps) {
                     val has = a.id in taken
@@ -305,7 +303,7 @@ fun ZimaPickDialog(vm: BoardVM, onClose: () -> Unit) {
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
                             T(a.title, 15.sp, FontWeight.Bold, maxLines = 1)
-                            T(if (has) "Already a button" else if (a.port.isNotEmpty()) ":${a.port}" + if (a.running) "" else " · ${a.status.ifEmpty { "stopped" }}" else "no web page", 11.sp, alpha = .55f, maxLines = 1)
+                            T(if (has) "Already a button" else (if (a.port.isNotEmpty()) "port ${a.port} · " else "") + a.status, 11.sp, alpha = .55f, maxLines = 1)
                         }
                         if (!has) Switch(picked[a.id] == true) { picked[a.id] = it }
                     }
@@ -315,11 +313,11 @@ fun ZimaPickDialog(vm: BoardVM, onClose: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Btn("Cancel", modifier = Modifier.weight(1f)) { onClose() }
             val n = picked.count { it.value }
-            Btn(if (n > 1) "Add $n" else "Add", BtnKind.Ok, Modifier.weight(1f), enabled = n > 0) {
+            Btn(if (n > 0) "Add $n" else "Add", BtnKind.Ok, Modifier.weight(1f)) {
                 val sel = apps.filter { picked[it.id] == true && it.id !in taken }
                 onClose()
                 vm.addZimaApps(sel)
-                vm.showToast(if (sel.size == 1) "${sel[0].title} added" else "${sel.size} apps added", 2500)
+                vm.showToast("${sel.size} app${if (sel.size == 1) "" else "s"} added from ZimaOS", 3500)
             }
         }
     }

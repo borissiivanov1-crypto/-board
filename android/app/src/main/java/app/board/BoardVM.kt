@@ -68,12 +68,15 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
 
     // ZimaOS (only for servers of type ZimaOS with a saved login)
     var zApps by mutableStateOf<List<ZApp>?>(null)
-    var zUpdates by mutableStateOf<List<ZUpdate>>(emptyList())
+    var zUpg by mutableStateOf<Set<String>>(emptySet())
+    // installed apps the App Store has a newer version of (the "↑ N updates" chip)
+    val zUpdates: List<ZApp> get() = if (!zimaReady) emptyList() else zApps.orEmpty().filter { zUpdatable(it) }
+    fun zUpdatable(a: ZApp) = a.id.lowercase() in zUpg
     var zSys by mutableStateOf<ZSys?>(null)
     var zDrives by mutableStateOf<List<ZDrive>?>(null)
     private var zBusy = false
+    private var zDrivesAt = 0L
     private var lastZApps = 0L
-    private var lastZUpd = 0L
     val isZima get() = set.platform == "zimaos"
     val zimaReady get() = isZima && hasLogin
 
@@ -177,47 +180,57 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ZimaOS apps every status interval, updates every 10 minutes (each in the background)
+    // ZimaOS apps and their updates: asked again once a minute
     private fun zimaTick(g: Int) {
-        if (zBusy) return
-        val now = System.currentTimeMillis()
-        val wantApps = now - lastZApps > set.statusSeconds * 1000L
-        val wantUpd = now - lastZUpd > 10 * 60 * 1000L
-        if (!wantApps && !wantUpd) return
+        if (zBusy || System.currentTimeMillis() - lastZApps < 60 * 1000L) return
+        viewModelScope.launch { refreshZima(g) }
+    }
+
+    private suspend fun refreshZima(g: Int = gen): String? {
+        if (!zimaReady) return Zima.NEED_LOGIN
+        if (zBusy) return null
         zBusy = true
         val s = set
-        viewModelScope.launch {
-            if (wantApps) { try { val a = Zima.apps(s); if (g == gen) zApps = a } catch (e: Exception) { if (e is ZimaErr && e.auth) hasLogin = Secrets.hasLogin("zimaos") } ; lastZApps = System.currentTimeMillis() }
-            if (wantUpd) { try { val u = Zima.updates(s); if (g == gen) zUpdates = u } catch (_: Exception) {}; lastZUpd = System.currentTimeMillis() }
+        try {
+            val a = viewModelScope.async { Zima.apps(s) }
+            val u = viewModelScope.async { try { Zima.updates(s) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; emptySet() } }
+            val apps = a.await(); val upg = u.await()
+            if (g == gen) { zApps = apps; zUpg = upg }
+            return null
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            return e.message ?: "ZimaOS didn't list its apps."
+        } finally {
             zBusy = false
+            lastZApps = System.currentTimeMillis()
         }
     }
 
     fun zAppFor(sv: Service): ZApp? = if (!zimaReady) null else zApps?.let { Zima.appFor(sv, it, serverHostOf(set)) }
 
-    // Loads the app list now (the menu and the picker). Returns an error or null.
+    // Loads the app list now (the picker). Returns an error or null.
     suspend fun loadZApps(): String? {
-        if (!isZima) return "This server isn't a ZimaOS server."
+        if (!isZima) return "These controls need the server type ZimaOS (Settings > Server)."
         if (!hasLogin) return Zima.NEED_LOGIN
-        return try { zApps = Zima.apps(set); lastZApps = System.currentTimeMillis(); null } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            e.message ?: "ZimaOS didn't answer"
-        }
+        while (zBusy) delay(100)
+        return refreshZima()
     }
 
-    // Start / Stop / Restart. Returns a message for the toast.
-    suspend fun zAction(app: ZApp, action: String): String {
-        val verb = when (action) { "start" -> "started"; "stop" -> "stopped"; else -> "restarted" }
-        return try {
-            Zima.setStatus(set, app.id, action)
-            zApps = zApps?.map { if (it.id == app.id) it.copy(status = if (action == "stop") "exited" else "running") else it }
-            statusDirty = true
-            lastZApps = System.currentTimeMillis() - set.statusSeconds * 1000L + 4000
-            "${app.title} $verb"
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            "${app.title}: " + (e.message ?: "ZimaOS didn't accept the command")
+    // Start / Stop / Restart / Update. Returns a message for the toast.
+    suspend fun zAction(app: ZApp, action: String): String = try {
+        if (action == "update") Zima.update(set, app.id) else Zima.setStatus(set, app.id, action)
+        if (action != "update") delay(1500)
+        statusDirty = true
+        refreshZima()
+        when (action) {
+            "update" -> "${app.title}: update started. ZimaOS pulls the new version in the background."
+            "start" -> "${app.title} started"
+            "stop" -> "${app.title} stopped"
+            else -> "${app.title} restarted"
         }
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
+        e.message ?: "ZimaOS didn't accept the command"
     }
 
     suspend fun zLogs(app: ZApp): Pair<Boolean, String> = try {
@@ -227,28 +240,8 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         false to (e.message ?: "Couldn't load the logs")
     }
 
-    // The installed app for an update (the compose name can differ from the App Store id)
-    fun zUpdateApp(u: ZUpdate): String = zApps?.find { it.storeId == u.id || it.id == u.id }?.id ?: u.id
-    fun zUpdateFor(app: ZApp): ZUpdate? = zUpdates.find { it.id == app.id || (app.storeId.isNotEmpty() && it.id == app.storeId) }
-
-    suspend fun zUpdate(id: String, title: String): Pair<Boolean, String> = try {
-        Zima.update(set, id)
-        zUpdates = zUpdates.filter { zUpdateApp(it) != id && it.id != id }
-        lastZUpd = System.currentTimeMillis() - 9 * 60 * 1000L
-        true to "Updating $title. ZimaOS finishes it in the background."
-    } catch (e: Exception) {
-        if (e is kotlinx.coroutines.CancellationException) throw e
-        false to "$title: " + (e.message ?: "the update didn't start")
-    }
-
-    fun refreshUpdates() {
-        if (!zimaReady) return
-        val s = set
-        viewModelScope.launch { try { zUpdates = Zima.updates(s) } catch (_: Exception) {}; lastZUpd = System.currentTimeMillis() }
-    }
-
     fun addZimaApps(apps: List<ZApp>) {
-        Store.addZimaApps(apps, serverHostOf(set).ifEmpty { "localhost" })
+        Store.addZimaApps(apps, serverHostOf(set))
         statusDirty = true
         pushServices(); refreshLogos(); refreshWidgets()
     }
@@ -271,7 +264,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e }
         if (zimaReady) try {
             if (key == "cpu") zSys = Zima.sys(set)
-            if (key == "disk") zDrives = Zima.drives(set)
+            if (key == "disk" && (zDrives == null || System.currentTimeMillis() - zDrivesAt > 60 * 1000L)) { zDrives = Zima.drives(set); zDrivesAt = System.currentTimeMillis() }
         } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e }
     }
 
@@ -363,7 +356,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         gen++
         stats = null; glancesOk = null; reach = null; hist = Hist(); details.clear(); expanded = null
         svcUp = emptyMap(); openG.clear(); mode = "dash"
-        zApps = null; zUpdates = emptyList(); zSys = null; zDrives = null; lastZApps = 0; lastZUpd = 0
+        zApps = null; zUpg = emptySet(); zSys = null; zDrives = null; lastZApps = 0; Zima.forgetSys()
         statusDirty = true; lastStatus = 0; reachFor = ""
         switchDir = dir; switchSeq++
         refreshAll()
@@ -436,8 +429,8 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         if (gpass.isNotEmpty()) Secrets.set(Secrets.gpassKey(), gpass)
         statusDirty = true
         refreshAll()
-        if (!isZima) { zApps = null; zUpdates = emptyList(); zSys = null; zDrives = null }
-        lastZApps = 0; lastZUpd = 0
+        if (!isZima) { zApps = null; zUpg = emptySet(); zSys = null; zDrives = null }
+        Zima.forget(); lastZApps = 0
         if (set.monitoringFixed && set.monitoring) monOpen = true
         if (!set.monitoring) monOpen = false
         refreshLogos(); refreshWidgets()
@@ -484,7 +477,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
             return false to if (r.net) "$why. The login wasn't saved: try again when the server can be reached." else why
         }
         Secrets.saveLogin(P, user, p)
-        if (P == "zimaos") { Zima.forget(); lastZApps = 0; lastZUpd = 0 }
+        if (P == "zimaos") { Zima.forget(); lastZApps = 0 }
         if (P == set.platform) hasLogin = true
         val extra = Regex("\\(([^)]*)\\)\\s*$").find(r.msg)?.groupValues?.get(1)
         return true to "${PLATFORMS[P]!!.login} login checked and saved" + if (extra != null) " ($extra)" else ""
@@ -492,7 +485,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
 
     fun settingsForget(P: String): String {
         Secrets.forgetLogin(P)
-        if (P == "zimaos") { Zima.forget(); zApps = null; zUpdates = emptyList() }
+        if (P == "zimaos") { Zima.forget(); zApps = null; zUpg = emptySet() }
         if (P == set.platform) hasLogin = false
         return if (P == "linux") "Helper key forgotten" else PLATFORMS[P]!!.login + " login forgotten"
     }
