@@ -740,7 +740,7 @@ fn submit_add_server(app: &Rc<App>, m: &gtk::Box, st: &Rc<RefCell<AddServer>>) {
         let s = st.borrow();
         (s.name.trim().to_string(), s.scheme.clone(), s.port.clone())
     };
-    let own = clean_settings(&json!({ "serverHost": host, "serverScheme": scheme, "serverPort": port, "platform": platform }));
+    let own = clean_settings(&json!({ "serverHost": host, "serverScheme": scheme, "serverPort": port, "platform": platform, "baseUrl": "", "username": "", "proxmoxNode": "", "networkInterface": "", "diskMounts": [] }));
     let with_login = power::has_driver(&own.platform) && !u.is_empty() && !p.is_empty();
     let (a, mm, st2) = (app.clone(), m.clone(), st.clone());
     let own2 = own.clone();
@@ -761,7 +761,7 @@ fn submit_add_server(app: &Rc<App>, m: &gtk::Box, st: &Rc<RefCell<AddServer>>) {
             }
             let id = a.ctx.store.borrow_mut().add_server(
                 &name,
-                json!({ "serverHost": own.server_host, "serverScheme": own.server_scheme, "serverPort": own.server_port, "platform": own.platform }),
+                json!({ "serverHost": own.server_host, "serverScheme": own.server_scheme, "serverPort": own.server_port, "platform": own.platform, "diskMounts": [] }),
             );
             if with_login {
                 let _ = a.ctx.secrets.save_login(&own.platform, &id, &u, &p);
@@ -938,7 +938,17 @@ pub fn open_updates(app: &Rc<App>) {
                 }
             })));
         });
-        list.append(&app_row(app, &za, "Update available", &chip));
+        let r = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let t = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        t.set_hexpand(true);
+        let n = modal::label(&za.title, "srow-t");
+        n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        t.append(&n);
+        t.append(&modal::label("Update available", "srow-s"));
+        r.append(&t);
+        chip.set_valign(gtk::Align::Center);
+        r.append(&chip);
+        list.append(&r);
     }
     m.append(&list);
     let b = modal::btns(true);

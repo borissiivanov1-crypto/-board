@@ -9,7 +9,6 @@
 //! settings come merged in `.settings`. A file from before there were several servers becomes
 //! server 1 ("s1"). The format is the same as the iOS version's, so export / import work across both.
 
-use crate::config::DEFAULT_TITLE;
 use crate::settings::{clean_settings, Settings, SERVER_SETTING_KEYS};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -36,6 +35,8 @@ impl Group {
 /// One server's part of the data file, with the shared and its own settings merged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Data {
+    /// the server's id (not saved; built-in buttons belong to the first server, "s1")
+    pub id: String,
     pub title: String,
     pub settings: Value,
     /// buttons you added (kept as JSON so nothing is lost on the way through)
@@ -142,11 +143,22 @@ pub struct Store {
     raw: Option<String>,
     /// The server shown now.
     pub cur: String,
+    /// the first server's name when none is set (CONFIG.title)
+    pub default_title: String,
+    /// built-in buttons that start off the large widget (widget: false), on the first run of the first server
+    pub builtin_hidden: Vec<String>,
 }
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Store {
-        let mut s = Store { path: path.as_ref().to_path_buf(), raw: None, cur: String::new() };
+        let c = crate::config::start();
+        let mut s = Store {
+            path: path.as_ref().to_path_buf(),
+            raw: None,
+            cur: String::new(),
+            default_title: c.title.clone(),
+            builtin_hidden: c.builtin.iter().filter(|b| !b.widget).map(|b| format!("b:{}", b.name)).collect(),
+        };
         s.cur = s.read()["current"].as_str().unwrap_or("s1").to_string();
         s
     }
@@ -198,7 +210,7 @@ impl Store {
             .unwrap()
             .iter()
             .enumerate()
-            .map(|(i, x)| (x["id"].as_str().unwrap().to_string(), display_title(x, i)))
+            .map(|(i, x)| (x["id"].as_str().unwrap().to_string(), display_title(x, i, &self.default_title)))
             .collect()
     }
 
@@ -217,7 +229,7 @@ impl Store {
                 .or_else(|| {
                     list.iter().enumerate().find(|(i, x)| {
                         let t = x["title"].as_str().unwrap_or("");
-                        let t = if t.is_empty() && *i == 0 { DEFAULT_TITLE } else { t };
+                        let t = if t.is_empty() && *i == 0 { self.default_title.as_str() } else { t };
                         t.to_lowercase() == want.to_lowercase()
                     }).map(|(_, x)| x)
                 });
@@ -319,7 +331,15 @@ impl Store {
                 }
             })
             .collect();
+        let id = sv["id"].as_str().unwrap_or("").to_string();
+        // first run on the first server: built-in buttons marked widget: false start off the widget
+        let widget_hidden = match sv.get("widgetHidden") {
+            Some(Value::Array(_)) => str_list(sv.get("widgetHidden")),
+            _ if id == "s1" => self.builtin_hidden.clone(),
+            _ => vec![],
+        };
         Data {
+            id,
             title: sv.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             settings,
             custom,
@@ -327,7 +347,7 @@ impl Store {
             hidden: str_list(sv.get("hidden")),
             order: str_list(sv.get("order")),
             widget_order: str_list(sv.get("widgetOrder")),
-            widget_hidden: str_list(sv.get("widgetHidden")),
+            widget_hidden,
             groups,
         }
     }
@@ -341,7 +361,7 @@ impl Store {
     pub fn title(&mut self) -> String {
         let st = self.read();
         let i = self.cur_index(&st);
-        display_title(&st["servers"][i], i)
+        display_title(&st["servers"][i], i, &self.default_title)
     }
 
     /// Saves the current server's part (and the shared settings) back into the file.
@@ -406,7 +426,7 @@ impl Store {
             if let Some(t) = imp.get("title").and_then(|v| v.as_str()) {
                 d.title = t.to_string();
             }
-            let mut tmp = Store { path: PathBuf::new(), raw: Some(serde_json::to_string(&imp).unwrap()), cur: "s1".into() };
+            let mut tmp = Store { path: PathBuf::new(), raw: Some(serde_json::to_string(&imp).unwrap()), cur: "s1".into(), default_title: self.default_title.clone(), builtin_hidden: vec![] };
             let part = tmp.load_data();
             for k in SERVER_PARTS {
                 if imp.get(k).is_some() {
@@ -438,10 +458,10 @@ pub fn truthy(v: &Value) -> bool {
     }
 }
 
-fn display_title(x: &Value, i: usize) -> String {
+fn display_title(x: &Value, i: usize, default_title: &str) -> String {
     match x.get("title").and_then(|v| v.as_str()) {
         Some(t) if !t.is_empty() => t.to_string(),
-        _ if i == 0 => DEFAULT_TITLE.to_string(),
+        _ if i == 0 => default_title.to_string(),
         _ => format!("SERVER {}", i + 1),
     }
 }
@@ -535,6 +555,22 @@ mod tests {
         assert_eq!(u.settings().theme, "forest");
         assert_eq!(u.settings().server_host, "x");
         assert_eq!(u.load_data().custom.len(), 1);
+    }
+
+    #[test]
+    fn builtin_buttons_start_off_the_widget_on_the_first_server() {
+        let (_d, mut s) = store_with("");
+        s.builtin_hidden = vec!["b:ZimaOS".into()];
+        s.default_title = "HOMELAB".into();
+        assert_eq!(s.load_data().widget_hidden, vec!["b:ZimaOS"]);
+        assert_eq!(s.title(), "HOMELAB");
+        let mut d = s.load_data();
+        d.widget_hidden.clear();
+        s.save_data(&d);
+        assert!(s.load_data().widget_hidden.is_empty(), "once saved, your layout wins");
+        s.add_server("Two", json!({}));
+        assert!(s.load_data().widget_hidden.is_empty());
+        assert_eq!(s.load_data().id, s.cur);
     }
 
     #[test]

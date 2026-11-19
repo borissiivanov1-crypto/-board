@@ -1059,12 +1059,12 @@ impl App {
                         g.append(&stat(&format!("{:.2}", l[2]), "LOAD 15M", None));
                     }
                     g.append(&stat(&trim_num(d.n_cores), "CORES", None));
-                    // ZimaOS: its CPU temperature when Glances has none, and the CPU power draw
+                    // ZimaOS: the CPU power draw, and its CPU temperature when Glances has none
+                    if let Some(w) = z.and_then(|z| z.watts) {
+                        g.append(&stat(&format!("{w:.1} W"), "POWER", None));
+                    }
                     if let Some(t) = d.temp.or(z.and_then(|z| z.cpu_temp)) {
                         g.append(&stat(&format!("{} °C", config::js_round(t)), "TEMP", tcol(t, "cpu")));
-                    }
-                    if let Some(w) = z.and_then(|z| z.watts) {
-                        g.append(&stat(&if w >= 100.0 { format!("{} W", config::js_round(w)) } else { format!("{w:.1} W") }, "POWER", None));
                     }
                     if let (Some(t), true) = (d.hot, d.n_core_temps > 1) {
                         g.append(&stat(&format!("{} °C", config::js_round(t)), "HOTTEST CORE", tcol(t, "cpu")));

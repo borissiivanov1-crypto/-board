@@ -8,9 +8,6 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-/// Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
-/// You can list some here, e.g. ("Jellyfin", 8096, "🎬", logo, path, https); they use the server address.
-pub const BUILTIN: [(&str, u16, &str, &str, &str, bool); 0] = [];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Service {
@@ -136,23 +133,36 @@ fn val_str(v: Option<&Value>) -> String {
     }
 }
 
-/// The built-in buttons on this server (see BUILTIN).
-pub fn builtin(host: &str) -> Vec<Value> {
-    BUILTIN
-        .iter()
-        .map(|(name, port, icon, logo, path, https)| {
+/// The built-in buttons (the starting defaults' "builtin" list) on a server address.
+pub fn builtin_for(defs: &[crate::config::BuiltinDef], host: &str) -> Vec<Value> {
+    let host = if host.is_empty() { "localhost" } else { host };
+    defs.iter()
+        .map(|b| {
             json!({
-                "id": format!("b:{name}"), "name": name, "port": port.to_string(), "icon": icon, "logo": logo,
-                "url": format!("{}://{}:{}{}", if *https { "https" } else { "http" }, host, port, path),
+                "id": format!("b:{}", b.name), "name": b.name, "port": b.port.to_string(), "icon": b.icon, "logo": b.logo,
+                "url": format!("{}://{}:{}{}", if b.https { "https" } else { "http" }, host, b.port, b.path),
             })
         })
         .collect()
 }
 
+/// The built-in buttons of a server: they belong to the first server only; servers you add start empty.
+pub fn builtin(d: &Data, host: &str) -> Vec<Value> {
+    if !(d.id.is_empty() || d.id == "s1") {
+        return vec![];
+    }
+    builtin_for(&crate::config::start().builtin, host)
+}
+
 /// All buttons: built-in (minus deleted, with edits applied), then custom.
 /// for_dashboard = true applies your dashboard drag-and-drop order.
 pub fn get_services(d: &Data, host: &str, for_dashboard: bool) -> Vec<Service> {
-    let mut list: Vec<Value> = builtin(host)
+    get_services_with(d, builtin(d, host), for_dashboard)
+}
+
+/// get_services with the built-in buttons given.
+pub fn get_services_with(d: &Data, built: Vec<Value>, for_dashboard: bool) -> Vec<Service> {
+    let mut list: Vec<Value> = built
         .into_iter()
         .filter(|s| !d.hidden.iter().any(|h| s["id"] == h.as_str()))
         .map(|mut s| {
@@ -512,6 +522,7 @@ mod tests {
 
     fn data() -> Data {
         Data {
+            id: "s1".into(),
             title: String::new(),
             settings: json!({}),
             custom: vec![],
@@ -649,6 +660,30 @@ mod tests {
         // exports from the Android app may only carry "app"
         d.custom[0].as_object_mut().unwrap().remove("zima");
         assert_eq!(get_services(&d, "h", false)[0].zima, "immich");
+    }
+
+    #[test]
+    fn builtin_buttons_edits_and_deletes() {
+        let defs = vec![
+            crate::config::BuiltinDef { name: "Pi-hole".into(), port: 8800, icon: "🛡️".into(), logo: "l".into(), path: "/admin".into(), https: false, widget: true },
+            crate::config::BuiltinDef { name: "Crafty".into(), port: 8443, icon: "⛏️".into(), logo: String::new(), path: String::new(), https: true, widget: true },
+        ];
+        let mut d = data();
+        let b = builtin_for(&defs, "10.0.0.2");
+        let s = get_services_with(&d, b.clone(), false);
+        assert_eq!(s[0].url, "http://10.0.0.2:8800/admin");
+        assert_eq!((s[0].id.as_str(), s[0].label.as_str(), s[0].addr.as_str()), ("b:Pi-hole", ":8800", "10.0.0.2/admin"));
+        assert_eq!(s[1].url, "https://10.0.0.2:8443");
+        // edit a built-in button, then delete one (it can be restored from Settings)
+        save_service(&mut d, &ServiceForm { id: Some("b:Crafty".into()), name: "Minecraft".into(), addr: "10.0.0.2".into(), port: "8444".into(), scheme: "https".into(), on_widget: true, ..Default::default() });
+        delete_service(&mut d, "b:Pi-hole");
+        let s = get_services_with(&d, b, false);
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0].name.as_str(), s[0].url.as_str()), ("Minecraft", "https://10.0.0.2:8444"));
+        assert_eq!(d.hidden, vec!["b:Pi-hole"]);
+        // other servers have no built-in buttons
+        d.id = "sabc".into();
+        assert!(builtin(&d, "h").is_empty());
     }
 
     #[test]

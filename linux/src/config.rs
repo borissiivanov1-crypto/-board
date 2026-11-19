@@ -2,8 +2,164 @@
 //! These mirror the original -board script one to one, so exported settings move between
 //! the iOS and the GNOME version unchanged.
 
-/// Starting defaults (the values in CONFIG at the top of the original script).
+/// The title of the first server when none is set (CONFIG.title of a blank script).
 pub const DEFAULT_TITLE: &str = "MY SERVER";
+
+/// A built-in button (BUILTIN in the script). They use the server address and belong to the first server only.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltinDef {
+    pub name: String,
+    pub port: u16,
+    pub icon: String,
+    pub logo: String,
+    pub path: String,
+    pub https: bool,
+    /// false = hidden from the large widget until you drag it on (Widget layout)
+    pub widget: bool,
+}
+
+/// The starting defaults: CONFIG and BUILTIN at the top of the script. Settings saves your choices;
+/// these only fill in what was never set. Read from defaults.json (see start()), else a blank setup.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartConfig {
+    pub title: String,
+    pub server_host: String,
+    pub server_port: String,
+    pub monitoring: bool,
+    pub base_url: String,
+    pub api_version: i64,
+    pub username: String,
+    pub password: String,
+    pub disk_mounts: Vec<String>,
+    pub max_disks: i64,
+    pub network_interface: String,
+    pub refresh_minutes: i64,
+    pub widget_status_dots: bool,
+    pub link_url: String,
+    pub platform: String,
+    /// older separate addresses for the server system, by setting name (zimaUrl, proxmoxUrl ...)
+    pub plat_urls: Vec<(String, String)>,
+    pub proxmox_node: String,
+    pub builtin: Vec<BuiltinDef>,
+}
+
+impl Default for StartConfig {
+    fn default() -> Self {
+        StartConfig {
+            title: DEFAULT_TITLE.into(),
+            server_host: String::new(),
+            server_port: String::new(),
+            monitoring: true,
+            base_url: String::new(),
+            api_version: 4,
+            username: String::new(),
+            password: String::new(),
+            disk_mounts: vec![],
+            max_disks: 3,
+            network_interface: String::new(),
+            refresh_minutes: 5,
+            widget_status_dots: true,
+            link_url: String::new(),
+            platform: "none".into(),
+            plat_urls: vec![],
+            proxmox_node: String::new(),
+            builtin: vec![],
+        }
+    }
+}
+
+impl StartConfig {
+    /// From a defaults.json: the script's CONFIG keys, plus "builtin": [{ name, port, icon, logo, path, https, widget }].
+    pub fn from_json(v: &serde_json::Value) -> StartConfig {
+        let d = StartConfig::default();
+        let s = |k: &str, def: &str| -> String {
+            match v.get(k) {
+                Some(serde_json::Value::String(x)) => x.clone(),
+                Some(serde_json::Value::Number(n)) => n.to_string(),
+                _ => def.to_string(),
+            }
+        };
+        let b = |k: &str, def: bool| v.get(k).and_then(|x| x.as_bool()).unwrap_or(def);
+        let n = |k: &str, def: i64| v.get(k).and_then(|x| x.as_i64()).unwrap_or(def);
+        let list = |k: &str| -> Vec<String> { v.get(k).and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default() };
+        StartConfig {
+            title: s("title", &d.title),
+            server_host: s("serverHost", ""),
+            server_port: s("serverPort", ""),
+            monitoring: b("monitoring", true),
+            base_url: s("baseUrl", ""),
+            api_version: n("apiVersion", 4),
+            username: s("username", ""),
+            password: s("password", ""),
+            disk_mounts: list("diskMounts"),
+            max_disks: n("maxDisks", 3),
+            network_interface: s("networkInterface", ""),
+            refresh_minutes: n("refreshMinutes", 5),
+            widget_status_dots: b("widgetStatusDots", true),
+            link_url: s("linkUrl", ""),
+            platform: s("platform", "none"),
+            plat_urls: PLATFORMS.iter().map(|p| (p.url_key.to_string(), s(p.url_key, ""))).filter(|x| !x.1.is_empty()).collect(),
+            proxmox_node: s("proxmoxNode", ""),
+            builtin: v
+                .get("builtin")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|o| {
+                            let name = o.get("name")?.as_str()?.to_string();
+                            let port = o.get("port")?.as_u64()? as u16;
+                            let st = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+                            Some(BuiltinDef {
+                                name,
+                                port,
+                                icon: st("icon"),
+                                logo: st("logo"),
+                                path: st("path"),
+                                https: o.get("https").and_then(|x| x.as_bool()).unwrap_or(false),
+                                widget: o.get("widget").and_then(|x| x.as_bool()).unwrap_or(true),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// Where defaults.json is looked for: BOARD_DEFAULTS, ~/.config/board/defaults.json, the install's
+/// share/board/defaults.json (next to the program), then the source folder's config/defaults.json.
+pub fn defaults_paths() -> Vec<std::path::PathBuf> {
+    let mut v = vec![];
+    if let Ok(p) = std::env::var("BOARD_DEFAULTS") {
+        v.push(p.into());
+        return v;
+    }
+    let cfg = std::env::var("XDG_CONFIG_HOME").map(std::path::PathBuf::from).ok().or_else(|| std::env::var("HOME").ok().map(|h| std::path::Path::new(&h).join(".config")));
+    if let Some(c) = cfg {
+        v.push(c.join("board/defaults.json"));
+    }
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+        v.push(dir.join("../share/board/defaults.json"));
+    }
+    v.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config/defaults.json"));
+    v
+}
+
+/// The starting defaults (read once). Tests always get the blank ones.
+pub fn start() -> &'static StartConfig {
+    static S: std::sync::OnceLock<StartConfig> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        if cfg!(test) {
+            return StartConfig::default();
+        }
+        for p in defaults_paths() {
+            if let Some(v) = std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+                return StartConfig::from_json(&v);
+            }
+        }
+        StartConfig::default()
+    })
+}
 pub const LOGO_CDN: &str = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
 pub const STACK_ICON: &str = "🗂️";
 pub const HELPER_PORT: u16 = 61209;
@@ -235,6 +391,19 @@ mod tests {
         assert!(addr_hint("synology").contains("5000 (http) or 5001 (https)"));
         assert!(addr_hint("linux").contains("61209 (the helper)"));
         assert!(!addr_hint("zimaos").contains("is used unless"));
+    }
+
+    #[test]
+    fn starting_defaults_from_json() {
+        let c = StartConfig::from_json(&serde_json::json!({
+            "title": "HOMELAB", "serverHost": "100.66.56.117", "serverPort": 90, "platform": "zimaos",
+            "diskMounts": ["/mnt/Bulk"], "linkUrl": "http://bob.ts",
+            "builtin": [{ "name": "ZimaOS", "port": 90, "icon": "🏠", "widget": false }, { "name": "Crafty", "port": 8443, "https": true }, { "port": 1 }]
+        }));
+        assert_eq!((c.title.as_str(), c.server_port.as_str(), c.platform.as_str()), ("HOMELAB", "90", "zimaos"));
+        assert_eq!(c.builtin.len(), 2);
+        assert!(!c.builtin[0].widget && c.builtin[1].widget && c.builtin[1].https);
+        assert_eq!(StartConfig::from_json(&serde_json::json!({})), StartConfig::default());
     }
 
     #[test]

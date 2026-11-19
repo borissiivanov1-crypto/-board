@@ -215,7 +215,7 @@ pub fn loc_text(x: Option<&Value>) -> String {
     match x {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Object(o)) => {
-            for k in ["en_us", "en_US"] {
+            for k in ["en_us", "en_US", "en"] {
                 if let Some(s) = o.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
                     return s.to_string();
                 }

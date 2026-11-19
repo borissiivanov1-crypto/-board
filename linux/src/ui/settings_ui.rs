@@ -839,7 +839,7 @@ impl Sheet {
         self.select(&c, "DASHBOARD COLUMNS", "columns", vec![("2".into(), "2 columns".into()), ("3".into(), "3 columns".into())], "", true);
         self.text(&c, "CHECK UP/DOWN EVERY (SECONDS)", "statusSeconds", "30", "");
         self.text(&c, "COUNT AS DOWN AFTER (SECONDS)", "pingTimeout", "3", "How long a service may take to answer. The widget waits at most 3 seconds.");
-        if !crate::layout::BUILTIN.is_empty() || !info.hidden.is_empty() {
+        if !crate::config::start().builtin.is_empty() || !info.hidden.is_empty() {
             let rl = modal::field(&c, "DELETED BUTTONS");
             if info.hidden.is_empty() {
                 srow(&rl, "None", "Built-in buttons you delete show up here");

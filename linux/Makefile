@@ -18,6 +18,7 @@ install: all
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).metainfo.xml $(DESTDIR)$(PREFIX)/share/metainfo/$(APP_ID).metainfo.xml
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APP_ID).svg $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
+	install -Dm644 config/defaults.json $(DESTDIR)$(PREFIX)/share/board/defaults.json
 	-gtk-update-icon-cache -q -t $(DESTDIR)$(PREFIX)/share/icons/hicolor 2>/dev/null
 	-update-desktop-database -q $(DESTDIR)$(PREFIX)/share/applications 2>/dev/null
 
@@ -26,5 +27,6 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/share/applications/$(APP_ID).desktop
 	rm -f $(DESTDIR)$(PREFIX)/share/metainfo/$(APP_ID).metainfo.xml
 	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/$(APP_ID).svg
+	rm -f $(DESTDIR)$(PREFIX)/share/board/defaults.json
 
 .PHONY: all test install uninstall

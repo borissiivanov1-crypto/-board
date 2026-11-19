@@ -73,7 +73,38 @@ pub struct Settings {
 }
 
 impl Default for Settings {
+    /// DEFAULTS: the starting defaults (defaults.json) on top of the blank ones.
     fn default() -> Self {
+        Settings::from_start(config::start())
+    }
+}
+
+impl Settings {
+    pub fn from_start(c: &config::StartConfig) -> Settings {
+        let mut s = Settings::blank();
+        s.server_host = c.server_host.clone();
+        s.server_port = c.server_port.clone();
+        s.monitoring = c.monitoring;
+        s.base_url = c.base_url.clone();
+        s.api_version = c.api_version;
+        s.username = c.username.clone();
+        s.platform = c.platform.clone();
+        for (k, v) in &c.plat_urls {
+            if let Some(x) = s.plat_url_mut(k) {
+                *x = v.clone();
+            }
+        }
+        s.proxmox_node = c.proxmox_node.clone();
+        s.disk_mounts = c.disk_mounts.clone();
+        s.max_disks = c.max_disks;
+        s.network_interface = c.network_interface.clone();
+        s.refresh_minutes = c.refresh_minutes;
+        s.link_url = c.link_url.clone();
+        s.widget_status_dots = c.widget_status_dots;
+        s
+    }
+
+    fn blank() -> Self {
         let mut temp_limits = BTreeMap::new();
         for k in TEMP_KEYS {
             let TempLimit { warm, hot } = config::temp_default(k);
@@ -366,11 +397,15 @@ pub fn look_vars(look: &Look) -> LookVars {
 }
 
 /// cleanSettings: anything (saved file, import, the Settings form) -> valid settings.
-#[allow(clippy::field_reassign_with_default)]
 pub fn clean_settings(raw: &Value) -> Settings {
+    clean_settings_with(raw, &Settings::default())
+}
+
+/// cleanSettings with the defaults to fill in what's missing (DEFAULTS in the script).
+#[allow(clippy::field_reassign_with_default)]
+pub fn clean_settings_with(raw: &Value, d: &Settings) -> Settings {
     let empty = Map::new();
     let r = raw.as_object().unwrap_or(&empty);
-    let d = Settings::default();
     let get = |k: &str| r.get(k);
     let s = |k: &str, max: usize, def: &str| -> String {
         match get(k) {
@@ -392,20 +427,22 @@ pub fn clean_settings(raw: &Value) -> Settings {
         }
     };
 
-    let mut o = Settings::default();
-    o.base_url = s("baseUrl", 300, "");
+    let mut o = d.clone();
+    o.base_url = s("baseUrl", 300, &d.base_url);
     if !rx!(r"(?i)^https?://[^/:]+").is_match(&o.base_url) {
         o.base_url.clear();
     }
     o.base_url = o.base_url.trim_end_matches('/').to_string();
 
     // the server address: IP or name, plus http / https and a port when they aren't the usual ones
-    o.server_host = s("serverHost", 200, "");
+    o.server_host = s("serverHost", 200, &d.server_host);
     o.server_scheme = match get("serverScheme") {
         Some(Value::String(v)) if v == "http" || v == "https" => v.clone(),
         _ => String::new(),
     };
+    // a missing port is the default one; one that was saved empty stays empty
     let port_raw = match get("serverPort") {
+        None => d.server_port.clone(),
         Some(Value::String(v)) => v.clone(),
         Some(Value::Number(v)) => v.to_string(),
         _ => String::new(),
@@ -429,7 +466,7 @@ pub fn clean_settings(raw: &Value) -> Settings {
     }
     o.monitoring = b("monitoring", d.monitoring);
     o.api_version = n("apiVersion", 3, 4, d.api_version);
-    o.username = s("username", 100, "");
+    o.username = s("username", 100, &d.username);
     // "none" = not picked yet. Settings saved by the older ZimaOS-only -board
     // (they have showPower but no platform) stay on ZimaOS, so their Reboot menu keeps working.
     let rp = match get("platform") {
@@ -442,11 +479,13 @@ pub fn clean_settings(raw: &Value) -> Settings {
         "none".into()
     } else if matches!(get("showPower"), Some(Value::Bool(_))) {
         "zimaos".into()
+    } else if config::platform(&d.platform).is_some() {
+        d.platform.clone()
     } else {
         "none".into()
     };
     for p in PLATFORMS.iter() {
-        let mut v = s(p.url_key, 300, "");
+        let mut v = s(p.url_key, 300, d.plat_url(p.url_key));
         if !v.is_empty() && !rx!(r"(?i)^https?://").is_match(&v) {
             v.clear();
         }
@@ -471,14 +510,14 @@ pub fn clean_settings(raw: &Value) -> Settings {
             o.plat_url_mut(pl.url_key).unwrap().clear();
         }
     }
-    o.proxmox_node = s("proxmoxNode", 64, "").chars().filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c)).collect();
+    o.proxmox_node = s("proxmoxNode", 64, &d.proxmox_node).chars().filter(|c| c.is_ascii_alphanumeric() || "._-".contains(*c)).collect();
     o.show_power = b("showPower", d.show_power);
     o.disk_mounts = match get("diskMounts") {
         Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).filter(|x| !x.is_empty()).take(12).map(String::from).collect(),
-        _ => vec![],
+        _ => d.disk_mounts.clone(),
     };
     o.max_disks = n("maxDisks", 1, 12, d.max_disks);
-    o.network_interface = s("networkInterface", 60, "");
+    o.network_interface = s("networkInterface", 60, &d.network_interface);
     o.monitoring_open = b("monitoringOpen", d.monitoring_open);
     o.monitoring_fixed = b("monitoringFixed", d.monitoring_fixed);
     let t = get("tempLimits").and_then(|v| v.as_object());
@@ -492,9 +531,9 @@ pub fn clean_settings(raw: &Value) -> Settings {
     }
     o.live_seconds = n("liveSeconds", 1, 30, d.live_seconds);
     o.refresh_minutes = n("refreshMinutes", 1, 120, d.refresh_minutes);
-    o.link_url = s("linkUrl", 300, "");
+    o.link_url = s("linkUrl", 300, &d.link_url);
     o.widget_status_dots = b("widgetStatusDots", d.widget_status_dots);
-    o.widget_title = s("widgetTitle", 20, "");
+    o.widget_title = s("widgetTitle", 20, &d.widget_title);
     o.widget_rows = n("widgetRows", 1, 6, d.widget_rows);
     o.use_logos = b("useLogos", d.use_logos);
     o.columns = n("columns", 2, 3, d.columns);
@@ -635,6 +674,24 @@ mod tests {
     fn round_trip_is_stable() {
         let s = clean_settings(&json!({ "serverHost": "a", "theme": "rose", "tempLimits": { "cpu": { "warm": 50, "hot": 60 } } }));
         assert_eq!(clean_settings(&s.to_value()), s);
+    }
+
+    #[test]
+    fn starting_defaults_fill_in_what_was_never_set() {
+        let c = config::StartConfig::from_json(&json!({ "serverHost": "100.66.56.117", "serverPort": "90", "platform": "zimaos", "diskMounts": ["/mnt/System", "/mnt/Bulk"], "linkUrl": "http://bob.ts" }));
+        let d = Settings::from_start(&c);
+        let s = clean_settings_with(&json!({}), &d);
+        assert_eq!(s.server_url(), "http://100.66.56.117:90");
+        assert_eq!(s.platform, "zimaos");
+        assert_eq!(s.disk_mounts.len(), 2);
+        assert_eq!(s.link_url, "http://bob.ts");
+        assert_eq!(s.glances_url(), "http://100.66.56.117:61208");
+        // a server saved with its own (empty) port and drives keeps them
+        let s = clean_settings_with(&json!({ "serverHost": "10.0.0.9", "serverPort": "", "diskMounts": [], "platform": "linux" }), &d);
+        assert_eq!(s.server_url(), "http://10.0.0.9:61209");
+        assert!(s.disk_mounts.is_empty());
+        // a picked type always wins; a bad one falls back to the default type
+        assert_eq!(clean_settings_with(&json!({ "platform": "bogus" }), &d).platform, "zimaos");
     }
 
     #[test]

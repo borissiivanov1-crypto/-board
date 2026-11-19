@@ -84,6 +84,15 @@ board --widget [small|medium|large] [--server NAME|NUMBER]
 board --render-widget FILE [--size small|medium|large] [--server NAME|NUMBER]
 ```
 
+### Starting defaults (your homelab)
+
+The script's `CONFIG` and `BUILTIN` (the starting server address, type, drives, corner link and built-in buttons)
+live in [`config/defaults.json`](config/defaults.json), set to the HOMELAB setup: `100.66.56.117` port 90 (ZimaOS over
+Tailscale), the `/mnt/System`, `/mnt/Bulk` and `/mnt/Downloads` drives, `http://bob.ts`, and the 21 buttons (ZimaOS
+starts off the widget). As in the script, they only fill in what Settings never saved, and the built-in buttons
+belong to the first server; servers you add start empty. `make install` puts the file in `share/board/`; a copy at
+`~/.config/board/defaults.json` (or `BOARD_DEFAULTS=file`) takes its place. Without one, -board starts blank.
+
 ### Where things are kept
 
 | What | Where |
@@ -112,6 +121,7 @@ enter the logins again (*Settings > Server > Enter login*) and run the Linux hel
 
 | File | What |
 | --- | --- |
+| `config/defaults.json` | The starting defaults and built-in buttons (CONFIG / BUILTIN) |
 | `src/settings.rs` | Defaults, cleaning of saved / imported / typed settings, addresses |
 | `src/store.rs` | The data file: servers, migration from the single-server format, import / export |
 | `src/layout.rs` | Buttons, order, stacks, the widget's cells |

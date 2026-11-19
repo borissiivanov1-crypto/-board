@@ -1,0 +1,152 @@
+{
+  "title": "HOMELAB",
+  "serverHost": "100.66.56.117",
+  "serverPort": "90",
+  "monitoring": true,
+  "baseUrl": "",
+  "apiVersion": 4,
+  "username": "",
+  "password": "",
+  "diskMounts": [
+    "/mnt/System",
+    "/mnt/Bulk",
+    "/mnt/Downloads"
+  ],
+  "maxDisks": 3,
+  "networkInterface": "",
+  "refreshMinutes": 5,
+  "widgetStatusDots": true,
+  "linkUrl": "http://bob.ts",
+  "platform": "zimaos",
+  "builtin": [
+    {
+      "name": "ZimaOS",
+      "port": 90,
+      "icon": "🏠",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/zimaos.png",
+      "widget": false
+    },
+    {
+      "name": "Jellyfin",
+      "port": 8097,
+      "icon": "🎬",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/jellyfin.png"
+    },
+    {
+      "name": "Seerr",
+      "port": 5056,
+      "icon": "🍿",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/jellyseerr.png"
+    },
+    {
+      "name": "Sonarr",
+      "port": 8989,
+      "icon": "📺",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/sonarr.png"
+    },
+    {
+      "name": "Radarr",
+      "port": 7878,
+      "icon": "🎞️",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/radarr.png"
+    },
+    {
+      "name": "Lidarr",
+      "port": 8686,
+      "icon": "🎵",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/lidarr.png"
+    },
+    {
+      "name": "Prowlarr",
+      "port": 9696,
+      "icon": "🔎",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/prowlarr.png"
+    },
+    {
+      "name": "qBittorrent",
+      "port": 8181,
+      "icon": "⬇️",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/qbittorrent.png"
+    },
+    {
+      "name": "Transmission",
+      "port": 9091,
+      "icon": "📥",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/transmission.png"
+    },
+    {
+      "name": "Navidrome",
+      "port": 4533,
+      "icon": "🎧",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/navidrome.png"
+    },
+    {
+      "name": "slskd",
+      "port": 5030,
+      "icon": "🔊",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/slskd.png"
+    },
+    {
+      "name": "Downtify",
+      "port": 8582,
+      "icon": "🎶",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/spotify.png"
+    },
+    {
+      "name": "Immich",
+      "port": 2283,
+      "icon": "📷",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/immich.png"
+    },
+    {
+      "name": "Nextcloud",
+      "port": 8081,
+      "icon": "☁️",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nextcloud.png"
+    },
+    {
+      "name": "Pi-hole",
+      "port": 8800,
+      "icon": "🛡️",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/pi-hole.png",
+      "path": "/admin"
+    },
+    {
+      "name": "Uptime Kuma",
+      "port": 3001,
+      "icon": "📈",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/uptime-kuma.png"
+    },
+    {
+      "name": "Portainer",
+      "port": 9000,
+      "icon": "🐳",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/portainer.png"
+    },
+    {
+      "name": "MySpeed",
+      "port": 5216,
+      "icon": "🚀",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/myspeed.png"
+    },
+    {
+      "name": "Crafty",
+      "port": 8443,
+      "icon": "⛏️",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/crafty-controller.png",
+      "https": true
+    },
+    {
+      "name": "Nginx",
+      "port": 81,
+      "icon": "🔀",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nginx-proxy-manager.png"
+    },
+    {
+      "name": "Terminal",
+      "port": 2222,
+      "icon": "💻",
+      "logo": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/terminal.png"
+    }
+  ]
+}

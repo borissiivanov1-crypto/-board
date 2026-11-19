@@ -198,7 +198,8 @@ impl Secrets {
     }
 
     pub fn glances_pass(&self, id: &str) -> String {
-        self.get(&Self::gpass_key(id)).unwrap_or_default()
+        // CONFIG.password when none is saved
+        self.get(&Self::gpass_key(id)).unwrap_or_else(|| crate::config::start().password.clone())
     }
 
     /// Everything saved for one server (when it's removed).
