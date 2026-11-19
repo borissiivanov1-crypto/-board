@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.board.Board</id>
+  <name>-board</name>
+  <summary>Live dashboard and desktop widget for your home server</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      -board shows whether your home server is up, its CPU, RAM, storage and network (from Glances),
+      and buttons for your services with up / down dots. Group services into stacks, switch between
+      several servers, and reboot or shut down ZimaOS, Proxmox VE, TrueNAS, Unraid, Synology DSM,
+      OpenMediaVault and Linux servers.
+    </p>
+    <p>Classic and Liquid Glass styles, seven themes, accent colours, and small / medium / large desktop widgets.</p>
+  </description>
+  <launchable type="desktop-id">io.github.board.Board.desktop</launchable>
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-11-19"/>
+  </releases>
+</component>

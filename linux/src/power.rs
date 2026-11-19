@@ -968,7 +968,7 @@ mod tests {
         let port = base.rsplit(':').next().unwrap().to_string();
         let s = clean_settings(&json!({ "serverHost": "127.0.0.1", "serverPort": port, "platform": "linux" }));
         let sec = mem();
-        assert_eq!(test_power(&s, "s1", &sec).0, false);
+        assert!(!test_power(&s, "s1", &sec).0);
         sec.set(&Secrets::helper_key("s1"), "k1").unwrap();
         let (ok, t) = test_power(&s, "s1", &sec);
         assert!(ok, "{t}");

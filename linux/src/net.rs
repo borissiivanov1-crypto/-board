@@ -11,7 +11,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
+/// Requests to the server go straight to it (a proxy would answer for a server that is down, and home
+/// servers are on the local network or a VPN). Only logos from the internet use the system proxy.
 pub struct Http {
+    /// the internet (logos): checks certificates, uses the system proxy
+    pub web: Client,
     /// checks certificates (like a browser)
     pub strict: Client,
     /// accepts self-signed certificates (most NAS systems use one out of the box)
@@ -25,10 +29,12 @@ const UA: &str = concat!("-board/", env!("CARGO_PKG_VERSION"), " (GNOME)");
 pub fn http() -> &'static Http {
     static H: OnceLock<Http> = OnceLock::new();
     H.get_or_init(|| Http {
-        strict: Client::builder().user_agent(UA).build().expect("http client"),
-        insecure: Client::builder().user_agent(UA).danger_accept_invalid_certs(true).build().expect("http client"),
+        web: Client::builder().user_agent(UA).build().expect("http client"),
+        strict: Client::builder().user_agent(UA).no_proxy().build().expect("http client"),
+        insecure: Client::builder().user_agent(UA).no_proxy().danger_accept_invalid_certs(true).build().expect("http client"),
         no_redirect: Client::builder()
             .user_agent(UA)
+            .no_proxy()
             .danger_accept_invalid_certs(true)
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -197,7 +203,7 @@ pub fn check_services(list: &[Service], timeout: f64) -> HashMap<String, bool> {
 
 /// GET bytes (logos), checked certificates.
 pub fn get_bytes(url: &str, timeout: f64) -> Result<Vec<u8>, String> {
-    let r = http().strict.get(url).timeout(Duration::from_secs_f64(timeout)).send().map_err(|e| e.to_string())?;
+    let r = http().web.get(url).timeout(Duration::from_secs_f64(timeout)).send().map_err(|e| e.to_string())?;
     if !r.status().is_success() {
         return Err(format!("HTTP {}", r.status().as_u16()));
     }
@@ -262,9 +268,9 @@ mod tests {
             scheme: "http".into(), addr: String::new(), label: String::new(), on_widget: true, group: None,
         };
         let m = check_services(&[svc("a", &up), svc("b", &down), svc("c", &up)], 2.0);
-        assert_eq!(m["a"], true);
-        assert_eq!(m["b"], false);
-        assert_eq!(m["c"], true);
+        assert!(m["a"]);
+        assert!(!m["b"]);
+        assert!(m["c"]);
     }
 
     #[test]

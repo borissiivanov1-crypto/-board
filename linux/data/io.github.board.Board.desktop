@@ -1,0 +1,25 @@
+[Desktop Entry]
+Name=-board
+GenericName=Home Server Dashboard
+Comment=Live dashboard for your home server: status, CPU / RAM / storage, services, reboot and shut down
+Exec=board %U
+Icon=io.github.board.Board
+Terminal=false
+Type=Application
+Categories=System;Monitor;Network;GTK;
+Keywords=server;nas;homelab;dashboard;glances;proxmox;truenas;unraid;synology;zimaos;monitor;
+StartupNotify=true
+DBusActivatable=false
+Actions=widget-small;widget-medium;widget-large;
+
+[Desktop Action widget-small]
+Name=Small desktop widget
+Exec=board --widget small
+
+[Desktop Action widget-medium]
+Name=Medium desktop widget
+Exec=board --widget medium
+
+[Desktop Action widget-large]
+Name=Large desktop widget
+Exec=board --widget large

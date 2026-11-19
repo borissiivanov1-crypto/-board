@@ -16,6 +16,8 @@ tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "ico", "bmp"] }
 base64 = "0.22"
+pangocairo = "0.21"
+cairo-rs = { version = "0.21", features = ["png"] }
 rand = "0.8"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

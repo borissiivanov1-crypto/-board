@@ -5,6 +5,9 @@ The whole app is one file: `board_Blank.js`.
 
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
+**Linux desktop (GNOME)**: the same dashboard as a native app (Rust, GTK4, libadwaita), with desktop widgets.
+See [linux/README.md](linux/README.md). Settings exported on one move to the other.
+
 ## Works with
 
 -board needs your **server's IP or name** (Settings > Server). The **LIVE / OFFLINE** status shows whether anything

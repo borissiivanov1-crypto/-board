@@ -105,7 +105,7 @@ pub fn pick_disks(fs: &Value, set: &Settings) -> Vec<Disk> {
         .map(|d| {
             let mnt = s(d, "mnt_point").to_string();
             Disk {
-                name: if mnt == "/" { "Root".into() } else { mnt.split('/').filter(|x| !x.is_empty()).last().unwrap_or(&mnt).to_string() },
+                name: if mnt == "/" { "Root".into() } else { mnt.split('/').rfind(|x| !x.is_empty()).unwrap_or(&mnt).to_string() },
                 percent: f(d, "percent").unwrap_or(0.0),
                 used: f(d, "used").unwrap_or(0.0),
                 size: f(d, "size").unwrap_or(0.0),

@@ -366,6 +366,7 @@ pub fn look_vars(look: &Look) -> LookVars {
 }
 
 /// cleanSettings: anything (saved file, import, the Settings form) -> valid settings.
+#[allow(clippy::field_reassign_with_default)]
 pub fn clean_settings(raw: &Value) -> Settings {
     let empty = Map::new();
     let r = raw.as_object().unwrap_or(&empty);

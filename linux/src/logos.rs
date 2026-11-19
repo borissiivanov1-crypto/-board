@@ -32,6 +32,9 @@ fn base36(mut n: u64) -> String {
     String::from_utf8(v).unwrap()
 }
 
+/// Downloads a URL (with a timeout in seconds).
+pub type Getter = dyn Fn(&str, f64) -> Result<Vec<u8>, String> + Sync;
+
 pub struct Logos {
     dir: PathBuf,
 }
@@ -92,7 +95,7 @@ impl Logos {
     }
 
     /// Downloads a logo if it isn't saved yet. Returns true only when something new was saved.
-    pub fn fetch(&self, url: &str, timeout: f64, get: &dyn Fn(&str, f64) -> Result<Vec<u8>, String>) -> bool {
+    pub fn fetch(&self, url: &str, timeout: f64, get: &Getter) -> bool {
         let lower = url.to_lowercase();
         if !(lower.starts_with("http://") || lower.starts_with("https://")) {
             return false;
@@ -118,11 +121,12 @@ impl Logos {
     }
 
     /// Downloads every missing logo at once. True when anything new was saved.
-    pub fn ensure(&self, urls: &[String], timeout: f64, get: &(dyn Fn(&str, f64) -> Result<Vec<u8>, String> + Sync)) -> bool {
+    pub fn ensure(&self, urls: &[String], timeout: f64, get: &Getter) -> bool {
         let set: HashSet<&String> = urls.iter().filter(|u| !u.is_empty()).collect();
         std::thread::scope(|sc| {
             let hs: Vec<_> = set.into_iter().map(|u| sc.spawn(move || self.fetch(u, timeout, get))).collect();
-            hs.into_iter().map(|h| h.join().unwrap_or(false)).fold(false, |a, b| a || b)
+            // every download is waited for
+            hs.into_iter().map(|h| h.join().unwrap_or(false)).filter(|x| *x).count() > 0
         })
     }
 
