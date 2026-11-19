@@ -1,0 +1,7 @@
+Board.xcodeproj/
+build/
+*.ipa
+App/Info.plist
+Widget/Info.plist
+App/Board.entitlements
+Widget/BoardWidget.entitlements
