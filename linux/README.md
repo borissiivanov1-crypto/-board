@@ -52,8 +52,9 @@ Everything works as in the [iOS user manual](../board_User_Manual_iOS.docx). On 
 | Home screen widget | `board --widget small|medium|large [--server NAME|NUMBER]`, the buttons in *Settings > Widget*, or the app icon's right-click menu |
 
 **Desktop widget**: click a service to open it, a stack for the dashboard with that stack open, anywhere
-else for the dashboard on that server. Drag it to move it; right-click it to change its size, refresh it
-or close it. It refreshes every *Refresh every (minutes)*. To have it at login, add
+else for the dashboard on that server. Drag it to move it; right-click it to pick the server it shows
+(**Widget server**, like the Android widget's server choice), change its size, refresh it or close it. It refreshes
+every *Refresh every (minutes)*, and soon after you change buttons, stacks, layout or Settings in the dashboard. To have it at login, add
 `board --widget large` to *Startup Applications* (GNOME Tweaks).
 
 `board --render-widget widget.png --size large` draws a widget to a PNG file and quits (no window),

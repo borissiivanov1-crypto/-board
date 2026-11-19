@@ -506,6 +506,8 @@ impl App {
         }
         self.apply_ui();
         self.render_dots();
+        // the desktop widgets show the change too
+        super::widget::refresh_soon();
         if self.dragging.borrow().is_none() {
             self.draw(anim);
         }

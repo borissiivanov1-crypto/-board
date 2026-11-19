@@ -618,6 +618,26 @@ thread_local! {
     static WINDOWS: RefCell<Vec<Weak<Win>>> = const { RefCell::new(vec![]) };
 }
 
+/// Every open widget checks again shortly (after a change in the dashboard; several changes in a row
+/// make one refresh).
+pub fn refresh_soon() {
+    thread_local! {
+        static PENDING: std::cell::Cell<Option<glib::SourceId>> = const { std::cell::Cell::new(None) };
+    }
+    if WINDOWS.with(|w| w.borrow().iter().all(|x| x.upgrade().is_none())) {
+        return;
+    }
+    PENDING.with(|p| {
+        if let Some(id) = p.take() {
+            id.remove();
+        }
+        p.set(Some(glib::timeout_add_local_once(Duration::from_millis(1200), || {
+            PENDING.with(|p| p.set(None));
+            refresh_all();
+        })));
+    });
+}
+
 /// Every open widget checks again (after Settings were saved).
 pub fn refresh_all() {
     WINDOWS.with(|w| {
@@ -710,6 +730,33 @@ impl Win {
             p.popdown();
             me.refresh();
         });
+        // which server this widget shows (the Scriptable widget's Parameter)
+        let shown = self.data.borrow().as_ref().map(|d| d.server.clone());
+        let servers = Store::open(&self.ctx.data_path).list_servers();
+        if servers.len() > 1 {
+            let h = gtk::Label::new(Some("WIDGET SERVER"));
+            h.add_css_class("flabel");
+            h.set_xalign(0.0);
+            h.set_margin_top(6);
+            h.set_margin_start(12);
+            b.append(&h);
+            for (i, (id, title)) in servers.into_iter().enumerate() {
+                let me = self.clone();
+                let p = pop.clone();
+                let on = shown.as_deref() == Some(id.as_str());
+                item(&format!("{}{}. {title}", if on { "✓ " } else { "    " }, i + 1)).connect_clicked(move |_| {
+                    p.popdown();
+                    *me.server.borrow_mut() = Some(id.clone());
+                    me.refresh();
+                });
+            }
+            let h = gtk::Label::new(Some("SIZE"));
+            h.add_css_class("flabel");
+            h.set_xalign(0.0);
+            h.set_margin_top(6);
+            h.set_margin_start(12);
+            b.append(&h);
+        }
         for (lab, fam) in [("Small", "small"), ("Medium", "medium"), ("Large", "large")] {
             let me = self.clone();
             let p = pop.clone();

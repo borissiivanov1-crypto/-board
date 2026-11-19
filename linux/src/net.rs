@@ -91,7 +91,7 @@ pub fn glances_request(set: &Settings, path: &str, pass: &str) -> ApiResult {
 pub fn error_means_up(msg: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"(?i)certificate|secure connection|ssl|tls|bad response|bad server|malformed|could not be parsed|invalid http|invalid status|parse|corrupt message|unexpected message|handshake|alert").unwrap()
+        Regex::new(r"(?i)certificate|secure connection|ssl|tls|bad response|bad server|malformed|could not be parsed|invalid http|invalid status|parse|corrupt message|unexpected message|handshake|alert|unexpected status line|protocol|end of stream|unexpected eof|connection closed before message completed").unwrap()
     })
     .is_match(msg)
 }
@@ -222,6 +222,8 @@ mod tests {
         assert!(error_means_up("invalid peer certificate: UnknownIssuer"));
         assert!(error_means_up("received corrupt message of type InvalidContentType"));
         assert!(error_means_up("invalid HTTP version parsed"));
+        assert!(error_means_up("connection closed before message completed"));
+        assert!(!error_means_up("error trying to connect: tcp connect error: Connection refused (os error 111)"));
         assert!(!error_means_up("Connection refused (os error 111)"));
         assert!(!error_means_up("dns error: failed to lookup address"));
     }
@@ -259,6 +261,9 @@ mod tests {
         // something that isn't a web server (an SSH banner) still counts as up
         let ssh = serve_once("SSH-2.0-OpenSSH_9.6\r\n");
         assert!(ping_url(&ssh, 3.0));
+        // and so does one that hangs up without answering
+        let quiet = serve_once("");
+        assert!(ping_url(&quiet, 3.0));
         // nothing listening: down
         let free = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         let down = format!("http://{free}/");
