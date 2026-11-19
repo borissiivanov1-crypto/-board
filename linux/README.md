@@ -16,6 +16,20 @@ export files as the iOS and Android versions, so you can move your setup between
 
 ## Install
 
+### Ready-made packages (x86_64)
+
+In [`dist/`](dist/) (checksums in `SHA256SUMS`):
+
+| Package | Install | Remove |
+| --- | --- | --- |
+| [`board_1.0.0_amd64.deb`](dist/board_1.0.0_amd64.deb) (Ubuntu 24.04+, Debian 13+) | `sudo apt install ./board_1.0.0_amd64.deb` | `sudo apt remove board` |
+| [`board-1.0.0-linux-x86_64.tar.gz`](dist/board-1.0.0-linux-x86_64.tar.gz) (any distro with GTK 4.14+ and libadwaita 1.5+, e.g. Fedora 40+, Arch) | unpack, then `./install.sh` (just you, `~/.local`) or `sudo ./install.sh --system` (`/usr/local`) | `./uninstall.sh` (add `--purge` to delete your -board data too) |
+
+Both add **-board** to the app grid with its icon, the small / medium / large widgets in the icon's right-click
+menu, and the HOMELAB starting defaults (`share/board/defaults.json`). `sh packaging/build-dist.sh` rebuilds them.
+
+### From source
+
 Needs GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Debian 13, Fedora 40 and newer) and Rust 1.83+ ([rustup](https://rustup.rs)).
 
 ```sh

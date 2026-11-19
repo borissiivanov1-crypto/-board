@@ -1,0 +1,21 @@
+-board for GNOME
+================
+
+A live dashboard and desktop widget for your home server (Rust, GTK4, libadwaita).
+
+Needs: GTK 4.14+ and libadwaita 1.5+ (Ubuntu 24.04, Debian 13, Fedora 40 and newer), x86_64.
+
+Install for you only (no password):     ./install.sh
+Install for everyone:                    sudo ./install.sh --system
+Remove:                                  ./uninstall.sh      (or: sudo ./uninstall.sh --system)
+Remove and delete your -board data too:  ./uninstall.sh --purge
+
+Then open -board from the app grid. Right-click its icon for a small, medium or large desktop widget,
+or run:  board --widget large
+To start a widget at login, add "board --widget large" in Startup Applications (GNOME Tweaks).
+
+Starting defaults: share/board/defaults.json is the HOMELAB setup (100.66.56.117:90, ZimaOS, the three
+drives and the built-in buttons). Edit it before installing, or put your own copy at
+~/.config/board/defaults.json. They only fill in what Settings hasn't saved yet.
+
+Your data:   ~/.local/share/board/board-data.json   (logins: the GNOME keyring, service "board")

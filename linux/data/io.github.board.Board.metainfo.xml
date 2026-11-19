@@ -14,6 +14,10 @@
     </p>
     <p>Classic and Liquid Glass styles, seven themes, accent colours, and small / medium / large desktop widgets.</p>
   </description>
+  <developer id="io.github.board">
+    <name>-board</name>
+  </developer>
+  <url type="homepage">https://github.com/borissiivanov1-crypto/-board</url>
   <launchable type="desktop-id">io.github.board.Board.desktop</launchable>
   <categories>
     <category>System</category>

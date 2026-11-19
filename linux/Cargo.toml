@@ -30,3 +30,4 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 codegen-units = 4
+strip = true
