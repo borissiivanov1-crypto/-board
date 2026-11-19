@@ -1069,6 +1069,10 @@ impl Sheet {
                     if me.app.st.borrow().set.platform == p {
                         me.app.st.borrow_mut().has_login = true;
                     }
+                    if p == "zimaos" {
+                        crate::zima::forget(&me.cur());
+                        me.app.st.borrow_mut().last_z_apps = None;
+                    }
                     me.app.toast.show(&msg, 3500);
                 }
             }
@@ -1089,6 +1093,12 @@ impl Sheet {
         }
         if self.app.st.borrow().set.platform == p {
             self.app.st.borrow_mut().has_login = false;
+        }
+        if p == "zimaos" {
+            crate::zima::forget(&cur);
+            let mut s = self.app.st.borrow_mut();
+            s.z_apps = None;
+            s.z_upg.clear();
         }
         let msg = if p == "linux" { "Helper key forgotten".to_string() } else { format!("{} login forgotten", config::platform(p).and_then(|x| x.login).unwrap_or("")) };
         self.msg(true, &msg);
@@ -1261,6 +1271,18 @@ impl Sheet {
             s.next_stats = std::time::Instant::now();
         }
         self.app.fs_cache.clear();
+        // ZimaOS: the address or type may have changed
+        crate::zima::forget(&cur);
+        {
+            let mut s = self.app.st.borrow_mut();
+            s.last_z_apps = None;
+            if cleaned.platform != "zimaos" {
+                s.z_apps = None;
+                s.z_upg.clear();
+                s.z_sys = None;
+                s.z_drives = None;
+            }
+        }
         self.app.apply_look(&cleaned.look());
         self.msg(true, "Settings saved");
         self.app.modals.close_of(&self.panel);

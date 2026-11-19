@@ -28,6 +28,8 @@ pub struct Service {
     pub on_widget: bool,
     /// the stack it's in
     pub group: Option<String>,
+    /// the ZimaOS app it was added from ("Pick from ZimaOS apps"); others are linked by port
+    pub zima: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +185,10 @@ pub fn get_services(d: &Data, host: &str, for_dashboard: bool) -> Vec<Service> {
                 logo: val_str(s.get("logo")),
                 scheme: u.scheme,
                 addr: format!("{}{}", u.host, u.path),
+                zima: match val_str(s.get("zima")) {
+                    z if z.is_empty() => val_str(s.get("app")),
+                    z => z,
+                },
                 url,
                 group: None,
             }
@@ -433,6 +439,24 @@ pub fn save_service(data: &mut Data, f: &ServiceForm) -> (String, String) {
     (id, logo)
 }
 
+/// ZimaOS: adds installed apps as buttons, with their real address and icon. Returns the logo URLs.
+pub fn add_zima_apps(data: &mut Data, apps: &[crate::zima::ZApp], host: &str) -> Vec<String> {
+    let t = chrono::Utc::now().timestamp_millis();
+    let mut logos = vec![];
+    for (n, a) in apps.iter().enumerate() {
+        let mut id = format!("c:{t}-{n}");
+        while data.custom.iter().any(|c| c["id"] == id.as_str()) {
+            id.push('0');
+        }
+        data.custom.push(json!({
+            "id": id, "name": a.title.chars().take(24).collect::<String>(), "port": a.port, "icon": "📦", "logo": a.icon,
+            "custom": true, "zima": a.id, "app": a.id, "url": crate::zima::app_url(a, host),
+        }));
+        logos.push(a.icon.clone());
+    }
+    logos
+}
+
 /// Deletes a button (a built-in one is remembered as deleted so it can be restored).
 pub fn delete_service(data: &mut Data, id: &str) {
     if id.starts_with("b:") {
@@ -613,6 +637,18 @@ mod tests {
         assert_eq!(ids(&l.hidden), vec![a.clone()]);
         set_dash_order(&mut d, vec![b.clone(), a.clone()], &[]);
         assert_eq!(ids(&get_layout(&d, "h").dash), vec![b, a]);
+    }
+
+    #[test]
+    fn zima_apps_become_linked_buttons() {
+        let mut d = data();
+        let a = crate::zima::ZApp { id: "immich".into(), title: "Immich".into(), icon: "https://x/i.png".into(), port: "2283".into(), scheme: "http".into(), host: String::new(), status: "running".into(), path: String::new(), app_type: "v2app".into(), store_id: "immich".into(), uncontrolled: false };
+        assert_eq!(add_zima_apps(&mut d, &[a], "10.0.0.2"), vec!["https://x/i.png"]);
+        let s = &get_services(&d, "10.0.0.2", false)[0];
+        assert_eq!((s.url.as_str(), s.zima.as_str(), s.icon.as_str(), s.label.as_str()), ("http://10.0.0.2:2283", "immich", "📦", ":2283"));
+        // exports from the Android app may only carry "app"
+        d.custom[0].as_object_mut().unwrap().remove("zima");
+        assert_eq!(get_services(&d, "h", false)[0].zima, "immich");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::layout::{self, Service, ServiceForm, Stack, StackAct};
 use crate::net;
 use crate::power::{self, Action};
 use crate::settings::clean_settings;
+use crate::zima::ZApp;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use serde_json::json;
@@ -118,6 +119,17 @@ fn logo_field(app: &Rc<App>, parent: &gtk::Box, value: &str, name_entry: &gtk::E
 pub fn open_add(app: &Rc<App>, sv: Option<&Service>) {
     let m = app.modals.show(ModalOpts { name: "add", ..Default::default() }, None);
     m.append(&modal::heading(if sv.is_some() { "EDIT SERVICE" } else { "ADD SERVICE" }));
+    // ZimaOS: add installed apps instead of typing them
+    if sv.is_none() && app.zima_ready() {
+        let pick = modal::chip("Pick from ZimaOS apps");
+        pick.set_halign(gtk::Align::Center);
+        let (a, mm) = (app.clone(), m.clone());
+        pick.connect_clicked(move |_| {
+            a.modals.close_of(&mm);
+            open_zima_pick(&a);
+        });
+        m.append(&pick);
+    }
     let f = modal::field(&m, "SERVICE NAME");
     let (w, name) = modal::input(sv.map(|s| s.name.as_str()).unwrap_or(""), "e.g. Jellyfin", false);
     name.set_max_length(24);
@@ -211,6 +223,63 @@ pub fn open_add(app: &Rc<App>, sv: Option<&Service>) {
 pub fn open_menu(app: &Rc<App>, sv: &Service) {
     let m = app.modals.show(ModalOpts { name: "menu", ..Default::default() }, None);
     m.append(&modal::heading(&sv.name));
+    // ZimaOS app: Start / Stop / Restart / Logs / Update
+    if let Some(za) = app.z_app_for(sv) {
+        let upd = app.z_updatable(&za);
+        let st = if za.running() { "running".to_string() } else if za.status.is_empty() { "stopped".into() } else { za.status.clone() };
+        let note = modal::hint(&format!("ZimaOS app · {st}{}", if upd { " · update available" } else { "" }), "cnote");
+        note.set_justify(gtk::Justification::Center);
+        note.set_xalign(0.5);
+        m.append(&note);
+        let zb = modal::btns(true);
+        let run = {
+            let (a, mm, za) = (app.clone(), m.clone(), za.clone());
+            Rc::new(move |action: &str, busy: &str| {
+                a.modals.close_of(&mm);
+                a.toast.show(&format!("{busy} {}...", za.title), 120_000);
+                a.z_action(&za, action, None);
+            })
+        };
+        if za.controllable() {
+            if za.running() {
+                let stop = modal::button("Stop", "rtxt");
+                let armed = Rc::new(Cell::new(false));
+                let r = run.clone();
+                stop.connect_clicked(move |b| {
+                    if !armed.get() {
+                        armed.set(true);
+                        b.set_label("Click again to stop");
+                    } else {
+                        r("stop", "Stopping");
+                    }
+                });
+                zb.append(&stop);
+                let re = modal::button("Restart", "");
+                let r = run.clone();
+                re.connect_clicked(move |_| r("restart", "Restarting"));
+                zb.append(&re);
+            } else {
+                let start = modal::button("Start", "gtxt");
+                let r = run.clone();
+                start.connect_clicked(move |_| r("start", "Starting"));
+                zb.append(&start);
+            }
+        }
+        let lg = modal::button("Logs", "");
+        let (a, mm, z2) = (app.clone(), m.clone(), za.clone());
+        lg.connect_clicked(move |_| {
+            a.modals.close_of(&mm);
+            open_logs(&a, &z2);
+        });
+        zb.append(&lg);
+        if upd && za.controllable() {
+            let u = modal::button("Update", "gtxt");
+            let r = run.clone();
+            u.connect_clicked(move |_| r("update", "Updating"));
+            zb.append(&u);
+        }
+        m.append(&zb);
+    }
     let b = modal::btns(true);
     let stack = modal::button(if sv.group.is_some() { "Change stack" } else { "Add to stack" }, "");
     let edit = modal::button("Edit", "gtxt");
@@ -740,4 +809,218 @@ pub fn open_del_server(app: &Rc<App>, name: &str) {
             a.toast.show("Server deleted", 2500);
         }
     });
+}
+
+/// An app's icon from ZimaOS (or an empty square while it loads / if it has none).
+fn app_icon(app: &Rc<App>, url: &str) -> gtk::Widget {
+    let frame = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    frame.add_css_class("appicon");
+    frame.set_size_request(36, 36);
+    frame.set_valign(gtk::Align::Center);
+    frame.set_hexpand(false);
+    let img = gtk::Image::new();
+    img.set_pixel_size(32);
+    img.set_halign(gtk::Align::Center);
+    img.set_valign(gtk::Align::Center);
+    img.set_margin_start(2);
+    frame.append(&img);
+    if let Some(t) = app.ctx.texture(url) {
+        img.set_paintable(Some(&t));
+    } else if url.to_lowercase().starts_with("http") {
+        let (u, i) = (url.to_string(), img.clone());
+        bg(move || net::get_bytes(&u, 8.0), move |r| {
+            if let Ok(t) = r.and_then(|b| gdk::Texture::from_bytes(&glib::Bytes::from(&b)).map_err(|e| e.to_string())) {
+                i.set_paintable(Some(&t));
+            }
+        });
+    }
+    frame.upcast()
+}
+
+/// A row: icon, title and a smaller line, and something on the right.
+fn app_row(app: &Rc<App>, a: &ZApp, sub: &str, right: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let r = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    r.append(&app_icon(app, &a.icon));
+    let t = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    t.set_hexpand(true);
+    t.set_valign(gtk::Align::Center);
+    let n = modal::label(&a.title, "srow-t");
+    n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    t.append(&n);
+    let s = modal::label(sub, "srow-s");
+    s.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    t.append(&s);
+    r.append(&t);
+    right.set_valign(gtk::Align::Center);
+    r.append(right);
+    r
+}
+
+/// ZimaOS app logs: the last 300 lines, with Refresh.
+pub fn open_logs(app: &Rc<App>, za: &ZApp) {
+    let m = app.modals.show(ModalOpts { name: "logs", width: 420, ..Default::default() }, None);
+    m.append(&modal::heading(&format!("{} LOGS", za.title.to_uppercase())));
+    let text = gtk::Label::new(Some("Loading..."));
+    text.add_css_class("logtext");
+    text.set_xalign(0.0);
+    text.set_yalign(0.0);
+    text.set_wrap(true);
+    text.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    text.set_selectable(true);
+    let sc = gtk::ScrolledWindow::new();
+    sc.add_css_class("logbox");
+    sc.set_hscrollbar_policy(gtk::PolicyType::Never);
+    sc.set_min_content_height(440);
+    sc.set_max_content_height(440);
+    sc.set_child(Some(&text));
+    m.append(&sc);
+    let b = modal::btns(false);
+    let refresh = modal::button("Refresh", "");
+    let close = modal::button("Close", "ok");
+    b.append(&refresh);
+    b.append(&close);
+    m.append(&b);
+    let (a, mm) = (app.clone(), m.clone());
+    close.connect_clicked(move |_| a.modals.close_of(&mm));
+    let load = {
+        let (a, za, text, sc) = (app.clone(), za.clone(), text.clone(), sc.clone());
+        Rc::new(move || {
+            text.set_text("Loading...");
+            text.remove_css_class("bad");
+            let (set, cur) = {
+                let s = a.st.borrow();
+                (s.set.clone(), s.cur.clone())
+            };
+            let (secrets, id) = (a.ctx.secrets.clone(), za.id.clone());
+            let (t2, sc2) = (text.clone(), sc.clone());
+            bg(move || crate::zima::logs(&set, &id, 300, &cur, &secrets), move |r| {
+                match r {
+                    Ok(t) => t2.set_text(if t.is_empty() { "(no log lines)" } else { &t }),
+                    Err(e) => {
+                        t2.set_text(&e.msg);
+                        t2.add_css_class("bad");
+                    }
+                }
+                // the newest lines at the bottom, in view
+                let adj = sc2.vadjustment();
+                glib::timeout_add_local_once(Duration::from_millis(60), move || adj.set_value(adj.upper()));
+            });
+        })
+    };
+    let l = load.clone();
+    refresh.connect_clicked(move |_| l());
+    load();
+}
+
+/// ZimaOS app updates (the "↑ 2 updates" chip): an Update button per app.
+pub fn open_updates(app: &Rc<App>) {
+    let m = app.modals.show(ModalOpts { name: "updates", ..Default::default() }, None);
+    m.append(&modal::heading("APP UPDATES"));
+    let n = modal::hint("Newer versions in the ZimaOS App Store. Updating pulls the new image and recreates the app; its data stays.", "cnote");
+    n.set_justify(gtk::Justification::Center);
+    n.set_xalign(0.5);
+    m.append(&n);
+    // the list as it was when the popup opened (an app stays listed with its result after updating)
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    for za in app.z_updates() {
+        let chip = modal::chip("Update");
+        let (a, z2) = (app.clone(), za.clone());
+        chip.connect_clicked(move |c| {
+            if c.label().as_deref() != Some("Update") {
+                return;
+            }
+            c.set_label("Updating...");
+            let (c2, a2) = (c.clone(), a.clone());
+            a.z_action(&z2, "update", Some(Box::new(move |ok, msg| {
+                c2.set_label(if ok { "Started" } else { "Failed" });
+                if !ok {
+                    a2.toast.show(&msg, 6000);
+                }
+            })));
+        });
+        list.append(&app_row(app, &za, "Update available", &chip));
+    }
+    m.append(&list);
+    let b = modal::btns(true);
+    let close = modal::button("Close", "");
+    b.append(&close);
+    m.append(&b);
+    let (a, mm) = (app.clone(), m.clone());
+    close.connect_clicked(move |_| a.modals.close_of(&mm));
+}
+
+/// Add apps from ZimaOS (from the + popup): installed apps, ones with a button greyed out.
+pub fn open_zima_pick(app: &Rc<App>) {
+    let m = app.modals.show(ModalOpts { name: "zpick", ..Default::default() }, None);
+    m.append(&modal::heading("ADD FROM ZIMAOS"));
+    let n = modal::hint("Your installed ZimaOS apps. Pick the ones to add as buttons; they get the app's address, logo and the Start / Stop / Logs controls.", "cnote");
+    n.set_justify(gtk::Justification::Center);
+    n.set_xalign(0.5);
+    m.append(&n);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let wait = modal::hint("Loading your apps...", "cnote");
+    body.append(&wait);
+    m.append(&body);
+    let b = modal::btns(false);
+    let cancel = modal::button("Cancel", "");
+    let add = modal::button("Add", "ok");
+    b.append(&cancel);
+    b.append(&add);
+    m.append(&b);
+    let (a, mm) = (app.clone(), m.clone());
+    cancel.connect_clicked(move |_| a.modals.close_of(&mm));
+    let picked: Rc<RefCell<Vec<ZApp>>> = Rc::default();
+    let (a, mm, p2) = (app.clone(), m.clone(), picked.clone());
+    add.connect_clicked(move |_| {
+        let sel = p2.borrow().clone();
+        a.modals.close_of(&mm);
+        a.add_zima_apps(&sel);
+        a.toast.show(&format!("{} app{} added from ZimaOS", sel.len(), if sel.len() == 1 { "" } else { "s" }), 3500);
+    });
+    let (a, body2, add2) = (app.clone(), body.clone(), add.clone());
+    app.refresh_zima(Some(Box::new(move |err| {
+        while let Some(c) = body2.first_child() {
+            body2.remove(&c);
+        }
+        if let Some(e) = err {
+            let l = modal::hint(&e, "err");
+            l.set_justify(gtk::Justification::Center);
+            l.set_xalign(0.5);
+            body2.append(&l);
+            return;
+        }
+        let apps = a.st.borrow().z_apps.clone().unwrap_or_default();
+        if apps.is_empty() {
+            body2.append(&modal::hint("No apps installed on ZimaOS.", "cnote"));
+            return;
+        }
+        let taken: std::collections::HashSet<String> = {
+            let all = a.st.borrow().layout.all.clone();
+            all.iter().filter_map(|s| a.z_app_for(s).map(|z| z.id)).collect()
+        };
+        for za in apps {
+            let has = taken.contains(&za.id);
+            let sub = if has { "Already a button".to_string() } else { format!("{}{}", if za.port.is_empty() { String::new() } else { format!("port {} · ", za.port) }, za.status) };
+            let right: gtk::Widget = if has {
+                gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast()
+            } else {
+                let sw = gtk::Switch::new();
+                let (p3, z3, add3) = (picked.clone(), za.clone(), add2.clone());
+                sw.connect_active_notify(move |w| {
+                    let mut p = p3.borrow_mut();
+                    p.retain(|x| x.id != z3.id);
+                    if w.is_active() {
+                        p.push(z3.clone());
+                    }
+                    add3.set_label(&if p.is_empty() { "Add".to_string() } else { format!("Add {}", p.len()) });
+                });
+                sw.upcast()
+            };
+            let row = app_row(&a, &za, &sub, &right);
+            if has {
+                row.set_opacity(0.4);
+            }
+            body2.append(&row);
+        }
+    })));
 }

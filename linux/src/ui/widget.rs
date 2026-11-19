@@ -390,35 +390,28 @@ fn grid(cr: &cairo::Context, x: f64, y: f64, inner: f64, cells: &[Cell], dots: b
         let py = y + r as f64 * (ph + gap);
         glass_box(cr, px, py, pw, ph, 8.0, 9.0, 1.0, 0.1, glass);
         hits.push((px, py, pw, ph, c.click.clone()));
-        // content, centred: dot, logo or emoji, name (shrinks to fit, then cut)
-        let dot_w = if dots { 4.0 + 2.0 } else { 0.0 };
-        let icon_w = 12.0 + 3.0;
-        let avail = pw - 8.0 - dot_w - icon_w;
+        // logo / emoji in a fixed 13 x 13 box (so every name starts at the same spot), the name, and the
+        // status dot at the right edge of every button (so the dots line up in a column)
+        let (pad_l, pad_r) = (5.0, 6.0);
+        let dot_w = if dots { 3.0 + 6.0 } else { 0.0 };
+        let icon_w = 13.0 + 3.0;
+        let avail = pw - pad_l - pad_r - dot_w - icon_w;
         let mut sz = 9.0;
         let mut l = layout(cr, &c.name, config_font(), sz, gtk::pango::Weight::Semibold);
         while text_size(&l).0 > avail && sz > 9.0 * 0.6 {
-            sz -= 0.4;
+            sz -= 0.3;
             l = layout(cr, &c.name, config_font(), sz, gtk::pango::Weight::Semibold);
         }
         l.set_width((avail.max(1.0) * gtk::pango::SCALE as f64) as i32);
         l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        let (tw, th) = text_size(&l);
-        let total = dot_w + icon_w + tw.min(avail);
-        let mut cx = px + (pw - total) / 2.0;
+        let (_, th) = text_size(&l);
+        let cx = px + pad_l;
         let cy = py + ph / 2.0;
-        if let (true, Some(col)) = (dots, c.dot) {
-            cr.new_path();
-            let cc = hex_rgb(col);
-            cr.set_source_rgb(cc.0, cc.1, cc.2);
-            cr.arc(cx + 2.0, cy, 2.0, 0.0, 2.0 * PI);
-            let _ = cr.fill();
-            cx += dot_w;
-        }
         match c.logo.as_deref().and_then(logo_surface) {
             Some(s) => {
                 cr.save().ok();
                 let k = 12.0 / s.width().max(s.height()) as f64;
-                cr.translate(cx, cy - 6.0);
+                cr.translate(cx + 0.5, cy - 6.0);
                 cr.scale(k, k);
                 let _ = cr.set_source_surface(&s, 0.0, 0.0);
                 cr.source().set_filter(cairo::Filter::Good);
@@ -428,11 +421,17 @@ fn grid(cr: &cairo::Context, x: f64, y: f64, inner: f64, cells: &[Cell], dots: b
             None => {
                 let e = layout(cr, &c.icon, config_font(), 10.0, gtk::pango::Weight::Normal);
                 let (ew, eh) = text_size(&e);
-                show(cr, &e, cx + (12.0 - ew) / 2.0, cy - eh / 2.0, WHITE, 1.0);
+                show(cr, &e, cx + (13.0 - ew) / 2.0, cy - eh / 2.0, WHITE, 1.0);
             }
         }
-        cx += icon_w;
-        show(cr, &l, cx, cy - th / 2.0, WHITE, 1.0);
+        if let (true, Some(col)) = (dots, c.dot) {
+            cr.new_path();
+            let cc = hex_rgb(col);
+            cr.set_source_rgb(cc.0, cc.1, cc.2);
+            cr.arc(px + pw - pad_r - 3.0, cy, 3.0, 0.0, 2.0 * PI);
+            let _ = cr.fill();
+        }
+        show(cr, &l, cx + icon_w, cy - th / 2.0, WHITE, 1.0);
     }
     rows as f64 * ph + rows.saturating_sub(1) as f64 * gap
 }

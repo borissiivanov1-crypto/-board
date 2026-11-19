@@ -62,7 +62,7 @@ pub const TYPE_HINT_NONE: &str = "Pick the system your server runs. It decides h
 
 pub fn type_hint(key: &str) -> &'static str {
     match key {
-        "zimaos" => "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.",
+        "zimaos" => "ZimaOS: your ZimaOS login is used for Reboot / Shut down, the app controls (hold a button: Start / Stop / Restart / Logs / Update), app updates, adding apps from ZimaOS, CPU power draw and drive health. Nothing to install.",
         "proxmox" => "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.",
         "truenas" => "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. With https, TrueNAS needs a certificate this computer trusts; plain http on your home network or VPN is fine.",
         "unraid" => "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.",

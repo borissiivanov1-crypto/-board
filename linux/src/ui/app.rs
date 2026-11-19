@@ -9,6 +9,7 @@ use crate::glances::{self, Detail, FsCache, Stats};
 use crate::layout::{self, Item, Layout, Service, Stack};
 use crate::net;
 use crate::settings::{look_vars, Look, Settings};
+use crate::zima::{self, ZApp, ZDrive, ZSys};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
@@ -49,6 +50,8 @@ pub struct W {
     pub down: gtk::Label,
     pub up: gtk::Label,
     pub sect: gtk::Label,
+    /// ZimaOS: "↑ 2 updates"
+    pub updb: gtk::Button,
     pub layb: gtk::Button,
     pub svc: gtk::Box,
     pub wextra: gtk::Box,
@@ -87,6 +90,15 @@ pub struct State {
     pub last_status: Option<Instant>,
     pub logo_busy: bool,
     pub look: Look,
+    // ZimaOS (only for servers of type ZimaOS with a saved login)
+    pub z_apps: Option<Vec<ZApp>>,
+    /// store ids the App Store has a newer version of
+    pub z_upg: HashSet<String>,
+    pub z_sys: Option<ZSys>,
+    pub z_drives: Option<Vec<ZDrive>>,
+    pub z_drives_at: Option<Instant>,
+    pub z_busy: bool,
+    pub last_z_apps: Option<Instant>,
 }
 
 pub struct App {
@@ -301,6 +313,12 @@ impl App {
         sect.set_hexpand(true);
         sect.set_xalign(0.0);
         sechead.append(&sect);
+        let updb = gtk::Button::with_label("");
+        updb.add_css_class("lay");
+        updb.set_valign(gtk::Align::Center);
+        updb.set_margin_end(8);
+        updb.set_visible(false);
+        sechead.append(&updb);
         let layb = gtk::Button::with_label("Widget layout");
         layb.add_css_class("lay");
         layb.set_valign(gtk::Align::Center);
@@ -346,7 +364,7 @@ impl App {
         let app = Rc::new(App {
             ctx,
             win,
-            w: W { root, bg, scroller, main, title, title_scaler, tchev, tw, pmenu, dot, st: stl, sdots, monwrap, monb: monb.clone(), monst, mon, grid, down, up, sect, layb: layb.clone(), svc, wextra, wnote, hid, addwrap },
+            w: W { root, bg, scroller, main, title, title_scaler, tchev, tw, pmenu, dot, st: stl, sdots, monwrap, monb: monb.clone(), monst, mon, grid, down, up, sect, updb: updb.clone(), layb: layb.clone(), svc, wextra, wnote, hid, addwrap },
             st: RefCell::new(State {
                 set,
                 cur,
@@ -375,6 +393,13 @@ impl App {
                 last_status: None,
                 logo_busy: false,
                 look,
+                z_apps: None,
+                z_upg: HashSet::new(),
+                z_sys: None,
+                z_drives: None,
+                z_drives_at: None,
+                z_busy: false,
+                last_z_apps: None,
             }),
             cards: RefCell::default(),
             modals,
@@ -403,6 +428,8 @@ impl App {
         });
         let a = app.clone();
         addbtn.connect_clicked(move |_| dialogs::open_add(&a, None));
+        let a = app.clone();
+        updb.connect_clicked(move |_| dialogs::open_updates(&a));
         let a = app.clone();
         reboot.connect_clicked(move |_| {
             a.w.pmenu.popdown();
@@ -627,7 +654,14 @@ impl App {
             s.last_reach = None;
             s.reach_for.clear();
             s.next_stats = Instant::now();
+            s.z_apps = None;
+            s.z_upg.clear();
+            s.z_sys = None;
+            s.z_drives = None;
+            s.z_drives_at = None;
+            s.last_z_apps = None;
         }
+        zima::forget_sys(&self.ctx.store.borrow().cur);
         while let Some(c) = self.w.grid.first_child() {
             self.w.grid.remove(&c);
         }
@@ -1007,6 +1041,9 @@ impl App {
             }
         };
         let graph = |key: &str| -> gtk::Widget { history(&st, key) };
+        let zready = st.set.platform == "zimaos" && st.has_login;
+        let z = if zready { st.z_sys } else { None };
+        let zd = if zready { st.z_drives.clone() } else { None };
         match (id, d) {
             ("cpu", d) => {
                 if let Some(Detail::Cpu(d)) = d {
@@ -1022,8 +1059,12 @@ impl App {
                         g.append(&stat(&format!("{:.2}", l[2]), "LOAD 15M", None));
                     }
                     g.append(&stat(&trim_num(d.n_cores), "CORES", None));
-                    if let Some(t) = d.temp {
+                    // ZimaOS: its CPU temperature when Glances has none, and the CPU power draw
+                    if let Some(t) = d.temp.or(z.and_then(|z| z.cpu_temp)) {
                         g.append(&stat(&format!("{} °C", config::js_round(t)), "TEMP", tcol(t, "cpu")));
+                    }
+                    if let Some(w) = z.and_then(|z| z.watts) {
+                        g.append(&stat(&if w >= 100.0 { format!("{} W", config::js_round(w)) } else { format!("{w:.1} W") }, "POWER", None));
                     }
                     if let (Some(t), true) = (d.hot, d.n_core_temps > 1) {
                         g.append(&stat(&format!("{} °C", config::js_round(t)), "HOTTEST CORE", tcol(t, "cpu")));
@@ -1086,9 +1127,33 @@ impl App {
                             g.append(&stat(&format!("{} °C", config::js_round(s.value)), &hdd_label(&s.label, j), tcol(s.value, "hdd")));
                         }
                         det.append(&section("TEMPERATURES", &g));
-                    } else {
+                    } else if zd.as_ref().map(|z| z.is_empty()).unwrap_or(true) {
                         det.append(&hintl("NO DRIVE TEMPERATURES REPORTED BY GLANCES"));
                     }
+                }
+                // ZimaOS: each drive's SMART health and temperature (no drivetemp module needed)
+                if let Some(zd) = zd.as_ref().filter(|z| !z.is_empty()) {
+                    let list = bx(gtk::Orientation::Vertical, 10, "");
+                    for x in zd {
+                        let k = if x.path.contains("nvme") || x.name.starts_with("nvme") { "nvme" } else if x.kind.eq_ignore_ascii_case("SSD") { "ssd" } else { "hdd" };
+                        let b = bx(gtk::Orientation::Vertical, 10, "drv");
+                        let h = bx(gtk::Orientation::Horizontal, 8, "");
+                        let n = modal::label(if x.model.is_empty() { &x.name } else { &x.model }, "drvn");
+                        n.set_hexpand(true);
+                        n.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                        h.append(&n);
+                        h.append(&modal::label(&format!("{}{}", x.name, if x.size > 0.0 { format!(" · {}", format_bytes(x.size)) } else { String::new() }), "drvs"));
+                        b.append(&h);
+                        let g = dgrid();
+                        g.append(&stat(if x.health { "OK" } else { "FAILING" }, "SMART", Some(if x.health { config::GREEN } else { config::RED })));
+                        if let Some(t) = x.temp {
+                            g.append(&stat(&format!("{} °C", config::js_round(t)), "TEMP", tcol(t, if k == "hdd" { "hdd" } else { "nvme" })));
+                        }
+                        g.append(&stat(&k.to_uppercase(), "TYPE", None));
+                        b.append(&g);
+                        list.append(&b);
+                    }
+                    det.append(&section("DRIVE HEALTH (ZIMAOS)", &list));
                 }
                 if !last.disks.is_empty() {
                     let list = bx(gtk::Orientation::Vertical, 10, "");
@@ -1115,6 +1180,8 @@ impl App {
                             let mx = tp.values.iter().copied().fold(f64::MIN, f64::max);
                             let lab = if tp.kind == "nvme" { "NVME TEMP" } else if tp.values.len() > 1 { "HOTTEST HDD" } else { "HDD TEMP" };
                             g.append(&stat(&format!("{} °C", config::js_round(mx)), lab, tcol(mx, tp.kind)));
+                        } else if let Some(t) = zd.as_ref().and_then(|z| zima::drive_for(&dk.device, z)).and_then(|x| x.temp) {
+                            g.append(&stat(&format!("{} °C", config::js_round(t)), "TEMP", tcol(t, if dk.device.contains("nvme") { "nvme" } else { "hdd" })));
                         }
                         b.append(&g);
                         list.append(&b);
@@ -1126,6 +1193,159 @@ impl App {
         let h = hintl("CLICK TO CLOSE");
         h.set_xalign(0.5);
         det.append(&h);
+    }
+
+    // ---------- ZimaOS ----------
+
+    pub fn is_zima(&self) -> bool {
+        self.st.borrow().set.platform == "zimaos"
+    }
+
+    /// ZimaOS server with its login saved: the app controls, updates, power and drive health show.
+    pub fn zima_ready(&self) -> bool {
+        let s = self.st.borrow();
+        s.set.platform == "zimaos" && s.has_login
+    }
+
+    /// Installed apps the App Store has a newer version of.
+    pub fn z_updates(&self) -> Vec<ZApp> {
+        if !self.zima_ready() {
+            return vec![];
+        }
+        let s = self.st.borrow();
+        s.z_apps.clone().unwrap_or_default().into_iter().filter(|a| s.z_upg.contains(&a.id.to_lowercase())).collect()
+    }
+
+    pub fn z_updatable(&self, a: &ZApp) -> bool {
+        self.st.borrow().z_upg.contains(&a.id.to_lowercase())
+    }
+
+    /// The ZimaOS app a button points at.
+    pub fn z_app_for(&self, sv: &Service) -> Option<ZApp> {
+        if !self.zima_ready() {
+            return None;
+        }
+        let s = self.st.borrow();
+        let host = s.set.server_host();
+        s.z_apps.as_ref().and_then(|apps| zima::app_for(sv, apps, &host).cloned())
+    }
+
+    /// The "↑ N updates" chip next to Widget layout (hidden with nothing to update).
+    pub fn show_updates_chip(&self) {
+        let n = self.z_updates().len();
+        let wide = self.st.borrow().widget_mode;
+        self.w.updb.set_visible(!wide && n > 0);
+        self.w.updb.set_label(&format!("↑ {n} {}", if n == 1 { "update" } else { "updates" }));
+    }
+
+    /// Asks ZimaOS for its apps and their updates; done gets an error or None.
+    pub fn refresh_zima(self: &Rc<Self>, done: Option<Box<dyn FnOnce(Option<String>)>>) {
+        if !self.zima_ready() {
+            if let Some(d) = done {
+                d(Some(zima::NEED_LOGIN.into()));
+            }
+            return;
+        }
+        if self.st.borrow().z_busy {
+            // already asking: try again shortly
+            if let Some(d) = done {
+                let a = self.clone();
+                glib::timeout_add_local_once(Duration::from_millis(150), move || a.refresh_zima(Some(d)));
+            }
+            return;
+        }
+        let (set, cur, gen) = {
+            let mut s = self.st.borrow_mut();
+            s.z_busy = true;
+            (s.set.clone(), s.cur.clone(), s.gen)
+        };
+        let secrets = self.ctx.secrets.clone();
+        let a = self.clone();
+        bg(
+            move || {
+                let (apps, upg) = std::thread::scope(|sc| {
+                    let u = sc.spawn(|| zima::updates(&set, &cur, &secrets).unwrap_or_default());
+                    (zima::apps(&set, &cur, &secrets), u.join().unwrap_or_default())
+                });
+                (apps, upg)
+            },
+            move |(apps, upg)| {
+                let err = {
+                    let mut s = a.st.borrow_mut();
+                    s.z_busy = false;
+                    s.last_z_apps = Some(Instant::now());
+                    match apps {
+                        Ok(list) if s.gen == gen => {
+                            s.z_apps = Some(list);
+                            s.z_upg = upg;
+                            None
+                        }
+                        Ok(_) => None,
+                        Err(e) => Some(e.msg),
+                    }
+                };
+                a.show_updates_chip();
+                if let Some(d) = done {
+                    d(err);
+                }
+            },
+        );
+    }
+
+    /// Start / Stop / Restart / Update; the result goes to the toast.
+    pub fn z_action(self: &Rc<Self>, app: &ZApp, action: &str, done: Option<Box<dyn FnOnce(bool, String)>>) {
+        let (set, cur) = {
+            let s = self.st.borrow();
+            (s.set.clone(), s.cur.clone())
+        };
+        let secrets = self.ctx.secrets.clone();
+        let (id, title, act) = (app.id.clone(), app.title.clone(), action.to_string());
+        let a = self.clone();
+        bg(
+            move || {
+                let r = if act == "update" { zima::update(&set, &id, &cur, &secrets) } else { zima::set_status(&set, &id, &act, &cur, &secrets) };
+                if act != "update" && r.is_ok() {
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
+                r.map(|_| match act.as_str() {
+                    "update" => format!("{title}: update started. ZimaOS pulls the new version in the background."),
+                    "start" => format!("{title} started"),
+                    "stop" => format!("{title} stopped"),
+                    _ => format!("{title} restarted"),
+                })
+            },
+            move |r| {
+                a.st.borrow_mut().status_dirty = true;
+                a.refresh_zima(None);
+                let (ok, msg) = match r {
+                    Ok(m) => (true, m),
+                    Err(e) => (false, if e.msg.is_empty() { "ZimaOS didn't accept the command".into() } else { e.msg }),
+                };
+                match done {
+                    Some(d) => d(ok, msg),
+                    None => a.toast.show(&msg, 4000),
+                }
+            },
+        );
+    }
+
+    /// Adds picked ZimaOS apps as buttons.
+    pub fn add_zima_apps(self: &Rc<Self>, apps: &[ZApp]) {
+        if apps.is_empty() {
+            return;
+        }
+        {
+            let host = self.st.borrow().set.server_host();
+            let mut store = self.ctx.store.borrow_mut();
+            let mut d = store.load_data();
+            for l in layout::add_zima_apps(&mut d, apps, &host) {
+                self.ctx.logos.clear_fail(&l);
+            }
+            store.save_data(&d);
+        }
+        self.st.borrow_mut().status_dirty = true;
+        self.refresh(false);
+        self.refresh_logos();
     }
 
     // ---------- live updates ----------
@@ -1189,6 +1409,13 @@ impl App {
             let s2 = set.clone();
             let pass = self.ctx.secrets.glances_pass(&cur);
             let cache = self.fs_cache.clone();
+            // ZimaOS: CPU power and temperature for the CPU card, drive health for the storage card (once a minute)
+            let zready = self.zima_ready();
+            let want_drives = {
+                let s = self.st.borrow();
+                s.z_drives.is_none() || s.z_drives_at.map(|t| t.elapsed() > Duration::from_secs(60)).unwrap_or(true)
+            };
+            let secrets = self.ctx.secrets.clone();
             let a = self.clone();
             bg(
                 move || {
@@ -1198,9 +1425,17 @@ impl App {
                         (Ok(stats), Some(k)) => glances::get_detail(&api, k, stats).ok().map(|d| (k.clone(), d)),
                         _ => None,
                     };
-                    (st, det)
+                    let (mut zs, mut zd) = (None, None);
+                    if zready && st.is_ok() {
+                        match expanded.as_deref() {
+                            Some("cpu") => zs = zima::sys(&s2, &cur, &secrets).ok(),
+                            Some("disk") if want_drives => zd = zima::drives(&s2, &cur, &secrets).ok(),
+                            _ => {}
+                        }
+                    }
+                    (st, det, zs, zd)
                 },
-                move |(st, det)| {
+                move |(st, det, zs, zd)| {
                     if a.st.borrow().gen != gen {
                         return;
                     }
@@ -1211,6 +1446,13 @@ impl App {
                         if let Some((k, d)) = det {
                             s.dets.insert(k, d);
                         }
+                        if zs.is_some() {
+                            s.z_sys = zs;
+                        }
+                        if zd.is_some() {
+                            s.z_drives = zd;
+                            s.z_drives_at = Some(Instant::now());
+                        }
                     }
                     match st {
                         Ok(stats) => a.update_stats(stats),
@@ -1218,6 +1460,14 @@ impl App {
                     }
                 },
             );
+        }
+        // ZimaOS apps and their updates: asked again once a minute
+        let due_zima = {
+            let s = self.st.borrow();
+            !s.z_busy && s.last_z_apps.map(|t| t.elapsed() > Duration::from_secs(60)).unwrap_or(true)
+        };
+        if due_zima && self.zima_ready() {
+            self.refresh_zima(None);
         }
         // up / down dots
         let due_status = {
@@ -1463,6 +1713,7 @@ impl App {
         }
         self.w.wextra.set_visible(wide);
         self.w.addwrap.set_visible(!wide);
+        self.show_updates_chip();
     }
 
     fn grid(&self, cols: i32, wide: bool) -> gtk::Grid {
@@ -2087,7 +2338,7 @@ mod tests {
 
     #[test]
     fn stack_dots() {
-        let sv = |id: &str| Service { id: id.into(), name: String::new(), port: String::new(), icon: String::new(), logo: String::new(), url: String::new(), scheme: String::new(), addr: String::new(), label: String::new(), on_widget: true, group: None };
+        let sv = |id: &str| Service { id: id.into(), name: String::new(), port: String::new(), icon: String::new(), logo: String::new(), url: String::new(), scheme: String::new(), addr: String::new(), label: String::new(), on_widget: true, group: None, zima: String::new() };
         let g = Stack { id: "g".into(), name: String::new(), logo: String::new(), icon: String::new(), expand: false, members: vec![sv("a"), sv("b")], on_widget: true };
         let mut m = HashMap::new();
         assert_eq!(group_state(&g, &m), "");

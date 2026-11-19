@@ -180,6 +180,10 @@ button.swt { min-width: 44px; min-height: 44px; border-radius: 99px; border: 2px
 button.swt.dashed { border-style: dashed; }
 button.swt.on { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.18); }
 .swn { font-size: 12px; opacity: .6; margin: 2px 4px 0; }
+.appicon { border-radius: 8px; background-color: rgba(255,255,255,.06); }
+.logbox { border-radius: 16px; background-color: rgba(0,0,0,.3); }
+.logtext { font-family: monospace; font-size: 11px; color: rgba(255,255,255,.88); margin: 12px; }
+.logtext.bad { color: #ff5d73; }
 .slogin { padding: 12px; border-radius: 14px; background-color: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); }
 
 /* desktop widget */

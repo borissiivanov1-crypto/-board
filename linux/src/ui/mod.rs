@@ -288,6 +288,14 @@ pub fn run() -> glib::ExitCode {
                         }
                         "group" => d.focus_stack(v),
                         "add" => dialogs::open_add(&d, None),
+                        "updates" => dialogs::open_updates(&d),
+                        "zpick" => dialogs::open_zima_pick(&d),
+                        "logs" => {
+                            let sv = d.st.borrow().layout.all.first().cloned();
+                            if let Some(z) = sv.and_then(|sv| d.z_app_for(&sv)) {
+                                dialogs::open_logs(&d, &z);
+                            }
+                        }
                         "power" => dialogs::open_power(&d, "restart", "", false),
                         "addserver" => dialogs::open_add_server(&d),
                         "pmenu" => d.w.pmenu.popup(),

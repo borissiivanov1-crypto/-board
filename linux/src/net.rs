@@ -265,7 +265,7 @@ mod tests {
         assert!(!ping_url(&down, 2.0));
         let svc = |id: &str, url: &str| Service {
             id: id.into(), name: id.into(), port: String::new(), icon: String::new(), logo: String::new(), url: url.into(),
-            scheme: "http".into(), addr: String::new(), label: String::new(), on_widget: true, group: None,
+            scheme: "http".into(), addr: String::new(), label: String::new(), on_widget: true, group: None, zima: String::new(),
         };
         let m = check_services(&[svc("a", &up), svc("b", &down), svc("c", &up)], 2.0);
         assert!(m["a"]);

@@ -1,14 +1,16 @@
 # -board for GNOME
 
 The Linux desktop version of [-board](../README.md): the same live home-server dashboard, written in
-Rust with GTK4 and libadwaita. It has the same features, settings, server types and looks as the iOS
-version, and reads the same export files, so you can move your setup between the two.
+Rust with GTK4 and libadwaita. It follows the latest version of the app: the features, settings, server
+types and looks of the Scriptable script, plus the Android app's ZimaOS integration. It reads the same
+export files as the iOS and Android versions, so you can move your setup between them.
 
 | | |
 | --- | --- |
 | Dashboard | LIVE / OFFLINE, fold-away Monitoring panel (CPU, RAM, storage rings, network), service buttons with up / down dots, stacks, several servers |
 | Enlarged cards | Click a card: user / system / IO wait, load, per-core bars, temperatures, history graph, top processes, drives with read / write speed |
 | Reboot / Shut down | ZimaOS, Proxmox VE, TrueNAS, Unraid, Synology DSM, OpenMediaVault, Linux (with the small helper service) |
+| ZimaOS | Start / stop / restart apps, app logs, app updates, add apps from ZimaOS, CPU power draw, drive health |
 | Desktop widget | The iOS widget's small, medium and large layouts in a small borderless window |
 | Looks | Classic or Liquid Glass, 7 themes, accent colours, glow, card style, corners, font, button size, startup animation |
 
@@ -57,6 +59,23 @@ or close it. It refreshes every *Refresh every (minutes)*. To have it at login, 
 `board --render-widget widget.png --size large` draws a widget to a PNG file and quits (no window),
 for desktop tools like Conky.
 
+### ZimaOS integration (ZimaOS servers only)
+
+Only on servers whose type is **ZimaOS**, and only with the ZimaOS login saved (*Settings > Server > Enter login*).
+It works as in the Android app:
+
+- **Start, stop and restart apps:** hold (or right-click) a button that points at a ZimaOS app. The menu shows whether
+  it's running and gives **Start** or **Stop** (Stop asks for a second click), **Restart**, **Logs**, and **Update** when
+  the App Store has a newer version. Buttons are linked to apps by port (a button on the server's address and the port
+  of exactly one app), or by the app they were added from. Apps are checked once a minute.
+- **App logs:** the last 300 lines, with **Refresh**.
+- **App updates:** a **↑ 2 updates** chip next to *Widget layout* lists the apps with newer versions, each with **Update**.
+- **Add apps from ZimaOS:** the **+** popup has **Pick from ZimaOS apps**; apps that already have a button are greyed out.
+- **CPU power draw** in the enlarged CPU card (Intel RAPL, from the second reading on), and ZimaOS's CPU temperature
+  when Glances has none.
+- **Drive health** in the enlarged storage card: each drive's SMART check (**OK** / **FAILING**) and temperature, also
+  used for drives Glances has no temperature for.
+
 ### Command line
 
 ```text
@@ -99,10 +118,11 @@ enter the logins again (*Settings > Server > Enter login*) and run the Linux hel
 | `src/glances.rs` | Monitoring: stats, drives, network, temperatures, card details |
 | `src/net.rs` | HTTP, up / down checks, LIVE / OFFLINE |
 | `src/power.rs` | Reboot / Shut down for every server type, the Linux helper and its setup command |
+| `src/zima.rs` | ZimaOS integration: apps, logs, updates, CPU power, drive health |
 | `src/secrets.rs`, `src/logos.rs` | Saved logins; the logo cache |
 | `src/ui/` | The GTK4 / libadwaita interface: dashboard, popups, Settings, drawing, desktop widget, startup animation |
 
 The tests (`make test`) cover settings cleaning, data migration and import / export, stacks and ordering,
 Glances parsing, the up / down checks against real sockets, every Reboot / Shut down driver against fake
-servers (including a TrueNAS JSON-RPC WebSocket), the helper script, the logo cache, the widget drawing and
+servers (including a TrueNAS JSON-RPC WebSocket), the ZimaOS integration against a fake ZimaOS, the helper script, the logo cache, the widget drawing and
 the drag-and-drop rules.

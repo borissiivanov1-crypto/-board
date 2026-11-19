@@ -12,8 +12,8 @@ AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
-**Linux desktop (GNOME)**: the same dashboard as a native app (Rust, GTK4, libadwaita), with desktop widgets.
-See [linux/README.md](linux/README.md). Settings exported on one move to the other.
+**Linux desktop (GNOME)**: the same dashboard as a native app (Rust, GTK4, libadwaita), with desktop widgets and the
+ZimaOS integration. See [linux/README.md](linux/README.md). Settings export / import works between all versions.
 
 ## Works with
 
