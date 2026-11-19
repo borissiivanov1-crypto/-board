@@ -291,15 +291,20 @@ class BoardWidget : GlanceAppWidget() {
                         Box(GlanceModifier.defaultWeight().height(26.dp).padding(start = if (j > 0) 2.5.dp else 0.dp, end = if (j < 3) 2.5.dp else 0.dp)) {
                             if (c != null) {
                                 val action = if (c.stack != null) openApp(ctx, d.serverId, c.stack) else openUrl(c.url ?: "")
-                                Row(pill(d.glass, 8.dp).fillMaxSize().padding(horizontal = 4.dp).clickable(action), verticalAlignment = Alignment.CenterVertically) {
-                                    if (c.dot != null) {
-                                        Text("●", style = TextStyle(col(c.dot), 6.sp))
-                                        Spacer(GlanceModifier.width(2.dp))
+                                Row(pill(d.glass, 8.dp).fillMaxSize().padding(start = 5.dp, end = 6.dp).clickable(action), verticalAlignment = Alignment.CenterVertically) {
+                                    // logo / emoji in a fixed-size box, so every name starts at the same spot
+                                    Box(GlanceModifier.size(13.dp), contentAlignment = Alignment.Center) {
+                                        if (c.logo != null) Image(ImageProvider(c.logo), null, GlanceModifier.size(12.dp))
+                                        else Text(c.icon, style = TextStyle(white(), 10.sp), maxLines = 1)
                                     }
-                                    if (c.logo != null) Image(ImageProvider(c.logo), null, GlanceModifier.size(12.dp))
-                                    else Text(c.icon, style = TextStyle(white(), 10.sp))
                                     Spacer(GlanceModifier.width(3.dp))
-                                    Text(c.name, style = TextStyle(white(), 9.sp, GFontWeight.Medium), maxLines = 1)
+                                    // the name takes the free space, which pushes the status dot to the right edge,
+                                    // so the dots line up in a column on every row
+                                    Text(c.name, GlanceModifier.defaultWeight(), style = TextStyle(white(), 9.sp, GFontWeight.Medium), maxLines = 1)
+                                    if (c.dot != null) {
+                                        Spacer(GlanceModifier.width(3.dp))
+                                        Text("●", style = TextStyle(col(c.dot), 6.sp))
+                                    }
                                 }
                             }
                         }
