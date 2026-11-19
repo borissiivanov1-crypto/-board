@@ -2241,24 +2241,22 @@ function addServiceGrid(w, prep) {
       if (!s) continue;
       pill.centerAlignContent();
       glassStack(pill, { classic: 8, glass: 9 }, 1, 0.1);
-      pill.setPadding(0, 4, 0, 4);
+      pill.setPadding(0, 5, 0, 6);
       // a stack pill opens the live dashboard with that stack open
       pill.url =
         s.kind === "group"
           ? URLScheme.forRunningScript() + "?server=" + encodeURIComponent(CUR) + "&stack=" + encodeURIComponent(s.id)
           : s.url;
-      if (SET.widgetStatusDots) {
-        const dot = pill.addText("●");
-        dot.font = Font.systemFont(6);
-        dot.textColor = new Color(dotColor(s));
-        pill.addSpacer(2);
-      }
+      // logo / emoji in a fixed-size box, so every name starts at the same spot
+      const icBox = pill.addStack();
+      icBox.size = new Size(13, 13);
+      icBox.centerAlignContent();
       const logo = SET.useLogos ? cachedLogo(s.logo) : null;
       if (logo) {
-        const li = pill.addImage(logo);
+        const li = icBox.addImage(logo);
         li.imageSize = new Size(12, 12);
       } else {
-        const ic = pill.addText(s.icon);
+        const ic = icBox.addText(s.icon);
         ic.font = Font.systemFont(10);
       }
       pill.addSpacer(3);
@@ -2267,6 +2265,15 @@ function addServiceGrid(w, prep) {
       t.textColor = Color.white();
       t.lineLimit = 1;
       t.minimumScaleFactor = 0.6;
+      // the status dot sits at the right edge of every button, so the dots line up in a column
+      pill.addSpacer();
+      if (SET.widgetStatusDots) {
+        pill.addSpacer(3);
+        const dot = pill.addStack();
+        dot.size = new Size(6, 6);
+        dot.cornerRadius = 3;
+        dot.backgroundColor = new Color(dotColor(s));
+      }
     }
   }
 }
