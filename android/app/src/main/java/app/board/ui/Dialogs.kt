@@ -31,6 +31,8 @@ import app.board.Service
 import app.board.Stack
 import app.board.Store
 import app.board.ZApp
+import app.board.failoverReady
+import app.board.splitUrl
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
@@ -95,12 +97,28 @@ fun ServerAddrField(label: String, platform: String, host: String, scheme: Strin
     }
 }
 
+const val FAILOVER_HINT = "Used when the main server address doesn't answer (e.g. the VPN is down): -board then connects over this address, with the same http / https and port. The main address is always tried first, and used again as soon as it answers. Your buttons follow the address that answers."
+
+// The failover server address: an IP or name (the main address's http / https and port are used)
+@Composable
+fun FailoverAddrField(value: String, onChange: (String) -> Unit) {
+    var text by remember { mutableStateOf(value) }
+    Labeled("FAILOVER SERVER ADDRESS") {
+        Field(text, { text = it; onChange(it.trim()) }, "e.g. 192.168.1.10", keyboard = KeyboardType.Uri)
+    }
+}
+
 // ---------- Add / edit a service ----------
 @Composable
 fun AddServiceDialog(vm: BoardVM, sv: Service?, onClose: () -> Unit, onPickZima: () -> Unit = {}) {
     var name by remember { mutableStateOf(sv?.name ?: "") }
-    var scheme by remember { mutableStateOf(if (sv?.scheme == "https") "https" else "http") }
-    var addr by remember { mutableStateOf(sv?.addr ?: "") }
+    var scheme by remember { mutableStateOf(if (sv != null && splitUrl(sv.mainUrl).scheme == "https") "https" else "http") }
+    // the server's own settings (the main and failover server addresses)
+    val S = vm.saved
+    val fo = failoverReady(S)
+    // an address left empty follows the server's address, so it shows as empty again here
+    var addr by remember { mutableStateOf(if (sv == null || sv.auto) "" else splitUrl(sv.mainUrl).let { it.host + it.path }) }
+    var addr2 by remember { mutableStateOf(if (sv == null || sv.url2.isEmpty()) "" else splitUrl(sv.url2).let { it.host + it.path }) }
     var usePort by remember { mutableStateOf(if (sv != null) sv.port.isNotEmpty() else true) }
     var port by remember { mutableStateOf(sv?.port ?: "") }
     var logo by remember { mutableStateOf(sv?.logo ?: "") }
@@ -112,9 +130,16 @@ fun AddServiceDialog(vm: BoardVM, sv: Service?, onClose: () -> Unit, onPickZima:
         ModalTitle(if (sv != null) "EDIT SERVICE" else "ADD SERVICE")
         if (sv == null && vm.zimaReady) Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Chip("Pick from ZimaOS apps") { onPickZima() } }
         Labeled("SERVICE NAME") { Field(name, { name = it }, "e.g. Jellyfin", maxLength = 24) }
-        Labeled("ADDRESS") {
-            Field(addr, { addr = it }, if (usePort) serverHostOrDefault(vm) else "app.example.com", keyboard = KeyboardType.Uri, leading = { SchemePick(scheme) { scheme = it } })
+        val mainHost = serverHostOrDefault(vm)
+        Labeled(if (fo) "MAIN ADDRESS" else "ADDRESS") {
+            Field(addr, { addr = it }, mainHost, keyboard = KeyboardType.Uri, leading = { SchemePick(scheme) { scheme = it } })
         }
+        if (fo) {
+            Labeled("FAILOVER ADDRESS") {
+                Field(addr2, { addr2 = it }, S.failoverHost, keyboard = KeyboardType.Uri)
+            }
+            Hint("Leave both empty to use the server's main address ($mainHost) and failover address (${S.failoverHost}). The button opens the address the server is reached over right now, with the port below.")
+        } else Hint("Leave empty to use the server's address ($mainHost).")
         ToggleRow("USE PORT", usePort) { usePort = it }
         if (usePort) Labeled("PORT") { Field(port, { port = it.filter { c -> c.isDigit() } }, "8080", keyboard = KeyboardType.Number, maxLength = 5) }
         LogoField(logo, { logo = it }, hint, { hint = it }, name, scope)
@@ -124,16 +149,16 @@ fun AddServiceDialog(vm: BoardVM, sv: Service?, onClose: () -> Unit, onPickZima:
             Btn("Cancel", modifier = Modifier.weight(1f)) { onClose() }
             Btn(if (sv != null) "Save" else "Add", BtnKind.Ok, Modifier.weight(1f)) {
                 val n = name.trim(); val a = addr.trim(); val lu = logo.trim()
-                if (n.isEmpty() || a.isEmpty()) { err = "Enter a name and an address"; return@Btn }
+                if (n.isEmpty()) { err = "Enter a name"; return@Btn }
                 if (lu.isNotEmpty() && !Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(lu)) { err = "Logo URL must start with http:// or https://"; return@Btn }
                 onClose()
-                vm.saveService(sv?.id, n, scheme, a, if (usePort) port else "", lu, onW)
+                vm.saveService(sv?.id, n, scheme, a, if (usePort) port else "", lu, onW, if (fo) addr2.trim() else "")
             }
         }
     }
 }
 
-fun serverHostOrDefault(vm: BoardVM) = app.board.serverHostOf(vm.set).ifEmpty { "192.168.1.10" }
+fun serverHostOrDefault(vm: BoardVM) = app.board.serverHostOf(vm.saved).ifEmpty { "192.168.1.10" }
 
 // Logo URL with a live preview and "Auto" (guesses a dashboard-icons logo from the name)
 @Composable
@@ -448,6 +473,8 @@ fun AddServerDialog(vm: BoardVM, onClose: () -> Unit, openSettings: () -> Unit) 
     var port by remember { mutableStateOf("") }
     var u by remember { mutableStateOf("") }
     var p by remember { mutableStateOf("") }
+    var fo by remember { mutableStateOf(false) }
+    var foHost by remember { mutableStateOf("") }
     var err by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -458,7 +485,12 @@ fun AddServerDialog(vm: BoardVM, onClose: () -> Unit, openSettings: () -> Unit) 
         Labeled("SERVER TYPE") { Seg(typeOpts(), platform, wrap = true) { platform = it; scheme = ""; err = "" } }
         Hint(TYPE_HINT[platform] ?: TYPE_HINT["none"]!!)
         androidx.compose.runtime.key(platform) {
-            ServerAddrField("SERVER ADDRESS", platform, host, scheme, port) { h, pt, sc -> host = h; port = pt; scheme = sc }
+            ServerAddrField(if (fo) "MAIN SERVER ADDRESS" else "SERVER ADDRESS", platform, host, scheme, port) { h, pt, sc -> host = h; port = pt; scheme = sc }
+        }
+        ToggleRow("FAILOVER ADDRESS (OPTIONAL)", fo) { fo = it; err = "" }
+        if (fo) {
+            FailoverAddrField(foHost) { foHost = it }
+            Hint(FAILOVER_HINT)
         }
         val pl = PLATFORMS[platform]
         if (pl?.login != null) {
@@ -475,10 +507,12 @@ fun AddServerDialog(vm: BoardVM, onClose: () -> Unit, openSettings: () -> Unit) 
                 if (busy) return@Btn
                 if (platform == "none") { err = "Pick the server type"; return@Btn }
                 if (host.trim().isEmpty()) { err = "Enter the server's IP or name"; return@Btn }
+                if (fo && foHost.trim().isEmpty()) { err = "Enter the failover server address, or switch Failover off"; return@Btn }
+                if (fo && foHost.trim().equals(host.trim(), true)) { err = "The failover server address has to be different from the main server address"; return@Btn }
                 if ((u.trim().isNotEmpty() && p.isEmpty()) || (u.trim().isEmpty() && p.isNotEmpty())) { err = "Enter both the username and the password, or neither"; return@Btn }
                 err = ""; busy = true
                 scope.launch {
-                    val e = vm.addServer(name.trim(), platform, host.trim(), scheme, port, u.trim(), p)
+                    val e = vm.addServer(name.trim(), platform, host.trim(), scheme, port, u.trim(), p, if (fo) foHost.trim() else "")
                     busy = false
                     if (e != null) err = e
                     else { onClose(); if (platform == "linux") { delay(450); openSettings() } }

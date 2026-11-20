@@ -56,7 +56,7 @@ private val LOOKK = listOf("theme", "accent", "glow", "movingBg", "cardStyle", "
 fun SettingsSheet(vm: BoardVM, onClose: () -> Unit, onDelete: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var info by remember { mutableStateOf<SettingsInfo?>(null) }
-    val f = remember { JSONObject(vm.set.toJson().toString()) }
+    val f = remember { JSONObject(vm.saved.toJson().toString()) }
     var ver by remember { mutableIntStateOf(0) }
     var title by remember { mutableStateOf(vm.title) }
     var gpass by remember { mutableStateOf("") }
@@ -106,6 +106,8 @@ fun SettingsSheet(vm: BoardVM, onClose: () -> Unit, onDelete: (String) -> Unit) 
                     if (h.toInt() <= w.toInt()) { err = "Red has to start above orange (${k.uppercase()})"; return@SmallBtn }
                 }
                 if (str("serverHost").trim().isEmpty()) { err = "Enter your server's IP or name (Settings > Server)"; return@SmallBtn }
+                if (bool("failover") && str("failoverHost").trim().isEmpty()) { err = "Enter the failover server address, or switch Failover off"; return@SmallBtn }
+                if (bool("failover") && str("failoverHost").trim().equals(str("serverHost").trim(), true)) { err = "The failover server address has to be different from the main server address"; return@SmallBtn }
                 if (str("baseUrl").isNotEmpty() && !Regex("^https?://[^/:]+", RegexOption.IGNORE_CASE).containsMatchIn(str("baseUrl"))) { err = "The Glances address must start with http:// or https://"; return@SmallBtn }
                 vm.settingsSave(f, title, gpass, clearGpass)
                 vm.lookPreview = null
@@ -132,12 +134,18 @@ fun SettingsSheet(vm: BoardVM, onClose: () -> Unit, onDelete: (String) -> Unit) 
                 Labeled("SERVER NAME") { Field(title, { title = it }, "e.g. NAS", maxLength = 20) }
                 Labeled("SERVER TYPE") { Seg(typeOpts(), P, wrap = true) { f.put("platform", it); touch("platform") } }
                 Hint(TYPE_HINT[P] ?: TYPE_HINT["none"]!!)
+                val fo = bool("failover")
                 androidx.compose.runtime.key(P) {
-                    ServerAddrField("SERVER ADDRESS", P, str("serverHost"), str("serverScheme"), str("serverPort")) { h, pt, sc ->
+                    ServerAddrField(if (fo) "MAIN SERVER ADDRESS" else "SERVER ADDRESS", P, str("serverHost"), str("serverScheme"), str("serverPort")) { h, pt, sc ->
                         f.put("serverHost", h); f.put("serverPort", pt); f.put("serverScheme", sc)
                     }
                 }
                 Hint(addrHint(P))
+                ToggleSetting(f, "failover", "FAILOVER ADDRESS (OPTIONAL)") { touch(it) }
+                if (fo) {
+                    FailoverAddrField(str("failoverHost")) { f.put("failoverHost", it) }
+                    Hint(FAILOVER_HINT)
+                } else Hint("On: a second address for this server, used when the main server address doesn't answer.")
                 val pl = PLATFORMS[P]
                 // an older separate address for the server system on another host (still used until it's cleared)
                 if (pl != null && str(pl.url).isNotEmpty()) {

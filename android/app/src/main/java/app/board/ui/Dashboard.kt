@@ -528,6 +528,11 @@ fun LivePill(vm: BoardVM) {
         StatusDot(if (setup || r == null) null else if (r) "up" else "dn")
         Spacer(Modifier.width(8.dp))
         T(text, 12.sp, FontWeight.Bold, spacing = 1.2.sp)
+        // reached over the failover server address
+        if (!setup && r == true && vm.onFailover) {
+            Spacer(Modifier.width(6.dp))
+            T("FAILOVER", 9.sp, FontWeight.Bold, Color(0xFFFFB454), spacing = 1.sp)
+        }
     }
 }
 

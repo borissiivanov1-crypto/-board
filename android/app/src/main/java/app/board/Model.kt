@@ -51,7 +51,7 @@ val TEMP_DEFAULTS = linkedMapOf("cpu" to TempLimit(70, 85), "nvme" to TempLimit(
 
 // Settings that belong to one server (everything else is shared by all servers)
 val SERVER_SETTING_KEYS = listOf(
-    "serverHost", "serverScheme", "serverPort", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
+    "serverHost", "serverScheme", "serverPort", "failover", "failoverHost", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
     "truenasUrl", "unraidUrl", "synologyUrl", "omvUrl", "helperUrl", "showPower", "diskMounts", "maxDisks",
     "networkInterface", "monitoringOpen", "monitoringFixed", "tempLimits", "liveSeconds",
 )
@@ -92,6 +92,9 @@ data class Settings(
     val serverHost: String = "",
     val serverScheme: String = "",
     val serverPort: String = "",
+    // Failover: a second address for the same server (e.g. its LAN IP), tried when the main address doesn't answer
+    val failover: Boolean = false,
+    val failoverHost: String = "",
     val monitoring: Boolean = CONFIG.monitoring,
     val baseUrl: String = "",
     val apiVersion: Int = CONFIG.apiVersion,
@@ -132,6 +135,7 @@ data class Settings(
     fun toJson(): JSONObject {
         val o = JSONObject()
         o.put("serverHost", serverHost); o.put("serverScheme", serverScheme); o.put("serverPort", serverPort)
+        o.put("failover", failover); o.put("failoverHost", failoverHost)
         o.put("monitoring", monitoring); o.put("baseUrl", baseUrl); o.put("apiVersion", apiVersion)
         o.put("username", username); o.put("platform", platform)
         for (k in PLATFORM_URL_KEYS) o.put(k, url(k))
@@ -206,6 +210,9 @@ fun cleanSettings(raw: JSONObject?): Settings {
         if (serverPort.isEmpty()) serverPort = hp.groupValues[2]
     }
     if (serverHost.isEmpty() && baseUrl.isNotEmpty()) serverHost = hostOf(baseUrl)
+    // the failover address is only an IP or name: it uses the main address's http / https and port
+    val failoverHost = strOf("failoverHost", "", 200).replace(Regex("^[a-z]+://", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("[/?#].*$"), "").replace(Regex("^([^\\[\\]:]+):\\d+$"), "$1")
 
     val monitoring = boolOf("monitoring", DEFAULTS.monitoring)
     val apiVersion = clampNum(r.opt("apiVersion"), 3, 4, DEFAULTS.apiVersion)
@@ -251,6 +258,7 @@ fun cleanSettings(raw: JSONObject?): Settings {
     }
     return Settings(
         serverHost = serverHost, serverScheme = serverScheme, serverPort = serverPort,
+        failover = boolOf("failover", DEFAULTS.failover), failoverHost = failoverHost,
         monitoring = monitoring, baseUrl = baseUrl, apiVersion = apiVersion, username = username, platform = platform,
         urls = urls, proxmoxNode = proxmoxNode, showPower = showPower, diskMounts = diskMounts, maxDisks = maxDisks,
         networkInterface = networkInterface,
@@ -282,6 +290,38 @@ fun cleanSettings(raw: JSONObject?): Settings {
 
 // The server's IP or name ("" = not set up yet)
 fun serverHostOf(s: Settings) = s.serverHost.ifEmpty { if (s.baseUrl.isNotEmpty()) hostOf(s.baseUrl) else "" }
+
+// ---------- Failover (main server address + failover server address) ----------
+// Failover is in use only when it's switched on and a failover address is entered
+fun failoverReady(s: Settings) = s.failover && s.failoverHost.isNotEmpty() && !s.failoverHost.equals(serverHostOf(s), true)
+
+// An address with its host swapped (only when it is on the host `from`)
+fun swapHost(url: String, from: String, to: String): String {
+    if (url.isEmpty() || from.isEmpty() || to.isEmpty()) return url
+    val m = Regex("^(https?://)([^/:]+)(.*)$", RegexOption.IGNORE_CASE).find(url) ?: return url
+    return if (m.groupValues[2].equals(from, true)) m.groupValues[1] + to + m.groupValues[3] else url
+}
+
+// The same settings, reached over the failover address: the server address, and the Glances and
+// Reboot / Shut down addresses that point at the main address, use the failover address instead
+fun viaFailover(s: Settings): Settings {
+    if (!failoverReady(s)) return s
+    val main = serverHostOf(s)
+    val to = s.failoverHost
+    return s.copy(serverHost = to, baseUrl = swapHost(s.baseUrl, main, to), urls = s.urls.mapValues { swapHost(it.value, main, to) })
+}
+
+// Which address each server is reached over right now (true = the failover address). Kept in memory:
+// worked out again by every LIVE / OFFLINE check, in the app and in the widget.
+object Route {
+    private val fo = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    fun onFailover(id: String) = fo[id] == true
+    fun set(id: String, failover: Boolean) { fo[id] = failover }
+    fun forget(id: String) { fo.remove(id) }
+}
+
+// The settings as used right now: over the failover address when that's the one that answers
+fun effective(s: Settings, id: String) = if (failoverReady(s) && Route.onFailover(id)) viaFailover(s) else s
 
 // Where Glances answers: the address in Settings, or the server on Glances' usual port 61208
 fun glancesUrl(s: Settings): String {

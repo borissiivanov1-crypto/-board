@@ -221,6 +221,32 @@ object Net {
             r
         }
     }
+
+    data class RouteResult(val failover: Boolean, val answered: String)
+
+    // ---------- Main / failover address ----------
+    // Asks the main address and (with Failover on) the failover address at the same time. The main address
+    // wins whenever it answers; the failover address is used only when the main one doesn't. The result is
+    // remembered in Route, so the buttons, Glances and Reboot / Shut down use the address that answered.
+    suspend fun resolveRoute(s: Settings, id: String, timeout: Double = 4.0): RouteResult {
+        if (!failoverReady(s)) {
+            Route.set(id, false)
+            return RouteResult(false, serverReachable(s, Store.getServices(false, id, via = false), timeout))
+        }
+        return coroutineScope {
+            val foD = async { serverReachable(viaFailover(s), Store.getServices(false, id, via = true), timeout) }
+            val main = serverReachable(s, Store.getServices(false, id, via = false), timeout)
+            if (main.isNotEmpty()) {
+                foD.cancel()
+                Route.set(id, false)
+                return@coroutineScope RouteResult(false, main)
+            }
+            val fo = foD.await()
+            // nothing answers: stay on the address used last, so the buttons don't jump back and forth
+            if (fo.isNotEmpty()) Route.set(id, true)
+            RouteResult(fo.isNotEmpty(), fo)
+        }
+    }
 }
 
 // ---------- Service logos (downloaded once, shrunk, stored on the phone) ----------

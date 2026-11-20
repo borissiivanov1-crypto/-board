@@ -134,7 +134,10 @@ class BoardWidget : GlanceAppWidget() {
     }
 
     private suspend fun load(ctx: Context, sid: String, offlineOnly: Boolean = false): WidgetData = coroutineScope {
-        val s = Store.settings(sid)
+        val saved = Store.settings(sid)
+        // Failover on: find out first which address answers (main or failover); the buttons and Glances then use it
+        val routeR = if (failoverReady(saved) && !offlineOnly) try { Net.resolveRoute(saved, sid) } catch (e: Exception) { null } else null
+        val s = effective(saved, sid)
         val title = s.widgetTitle.ifEmpty { Store.getTitle(sid) }
         val bg = background(s)
         val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
@@ -143,7 +146,7 @@ class BoardWidget : GlanceAppWidget() {
         }
         val layout = Store.getLayout(sid)
         // everything runs side by side: is the server reachable, the buttons' checks and (with Monitoring) the stats
-        val reachD = async { try { Net.serverReachable(s, layout.all) } catch (e: Exception) { "" } }
+        val reachD = async { routeR?.answered ?: try { Net.serverReachable(s, layout.all) } catch (e: Exception) { "" } }
         val gridD = async {
             val list = Store.widgetCells(layout, s.widgetRows)
             val toCheck = list.flatMap { if (it is Stack) it.members else listOf(it as Service) }

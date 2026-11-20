@@ -41,7 +41,12 @@ const val REACH_SECONDS = 10
 class BoardVM(app: Application) : AndroidViewModel(app) {
     private val ctx: Context get() = getApplication()
 
+    // the settings as used right now (over the failover address while that's the one that answers)
     var set by mutableStateOf(Settings())
+    // the settings as saved (the main server address): what Settings shows and saves
+    var saved by mutableStateOf(Settings())
+    // true while the server is reached over its failover address
+    var onFailover by mutableStateOf(false)
     var title by mutableStateOf("")
     var layout by mutableStateOf(Layout(emptyList(), emptyList(), emptyList(), emptyList(), emptyList()))
     var servers by mutableStateOf(listOf<ServerRef>())
@@ -99,7 +104,9 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
 
     // After Settings are saved (or another server is shown): use the new values right away
     fun refreshAll() {
-        set = Store.settings()
+        saved = Store.settings()
+        onFailover = failoverReady(saved) && Route.onFailover(Store.CUR)
+        set = if (onFailover) viaFailover(saved) else saved
         title = Store.getTitle()
         servers = Store.listServers()
         cur = Store.CUR
@@ -137,19 +144,26 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
             if (serverHostOf(set).isEmpty()) { delay(1000); continue }
             val g = gen
             // LIVE / OFFLINE: is anything on the server answering? A changed address is checked straight away.
-            val rk = serverUrlOf(set) + "|" + set.platform + "|" + set.monitoring + "|" + set.baseUrl
+            // With Failover on, this also picks the address to use: the main one, or the failover one if only it answers.
+            val sv = saved
+            val rk = serverUrlOf(sv) + "|" + sv.platform + "|" + sv.monitoring + "|" + sv.baseUrl + "|" + (if (failoverReady(sv)) sv.failoverHost else "")
             if (!reachBusy && (rk != reachFor || System.currentTimeMillis() - lastReach > REACH_SECONDS * 1000)) {
                 reachBusy = true
+                val first = rk != reachFor
                 reachFor = rk
-                val s = set
-                viewModelScope.launch {
+                val check: suspend () -> Unit = {
                     try {
-                        val r = Net.serverReachable(s, Store.getServices(false))
-                        if (g == gen) reach = r.isNotEmpty()
-                    } catch (_: Exception) {}
+                        val r = Net.resolveRoute(sv, Store.CUR)
+                        if (g == gen) {
+                            reach = r.answered.isNotEmpty()
+                            if (r.answered.isNotEmpty()) applyRoute(r.failover)
+                        }
+                    } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) { reachBusy = false; throw e } }
                     reachBusy = false
                     lastReach = System.currentTimeMillis()
                 }
+                // with Failover on, the first check decides the address before Glances and the buttons are asked
+                if (first && failoverReady(sv)) check() else viewModelScope.launch { check() }
             }
             // Monitoring off: no requests to Glances at all
             if (set.monitoring) {
@@ -178,6 +192,20 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
             }
             delay(set.liveSeconds * 1000L)
         }
+    }
+
+    // Switches between the main and the failover address: the buttons, Glances, ZimaOS and Reboot / Shut down follow
+    private fun applyRoute(failover: Boolean) {
+        val fo = failover && failoverReady(saved)
+        if (fo == onFailover) return
+        onFailover = fo
+        set = if (fo) viaFailover(saved) else saved
+        glances = Glances(set)
+        Zima.forget(); lastZApps = 0
+        statusDirty = true
+        pushServices()
+        showToast(if (fo) "Main address not answering: connected over the failover address (${saved.failoverHost})" else "Connected over the main address again", 3500)
+        refreshWidgets()
     }
 
     // ZimaOS apps and their updates: asked again once a minute
@@ -241,7 +269,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
     }
 
     fun addZimaApps(apps: List<ZApp>) {
-        Store.addZimaApps(apps, serverHostOf(set))
+        Store.addZimaApps(apps, serverHostOf(saved))
         statusDirty = true
         pushServices(); refreshLogos(); refreshWidgets()
     }
@@ -305,8 +333,8 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- buttons and stacks ----------
-    fun saveService(editId: String?, name: String, scheme: String, addr: String, port: String, logo: String, onWidget: Boolean) {
-        Store.saveService(editId, name, scheme, addr, port, logo, onWidget)
+    fun saveService(editId: String?, name: String, scheme: String, addr: String, port: String, logo: String, onWidget: Boolean, addr2: String = "") {
+        Store.saveService(editId, name, scheme, addr, port, logo, onWidget, addr2)
         statusDirty = true
         pushServices(); refreshLogos(); refreshWidgets()
     }
@@ -370,18 +398,27 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
     }
 
     // Add server: the login (if given) is checked before the server is added. Returns an error or null.
-    suspend fun addServer(name: String, platform: String, host: String, scheme: String, port: String, u: String, p: String): String? {
-        val raw = set.toJson().put("serverHost", host).put("serverScheme", scheme).put("serverPort", port).put("platform", platform)
+    // failoverHost: the failover server address ("" = Failover off)
+    suspend fun addServer(name: String, platform: String, host: String, scheme: String, port: String, u: String, p: String, failoverHost: String = ""): String? {
+        val raw = saved.toJson().put("serverHost", host).put("serverScheme", scheme).put("serverPort", port).put("platform", platform)
+            .put("failover", failoverHost.isNotEmpty()).put("failoverHost", failoverHost)
             .put("proxmoxNode", "").put("baseUrl", "").put("username", "").put("diskMounts", org.json.JSONArray()).put("networkInterface", "")
         for (k in PLATFORM_URL_KEYS) raw.put(k, "")
         val own = cleanSettings(raw)
         val withLogin = Power.hasDriver(own.platform) && u.isNotEmpty() && p.isNotEmpty()
         if (withLogin) {
-            val r = Power.driver(own.platform, null, u, p, platformBase(own.platform, own), own)
+            var r = Power.driver(own.platform, null, u, p, platformBase(own.platform, own), own)
+            // the main address can't be reached: check the login over the failover address
+            if (!r.ok && r.net && failoverReady(own)) {
+                val fo = viaFailover(own)
+                val r2 = Power.driver(own.platform, null, u, p, platformBase(own.platform, fo), fo)
+                if (r2.ok || !r2.net) r = r2
+            }
             if (!r.ok) return r.msg.ifEmpty { "The login didn't work." } + if (r.net) " Check the address, or add the server without the login and enter it later." else ""
         }
         val before = servers.map { it.id }
-        val id = Store.addServer(name, JSONObject().put("serverHost", own.serverHost).put("serverScheme", own.serverScheme).put("serverPort", own.serverPort).put("platform", own.platform))
+        val id = Store.addServer(name, JSONObject().put("serverHost", own.serverHost).put("serverScheme", own.serverScheme).put("serverPort", own.serverPort).put("platform", own.platform)
+            .put("failover", own.failover).put("failoverHost", own.failoverHost))
         if (withLogin) Secrets.saveLogin(own.platform, u, p, id)
         showServer(if (id in before) 0 else 1)
         if (own.platform != "linux") showToast(if (withLogin) "Server added, login checked and saved" else "Server added", 3000)
@@ -416,7 +453,7 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
             mounts = m.await()?.map { (k, size, used) -> Mount(k.substringBefore("|"), k.substringAfter("|"), size, used) }
             ifaces = i.await()
         }
-        return SettingsInfo(set, serverHostOf(set), serverHostOf(set).isEmpty(), mounts, ifaces,
+        return SettingsInfo(saved, serverHostOf(saved), serverHostOf(saved).isEmpty(), mounts, ifaces,
             Store.loadData().hidden, PLATFORM_KEYS.associateWith { Secrets.hasLogin(it) }, Secrets.has(Secrets.gpassKey()))
     }
 
@@ -439,12 +476,21 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
 
     // tests the values in the form, saved or not
     suspend fun settingsTest(form: JSONObject, gpass: String): List<Pair<Boolean, String>> {
-        val s = cleanSettings(form)
+        var s = cleanSettings(form)
         val lines = ArrayList<Pair<Boolean, String>>()
         if (serverHostOf(s).isEmpty()) return listOf(false to "Enter your server's IP or name first, e.g. 192.168.1.10")
-        val reachR = Net.serverReachable(s, Store.getServices(false))
-        lines.add(if (reachR.isNotEmpty()) true to "Server: reachable ($reachR answered)"
-        else false to "Server: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)")
+        val reachR = Net.serverReachable(s, Store.getServices(false, via = false))
+        lines.add(if (reachR.isNotEmpty()) true to "Main server address: reachable ($reachR answered)"
+        else false to "Main server address: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)")
+        // Failover: the failover address is tested too; with the main address down, the other tests use it
+        if (s.failover && s.failoverHost.isEmpty()) lines.add(false to "Failover: enter the failover server address, or switch Failover off")
+        else if (failoverReady(s)) {
+            val fo = viaFailover(s)
+            val foR = Net.serverReachable(fo, Store.getServices(false, via = true))
+            lines.add(if (foR.isNotEmpty()) true to "Failover server address: reachable ($foR answered)"
+            else false to "Failover server address: nothing answered at ${s.failoverHost} (fine if you're away from that network)")
+            if (reachR.isEmpty() && foR.isNotEmpty()) s = fo
+        }
         if (s.monitoring) {
             val t0 = System.currentTimeMillis()
             val g = Glances(s)
@@ -469,7 +515,9 @@ class BoardVM(app: Application) : AndroidViewModel(app) {
         if (!Power.hasDriver(P)) return false to "This server type doesn't use a login."
         val user = u.trim()
         if (user.isEmpty() || p.isEmpty()) return false to "Enter a username and a password."
-        val s = cleanSettings(form)
+        val s0 = cleanSettings(form)
+        // checked over the address the server is reached over right now (main or failover)
+        val s = if (onFailover && failoverReady(s0) && serverHostOf(s0).equals(serverHostOf(saved), true)) viaFailover(s0) else s0
         val base = platformBase(P, s)
         val r = Power.driver(P, null, user, p, base, s)
         if (!r.ok) {

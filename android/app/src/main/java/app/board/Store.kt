@@ -29,6 +29,14 @@ data class Service(
     val group: String? = null,
     // the ZimaOS app this button was added from ("Pick from ZimaOS apps"); others are linked by port
     val zima: String = "",
+    // the main address (url is the one in use right now: this one, or the failover address)
+    val mainUrl: String = url,
+    // the address was left empty: it follows the server's address
+    val auto: Boolean = false,
+    // the failover address typed in the form ("" = the failover server address, when the main one is the server's)
+    val url2: String = "",
+    // the address used when the server is reached over its failover address (null = none)
+    val failoverUrl: String? = null,
 ) : Entry
 
 data class Stack(
@@ -196,6 +204,7 @@ object Store {
         val i = l.indexOfFirst { it.getString("id") == id }
         if (i < 0) return false
         Secrets.forgetServerKeys(id)
+        Route.forget(id)
         st.getJSONArray("servers").remove(i)
         val rest = servers(st)
         val next = rest[minOf(i, rest.size - 1)].getString("id")
@@ -267,9 +276,13 @@ object Store {
     }
 
     // All buttons: built-in (minus deleted, with edits applied), then custom.
-    fun getServices(forDashboard: Boolean, id: String = CUR): List<Service> {
+    // via: which address to use (true = failover, false = main, null = the one the server is reached over now)
+    fun getServices(forDashboard: Boolean, id: String = CUR, via: Boolean? = null): List<Service> {
         val d = loadData(id)
-        val host = serverHostOf(cleanSettings(d.settings)).ifEmpty { "localhost" }
+        val st = cleanSettings(d.settings)
+        val host = serverHostOf(st).ifEmpty { "localhost" }
+        val fo = failoverReady(st)
+        val useFo = fo && (via ?: Route.onFailover(id))
         val base = BUILTIN.map { s ->
             val sid = "b:" + s.optString("name")
             val o = JSONObject(s.toString()).put("id", sid)
@@ -278,7 +291,12 @@ object Store {
             o
         }.filter { it.getString("id") !in d.hidden }
         val list = (base + d.custom).map { s ->
-            val url = s.optString("url")
+            val auto = s.optBoolean("auto")
+            // an empty address follows the server's (main) address
+            val main = if (auto) swapHost(s.optString("url"), splitUrl(s.optString("url")).host, host) else s.optString("url")
+            val url2 = s.optString("url2", "")
+            val foUrl = if (!fo) null else url2.ifEmpty { if (hostOf(main).equals(host, true)) swapHost(main, host, st.failoverHost) else "" }.ifEmpty { null }
+            val url = if (useFo && foUrl != null) foUrl else main
             val u = splitUrl(url)
             val port = s.opt("port")?.let { if (it == JSONObject.NULL) "" else it.toString() } ?: ""
             Service(
@@ -287,6 +305,7 @@ object Store {
                 scheme = u.scheme, addr = u.host + u.path, label = if (port.isNotEmpty()) ":$port" else u.host,
                 onWidget = s.getString("id") !in d.widgetHidden,
                 zima = s.optString("zima", "").ifEmpty { s.optString("app", "") },
+                mainUrl = main, auto = auto, url2 = url2, failoverUrl = foUrl,
             )
         }
         return if (forDashboard) sortByOrder(list, d.order) else list
@@ -409,8 +428,17 @@ object Store {
         saveData(data)
     }
 
-    // A button from the add / edit form
-    fun makeCustom(name: String, schemeSel: String, addr0: String, port0: String, logo: String): JSONObject {
+    // A button from the add / edit form. An empty address means the server's address (host).
+    fun makeCustom(name: String, schemeSel: String, addr0: String, port0: String, logo: String, host: String = "localhost"): JSONObject {
+        val auto = addr0.trim().isEmpty()
+        val url = buildUrl(schemeSel, if (auto) host else addr0, port0)
+        val port = port0.replace(Regex("[^0-9]"), "")
+        return JSONObject().put("name", name.trim().take(24)).put("port", port).put("icon", "🔗").put("logo", logo.trim())
+            .put("custom", true).put("url", url).put("auto", auto)
+    }
+
+    // scheme (unless typed in the address) + address (+ its path) + port
+    fun buildUrl(schemeSel: String, addr0: String, port0: String): String {
         var addr = addr0.trim()
         val m = Regex("^(https?)://", RegexOption.IGNORE_CASE).find(addr)
         val scheme = m?.groupValues?.get(1)?.lowercase() ?: if (schemeSel == "https") "https" else "http"
@@ -419,19 +447,22 @@ object Store {
         val slash = addr.indexOf('/')
         if (slash >= 0) { path = addr.substring(slash); addr = addr.substring(0, slash) }
         val port = port0.replace(Regex("[^0-9]"), "")
-        return JSONObject().put("name", name.trim().take(24)).put("port", port).put("icon", "🔗").put("logo", logo.trim())
-            .put("custom", true).put("url", "$scheme://$addr${if (port.isNotEmpty()) ":$port" else ""}$path")
+        return "$scheme://$addr${if (port.isNotEmpty()) ":$port" else ""}$path"
     }
 
-    fun saveService(editId: String?, name: String, scheme: String, addr: String, port: String, logo: String, onWidget: Boolean) {
+    // addr2: the failover address ("" = the server's failover address)
+    fun saveService(editId: String?, name: String, scheme: String, addr: String, port: String, logo: String, onWidget: Boolean, addr2: String = "") {
         val data = loadData()
-        val item = makeCustom(name, scheme, addr, port, logo)
+        val st = cleanSettings(data.settings)
+        val item = makeCustom(name, scheme, addr, port, logo, serverHostOf(st).ifEmpty { "localhost" })
+        item.put("url2", if (failoverReady(st) && addr2.trim().isNotEmpty()) buildUrl(scheme, addr2, port) else "")
+        val keys = listOf("name", "port", "url", "logo", "auto", "url2")
         var id = editId
         if (editId != null && editId.startsWith("b:")) {
-            data.edits.put(editId, JSONObject().put("name", item.get("name")).put("port", item.get("port")).put("url", item.get("url")).put("logo", item.get("logo")))
+            data.edits.put(editId, JSONObject().also { e -> for (k in keys) e.put(k, item.get(k)) })
         } else if (editId != null) {
             val c = data.custom.find { it.optString("id") == editId }
-            if (c != null) for (k in listOf("name", "port", "url", "logo")) c.put(k, item.get(k))
+            if (c != null) for (k in keys) c.put(k, item.get(k))
         } else {
             id = "c:" + System.currentTimeMillis()
             item.put("id", id)
