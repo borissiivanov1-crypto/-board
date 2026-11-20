@@ -53,6 +53,10 @@ order (name, server type, server address, and the login if the type uses one, ch
   (shown under "Shared by all servers" in every settings window).
 - A **widget** shows one server: long-press it, **Edit Widget**, and type the server's name or number (`1`, `2` ...)
   under **Parameter**. Empty = the first server. Tapping the widget opens the dashboard on that server.
+- **Failover address** (optional, per server, in Settings > Server and in Add server): a main server address plus a
+  failover server address (e.g. VPN address + home network IP). When the main address doesn't answer, -board connects
+  over the failover one (LIVE shows FAILOVER); buttons, Glances and Reboot / Shut down follow. A button whose address
+  is left empty uses the server's address(es).
 - **Delete server** is at the very bottom of each server's settings and asks to confirm first (your only server can't be deleted).
   Export / import covers every server.
 

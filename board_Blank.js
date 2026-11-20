@@ -32,7 +32,10 @@
 // 2. Run it. Settings opens: give the server a name, pick its type, type its address (http / https + IP or name,
 //    with a port only if it isn't the usual one, e.g. 192.168.1.10:90) and its login if asked; turn Monitoring off
 //    if you don't run Glances, tap "Test connection", then Save.
-// 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
+//    Optional: switch on "Failover address" and type a second address for the same server (e.g. VPN address as the
+//    main server address, home network IP as the failover server address).
+// 3. Add your services with the + button (name, address, port; "Auto" finds a logo). Leave the address empty to
+//    use the server's address (with Failover on: its main and failover addresses).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
 //
@@ -43,6 +46,9 @@
 // - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack.
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
+// - Failover address (optional, per server): when the main server address doesn't answer (e.g. the VPN is down),
+//   -board connects over the failover server address: LIVE shows FAILOVER, and the buttons, Glances and
+//   Reboot / Shut down use that address. The main address is used again as soon as it answers.
 // - Hold the server name to rename it. Tap it for Reboot / Shut down (asks to confirm).
 // - Several servers: swipe the server name left / right to switch (the dots under it show how many and which
 //   one is on screen); swipe left past the last one, or tap +, to add a server. Each server has its own
@@ -59,6 +65,8 @@
 const CONFIG = {
   title: "MY SERVER",
   serverHost: "",                       // your server's IP or name, e.g. "192.168.1.10" (empty = asked on first run)
+  failover: false,                      // true = also try failoverHost when serverHost doesn't answer
+  failoverHost: "",                     // failover server address: IP or name of the same server, e.g. its home network IP
   monitoring: true,                     // Monitoring panel and widget gauges from Glances; false = no Glances requests at all
   baseUrl: "",                          // Glances address; empty = the server address on port 61208
   apiVersion: 4,                        // Glances 4.x = 4, Glances 3.x = 3
@@ -115,7 +123,7 @@ let CUR = null;
 // Settings that belong to one server (everything else in Settings is shared by all servers), and the parts
 // of the data file each server has for itself (see "Servers" below)
 const SERVER_SETTING_KEYS = [
-  "serverHost", "serverScheme", "serverPort", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
+  "serverHost", "serverScheme", "serverPort", "failover", "failoverHost", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
   "truenasUrl", "unraidUrl", "synologyUrl", "omvUrl", "helperUrl", "showPower", "diskMounts", "maxDisks",
   "networkInterface", "monitoringOpen", "monitoringFixed", "tempLimits", "liveSeconds",
 ];
@@ -152,6 +160,8 @@ const DEFAULTS = {
   serverHost: CONFIG.serverHost,
   serverScheme: "",                // "" = the usual one for the server type, or "http" / "https"
   serverPort: "",                  // "" = the usual one for the server type
+  failover: CONFIG.failover,       // Failover address on: a second address for this server
+  failoverHost: CONFIG.failoverHost, // the failover server address (uses the main address's http / https and port)
   monitoring: CONFIG.monitoring,
   baseUrl: CONFIG.baseUrl,
   apiVersion: CONFIG.apiVersion,
@@ -223,6 +233,10 @@ function cleanSettings(raw) {
     if (!out.serverPort) out.serverPort = hp[2];
   }
   if (!out.serverHost && out.baseUrl) out.serverHost = hostOf(out.baseUrl);
+  // the failover address is only an IP or name: it uses the main address's http / https and port
+  bool("failover");
+  str("failoverHost", 200);
+  out.failoverHost = out.failoverHost.replace(/^[a-z]+:\/\//i, "").replace(/[\/?#].*$/, "").replace(/^([^\[\]:]+):\d+$/, "$1");
   bool("monitoring");
   num("apiVersion", 3, 4);
   str("username", 100);
@@ -316,15 +330,49 @@ function glancesUrl(s) {
   return s.baseUrl || (h ? `http://${h}:61208` : "");
 }
 
+// ---------- Failover (main server address + failover server address) ----------
+// Failover is in use only when it's switched on and a failover address (other than the main one) is entered
+function failoverReady(s) {
+  return !!(s.failover && s.failoverHost && s.failoverHost.toLowerCase() !== serverHostOf(s).toLowerCase());
+}
+
+// An address with its host swapped (only when it is on the host `from`)
+function swapHost(url, from, to) {
+  if (!url || !from || !to) return url;
+  const m = String(url).match(/^(https?:\/\/)([^\/:]+)(.*)$/i);
+  return m && m[2].toLowerCase() === from.toLowerCase() ? m[1] + to + m[3] : url;
+}
+
+// The same settings, reached over the failover address: the server address, and the Glances and
+// Reboot / Shut down addresses that point at the main address, use the failover address instead
+function viaFailover(s) {
+  if (!failoverReady(s)) return s;
+  const main = serverHostOf(s);
+  const to = s.failoverHost;
+  const o = { ...s, serverHost: to, baseUrl: swapHost(s.baseUrl, main, to) };
+  for (const k of PLATFORM_KEYS.map((x) => PLATFORMS[x].url)) o[k] = swapHost(s[k], main, to);
+  return o;
+}
+
+// Which address each server is reached over right now (true = the failover address). Worked out again
+// by every LIVE / OFFLINE check, in the dashboard and in the widget.
+const ROUTE = {};
+function onFailover(s = SAVED, id = CUR) {
+  return failoverReady(s) && ROUTE[id] === true;
+}
+
 CUR = initialServer();
-let SET = loadSettings();
+// SAVED: the settings as saved (main server address). SET: as used right now (over the failover address
+// while only that one answers). Everything that talks to the server uses SET; Settings shows and saves SAVED.
+let SAVED = loadSettings();
+let SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
 
 // Services shown as buttons in the live dashboard.
 // Ports are defaults; edit any that differ on your server.
 // Optional fields: path ("/admin"), https (true)
 // logo: image URL for the button (emoji "icon" is the fallback). Logos come from
 // the free dashboard-icons set: https://github.com/homarr-labs/dashboard-icons
-let HOST = serverHostOf(SET) || "localhost"; // built-in buttons use the server address
+let HOST = serverHostOf(SAVED) || "localhost"; // built-in buttons use the (main) server address
 const LOGO_CDN = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
 // Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
 // You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "🎬", logo: LOGO_CDN + "jellyfin.png" }
@@ -341,8 +389,9 @@ let SERVICES = buildServices();
 
 // After Settings are saved (or imported): use the new values right away
 function applySettings() {
-  SET = loadSettings();
-  HOST = serverHostOf(SET) || "localhost";
+  SAVED = loadSettings();
+  SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
+  HOST = serverHostOf(SAVED) || "localhost";
   SERVICES = buildServices();
 }
 
@@ -540,15 +589,35 @@ function sortByOrder(list, order) {
 
 // All buttons: built-in (minus deleted, with edits applied), then custom.
 // forDashboard = true applies your dashboard drag-and-drop order.
-function getServices(forDashboard) {
+// via: which address to use (true = failover, false = main, undefined = the one the server is reached over now).
+// A button whose address was left empty (auto) follows the server's address. With Failover on, a button on the
+// server's main address opens the same port on the failover address while the server is reached over it.
+function getServices(forDashboard, via) {
   const d = loadData();
+  const st = cleanSettings(d.settings);
+  const host = serverHostOf(st) || "localhost";
+  const fo = failoverReady(st);
+  const useFo = fo && (via === undefined ? ROUTE[CUR] === true : !!via);
   const base = SERVICES.filter((s) => !d.hidden.includes(s.id)).map((s) =>
     d.edits[s.id] ? { ...s, ...d.edits[s.id] } : s
   );
   const list = base.concat(d.custom).map((s) => {
-    const u = splitUrl(s.url);
+    const main = s.auto ? swapHost(s.url, splitUrl(s.url).host, host) : s.url;
+    const url2 = typeof s.url2 === "string" ? s.url2 : "";
+    const foUrl = !fo ? null : url2 || (hostOf(main).toLowerCase() === host.toLowerCase() ? swapHost(main, host, st.failoverHost) : null);
+    const url = useFo && foUrl ? foUrl : main;
+    const u = splitUrl(url);
+    const m = splitUrl(main);
+    const u2 = url2 ? splitUrl(url2) : null;
     return {
       ...s,
+      url,
+      mainUrl: main,
+      failoverUrl: foUrl,
+      // what the edit form shows: an empty box for an address that follows the server's
+      addr1: s.auto ? "" : m.host + m.path,
+      scheme1: m.scheme,
+      addr2: u2 ? u2.host + u2.path : "",
       scheme: u.scheme,
       addr: u.host + u.path,
       label: s.port ? ":" + s.port : u.host,
@@ -699,7 +768,9 @@ function getPayload() {
     cdn: LOGO_CDN,
     hasLogin: PLATFORMS[SET.platform] ? hasLogin() : false,
     title: getTitle(),
-    host: serverHostOf(SET),
+    host: serverHostOf(SAVED),
+    // Failover: on (and set up), the failover server address, and whether it's in use right now
+    failover: { on: failoverReady(SAVED), host: SAVED.failoverHost, active: onFailover() },
     servers: listServers(),
     cur: CUR,
     platforms: PLATFORMS,
@@ -1370,11 +1441,11 @@ async function settingsOp(d) {
     } catch (e) {}
     return {
       ok: true,
-      s: SET,
+      s: SAVED,
       defaults: DEFAULTS,
-      host: serverHostOf(SET),
+      host: serverHostOf(SAVED),
       hasBuiltin: BUILTIN.length > 0,
-      firstRun: !serverHostOf(SET),
+      firstRun: !serverHostOf(SAVED),
       mounts,
       ifaces,
       hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
@@ -1398,13 +1469,23 @@ async function settingsOp(d) {
   }
   if (d.op === "test") {
     // tests the values in the form, saved or not
-    const s = cleanSettings(d.s);
+    let s = cleanSettings(d.s);
     const lines = [];
     if (!serverHostOf(s)) return { ok: true, lines: [{ ok: false, t: "Enter your server's IP or name first, e.g. 192.168.1.10" }] };
-    const reach = await serverReachable(s);
+    const reach = await serverReachable(s, 4, getServices(false, false));
     lines.push(reach
-      ? { ok: true, t: `Server: reachable (${reach} answered)` }
-      : { ok: false, t: `Server: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)` });
+      ? { ok: true, t: `Main server address: reachable (${reach} answered)` }
+      : { ok: false, t: `Main server address: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)` });
+    // Failover: the failover address is tested too; with the main address down, the other tests use it
+    if (s.failover && !s.failoverHost) lines.push({ ok: false, t: "Failover: enter the failover server address, or switch Failover off" });
+    else if (failoverReady(s)) {
+      const fo = viaFailover(s);
+      const foR = await serverReachable(fo, 4, getServices(false, true));
+      lines.push(foR
+        ? { ok: true, t: `Failover server address: reachable (${foR} answered)` }
+        : { ok: false, t: `Failover server address: nothing answered at ${s.failoverHost} (fine if you're away from that network)` });
+      if (!reach && foR) s = fo;
+    }
     if (s.monitoring) {
       const t0 = Date.now();
       try {
@@ -1435,7 +1516,9 @@ async function settingsOp(d) {
     const user = String(d.u || "").trim();
     const pass = String(d.p || "");
     if (!user || !pass) return { ok: false, error: "Enter a username and a password." };
-    const s = cleanSettings(d.s);
+    const s0 = cleanSettings(d.s);
+    // checked over the address the server is reached over right now (main or failover)
+    const s = onFailover() && failoverReady(s0) && serverHostOf(s0).toLowerCase() === serverHostOf(SAVED).toLowerCase() ? viaFailover(s0) : s0;
     const base = platformBase(P, s);
     const r = await DRIVERS[P](null, user, pass, base, s);
     if (!r.ok) {
@@ -1643,7 +1726,16 @@ async function refreshLogos(wv) {
   logoBusy = false;
 }
 
+// A button from the add / edit form. An empty address follows the server's (main) address (auto);
+// addr2 is the failover address (only with Failover on; empty = the server's failover address).
 function makeCustom(d) {
+  const auto = !String(d.addr || "").trim();
+  const item = { ...buildCustom({ ...d, addr: auto ? serverHostOf(SAVED) || "localhost" : d.addr }), auto };
+  item.url2 = failoverReady(SAVED) && String(d.addr2 || "").trim() ? buildCustom({ ...d, addr: d.addr2 }).url : "";
+  return item;
+}
+
+function buildCustom(d) {
   let addr = String(d.addr).trim();
   const m = addr.match(/^(https?):\/\//i);
   const scheme = m ? m[1].toLowerCase() : d.scheme === "https" ? "https" : "http";
@@ -1965,7 +2057,7 @@ async function reachProbe(url, timeout) {
 // the server system's own address (Reboot / Shut down), Glances when Monitoring is on, and your service
 // buttons on that host. Any answer, even an error page, counts. Returns what answered first, or "" for none.
 const REACH_SECONDS = 10; // how often the dashboard checks
-async function serverReachable(s = SET, timeout = 4) {
+async function serverReachable(s = SET, timeout = 4, services) {
   const host = serverHostOf(s);
   if (!host) return "";
   // the server address from Settings first (with its port), then the usual web ports
@@ -1973,7 +2065,7 @@ async function serverReachable(s = SET, timeout = 4) {
   if (PLATFORMS[s.platform]) urls.add(platformBase(s.platform, s) + "/");
   if (s.monitoring) urls.add(glancesUrl(s) + "/");
   try {
-    for (const sv of getServices(false)) if (hostOf(sv.url) === host && urls.size < 12) urls.add(sv.url);
+    for (const sv of services || getServices(false)) if (hostOf(sv.url) === host && urls.size < 12) urls.add(sv.url);
   } catch (e) {}
   const label = (u) => (u.match(/^https?:\/\/[^\/]+/i) || [u])[0].replace(/^https?:\/\//i, "");
   return new Promise((resolve) => {
@@ -1985,6 +2077,36 @@ async function serverReachable(s = SET, timeout = 4) {
       });
     }
   });
+}
+
+// ---------- Main / failover address ----------
+// Asks the main address and (with Failover on) the failover address at the same time. The main address wins
+// whenever it answers; the failover address is used only when the main one doesn't. The answer is kept in
+// ROUTE and SET is switched to match, so the buttons, Glances and Reboot / Shut down use the address that
+// answered. Returns { failover, answered, changed }.
+async function resolveRoute(s = SAVED, timeout = 4) {
+  const id = CUR;
+  const before = onFailover(s, id);
+  if (!failoverReady(s)) {
+    ROUTE[id] = false;
+    const answered = await serverReachable(s, timeout, getServices(false, false));
+    return { failover: false, answered, changed: before };
+  }
+  const foP = serverReachable(viaFailover(s), timeout, getServices(false, true)).catch(() => "");
+  const main = await serverReachable(s, timeout, getServices(false, false)).catch(() => "");
+  let r;
+  if (main) {
+    ROUTE[id] = false;
+    r = { failover: false, answered: main };
+  } else {
+    const fo = await foP;
+    // nothing answers: stay on the address used last, so the buttons don't jump back and forth
+    if (fo) ROUTE[id] = true;
+    r = { failover: !!fo, answered: fo };
+  }
+  r.changed = onFailover(s, id) !== before;
+  if (id === CUR) SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
+  return r;
 }
 
 // ---------- Temperatures (from the Glances sensors plugin) ----------
@@ -2314,7 +2436,9 @@ async function buildWidget() {
   // everything runs side by side: is the server reachable, the buttons' checks and (with Monitoring) the stats.
   // Without Monitoring the widget shows buttons instead of gauges (medium: 2 rows; small: a summary).
   const mon = SET.monitoring;
-  const reachP = serverReachable(SET).catch(() => "");
+  // Failover on: find out first which address answers (main or failover); the buttons and Glances then use it
+  const routeR = failoverReady(SAVED) ? await resolveRoute(SAVED).catch(() => null) : null;
+  const reachP = routeR ? Promise.resolve(routeR.answered) : serverReachable(SET).catch(() => "");
   const gridPrep = large || !mon ? prepareGrid(large ? 0 : small ? 0 : 8).catch(() => null) : null;
   let stats = null;
   if (mon) {
@@ -2467,6 +2591,7 @@ main{position:relative;min-height:100vh;padding:calc(env(safe-area-inset-top,0px
 header{display:flex;align-items:center;justify-content:space-between}
 h1{font-size:22px;font-weight:800;letter-spacing:.12em}
 .live{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.1)}
+.live .fo{font-size:9px;letter-spacing:.08em;color:#ffb454}
 .dot{width:8px;height:8px;border-radius:50%;background:#34e0a1;box-shadow:0 0 6px rgba(52,224,161,.7)}
 .dot.off{background:#ff5d73;box-shadow:0 0 6px rgba(255,93,115,.7)}
 .dot.wait{background:rgba(255,255,255,.35);box-shadow:none}
@@ -2891,7 +3016,7 @@ body:not(.splashon) #splash{display:none}
 <div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="b3"></div></div>
 <div class="topfade"></div>
 <main>
-<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span><span class="fo" id="fot" style="display:none">FAILOVER</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
 <div class="sdots intro" id="sdots" style="animation-delay:.04s"></div>
 <div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><span id="monst"></span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
 <div id="grid"></div>
@@ -2930,7 +3055,9 @@ body:not(.splashon) #splash{display:none}
 <div class="modal">
 <h2 id="at">ADD SERVICE</h2>
 <div class="f"><label>SERVICE NAME</label><div class="in"><input id="fn" type="text" placeholder="e.g. Jellyfin" maxlength="24" autocomplete="off"></div></div>
-<div class="f"><label>ADDRESS</label><div class="in"><select id="fs"><option value="http">http://</option><option value="https">https://</option></select><span class="chev">&#9662;</span><input id="fa" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="f"><label id="fal">ADDRESS</label><div class="in"><select id="fs"><option value="http">http://</option><option value="https">https://</option></select><span class="chev">&#9662;</span><input id="fa" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="f" id="ff2"><label>FAILOVER ADDRESS</label><div class="in"><input id="fa2" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="fh" id="fah"></div>
 <div class="tg"><label>USE PORT</label><div class="sw on" id="sw" onclick="togglePort()"><i></i></div></div>
 <div class="f" id="pf"><label>PORT</label><div class="in"><input id="fp" type="text" inputmode="numeric" placeholder="8080" maxlength="5"></div></div>
 <div class="f"><label>LOGO URL (OPTIONAL)</label><div class="in"><input id="fl" type="text" inputmode="url" placeholder="https://.../logo.png" autocapitalize="none" autocorrect="off" spellcheck="false" oninput="previewLogo('fl','flp')"><img id="flp" class="lp" alt="" onload="this.className='lp ok'" onerror="this.className='lp'"><button class="chip" type="button" onclick="guessLogo('fn','fl','flp','flh')">Auto</button></div><div class="fh" id="flh">Empty = emoji. Auto guesses from the name.</div></div>
@@ -3035,7 +3162,11 @@ function setStatus(ok){
   document.getElementById("dot").className = ok ? "dot" : "dot off";
   document.getElementById("st").textContent = ok ? "LIVE" : "OFFLINE";
 }
-function setReach(ok){ setStatus(!!ok); }
+// fo: reached over the failover server address (FAILOVER next to LIVE)
+function setReach(ok, fo){
+  setStatus(!!ok);
+  document.getElementById("fot").style.display = ok && fo ? "" : "none";
+}
 // Glances answering or not: shown on the Monitoring bar, separate from LIVE / OFFLINE
 function glancesState(ok){
   document.getElementById("monst").textContent = ok ? "" : "NO DATA";
@@ -3684,7 +3815,7 @@ function confirmDelServer(){
 }
 function openAddServer(){
   togglePmenu(false);
-  AS = { name: "", platform: "none", host: "", scheme: "", port: "", u: "", p: "", err: "", busy: false };
+  AS = { name: "", platform: "none", host: "", scheme: "", port: "", fo: false, foHost: "", u: "", p: "", err: "", busy: false };
   renderAddServer();
   document.getElementById("av").className = "show";
   setTimeout(function(){ var n = document.getElementById("asn"); if (n) n.focus(); }, 80);
@@ -3720,8 +3851,17 @@ function renderAddServer(){
   tl.appendChild(radioRow(typeOpts(PL), AS.platform, function(v){ AS.platform = v; AS.scheme = ""; AS.err = ""; renderAddServer(); }));
   m.appendChild(tl);
   hint(TYPE_HINT[AS.platform] || TYPE_HINT.none);
-  serverAddrField(m, "SERVER ADDRESS", { PL: PL, platform: AS.platform, host: AS.host, scheme: AS.scheme, port: AS.port,
+  serverAddrField(m, AS.fo ? "MAIN SERVER ADDRESS" : "SERVER ADDRESS", { PL: PL, platform: AS.platform, host: AS.host, scheme: AS.scheme, port: AS.port,
     onChange: function(a){ AS.host = a.host; AS.scheme = a.scheme; AS.port = a.port; } });
+  var ftg = document.createElement("div");
+  ftg.className = "tg";
+  ftg.innerHTML = "<label>FAILOVER ADDRESS (OPTIONAL)</label>";
+  ftg.appendChild(sSwitch(AS.fo, function(v){ AS.fo = v; AS.err = ""; renderAddServer(); }));
+  m.appendChild(ftg);
+  if (AS.fo) {
+    field("FAILOVER SERVER ADDRESS", AS.foHost, "e.g. 192.168.1.10", "text", function(v){ AS.foHost = v; }).inputMode = "url";
+    hint(FAILOVER_HINT);
+  }
   var pl = PL[AS.platform];
   if (pl && pl.login) {
     field(pl.login.toUpperCase() + " USERNAME", AS.u, pl.userPh || "", "text", function(v){ AS.u = v; });
@@ -3757,11 +3897,13 @@ function submitAddServer(){
   var fail = function(t){ AS.err = t; renderAddServer(); };
   if (AS.platform === "none") return fail("Pick the server type");
   if (!AS.host.trim()) return fail("Enter the server's IP or name");
+  if (AS.fo && !AS.foHost.trim()) return fail("Enter the failover server address, or switch Failover off");
+  if (AS.fo && AS.foHost.trim().toLowerCase() === AS.host.trim().toLowerCase()) return fail("The failover server address has to be different from the main server address");
   if ((AS.u.trim() && !AS.p) || (!AS.u.trim() && AS.p)) return fail("Enter both the username and the password, or neither");
   AS.err = "";
   AS.busy = true;
   renderAddServer();
-  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: AS.name.trim(), platform: AS.platform, host: AS.host.trim(), scheme: AS.scheme, port: AS.port, u: AS.u.trim(), p: AS.p, dir: 1 }));
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: AS.name.trim(), platform: AS.platform, host: AS.host.trim(), scheme: AS.scheme, port: AS.port, failoverHost: AS.fo ? AS.foHost.trim() : "", u: AS.u.trim(), p: AS.p, dir: 1 }));
 }
 // the answer to Add: added (the server is on screen now) or what went wrong (the popup stays open)
 function addServerResult(r){
@@ -3824,7 +3966,7 @@ var usePort = true;
 function applyPort(){
   document.getElementById("sw").className = usePort ? "sw on" : "sw";
   document.getElementById("pf").style.display = usePort ? "" : "none";
-  document.getElementById("fa").placeholder = usePort ? (st.host || "192.168.1.10") : "app.example.com";
+  document.getElementById("fa").placeholder = st.host || "192.168.1.10";
 }
 var onW = true;
 function applyW(){
@@ -3847,8 +3989,18 @@ function openAdd(sv){
   document.getElementById("at").textContent = sv ? "EDIT SERVICE" : "ADD SERVICE";
   document.getElementById("okb").textContent = sv ? "Save" : "Add";
   document.getElementById("fn").value = sv ? sv.name : "";
-  document.getElementById("fs").value = sv && sv.scheme === "https" ? "https" : "http";
-  document.getElementById("fa").value = sv ? sv.addr : "";
+  document.getElementById("fs").value = sv && (sv.scheme1 || sv.scheme) === "https" ? "https" : "http";
+  // an address left empty follows the server's address, so it shows as empty again here
+  document.getElementById("fa").value = sv ? (sv.addr1 != null ? sv.addr1 : sv.addr) : "";
+  // Failover on: a main and a failover address (both may stay empty: the server's own addresses)
+  var fo = st.failover || {}, mh = st.host || "192.168.1.10";
+  document.getElementById("fal").textContent = fo.on ? "MAIN ADDRESS" : "ADDRESS";
+  document.getElementById("ff2").style.display = fo.on ? "" : "none";
+  document.getElementById("fa2").value = sv && fo.on ? sv.addr2 || "" : "";
+  document.getElementById("fa2").placeholder = fo.host || "";
+  document.getElementById("fah").textContent = fo.on
+    ? "Leave both empty to use the server's main address (" + mh + ") and failover address (" + fo.host + "). The button opens the address the server is reached over right now, with the port below."
+    : "Leave empty to use the server's address (" + mh + ").";
   document.getElementById("fp").value = sv && sv.port ? sv.port : "";
   document.getElementById("fl").value = sv && sv.logo ? sv.logo : "";
   document.getElementById("flh").textContent = "Empty = emoji. Auto guesses from the name.";
@@ -3869,10 +4021,11 @@ function submitAdd(){
   var sc = document.getElementById("fs").value;
   var p = usePort ? document.getElementById("fp").value.replace(/[^0-9]/g, "") : "";
   var lu = document.getElementById("fl").value.trim();
-  if (!n || !a) { document.getElementById("er").textContent = "Enter a name and an address"; return; }
+  var a2 = (st.failover || {}).on ? document.getElementById("fa2").value.trim() : "";
+  if (!n) { document.getElementById("er").textContent = "Enter a name"; return; }
   if (lu && !/^https?:\\/\\//i.test(lu)) { document.getElementById("er").textContent = "Logo URL must start with http:// or https://"; return; }
   closeAdd();
-  location.href = "add://go?d=" + encodeURIComponent(JSON.stringify({ id: editId, name: n, scheme: sc, addr: a, port: p, onWidget: onW, logo: lu }));
+  location.href = "add://go?d=" + encodeURIComponent(JSON.stringify({ id: editId, name: n, scheme: sc, addr: a, addr2: a2, port: p, onWidget: onW, logo: lu }));
 }
 var lpT = {};
 function previewLogo(uid, iid){
@@ -4290,6 +4443,7 @@ function addrHint(PL, P){
     : "";
   return "Pick http or https, then type the IP or name, plus a port if it isn't the usual one (e.g. 192.168.1.10:90)." + usual + " LIVE / OFFLINE checks this address, Reboot / Shut down use it, and Glances is looked for on it. Use your VPN address to reach it away from home.";
 }
+var FAILOVER_HINT = "Used when the main server address doesn't answer (e.g. the VPN is down): -board then connects over this address, with the same http / https and port. The main address is always tried first, and used again as soon as it answers. Your buttons follow the address that answers.";
 // The one server address field: http / https list + IP or name with an optional port.
 // o: { PL, platform, host, scheme ("" = the usual one), port, onChange({ host, scheme, port }) }
 function serverAddrField(parent, label, o){
@@ -4513,9 +4667,21 @@ function sRender(){
   var tf = sLabel(c, "SERVER TYPE");
   tf.appendChild(radioRow(typeOpts(PL), P, function(v){ f.platform = v; sRender(); }));
   sHint(c, TYPE_HINT[P] || TYPE_HINT.none);
-  serverAddrField(c, "SERVER ADDRESS", { PL: PL, platform: P, host: f.serverHost, scheme: f.serverScheme, port: f.serverPort,
+  serverAddrField(c, f.failover ? "MAIN SERVER ADDRESS" : "SERVER ADDRESS", { PL: PL, platform: P, host: f.serverHost, scheme: f.serverScheme, port: f.serverPort,
     onChange: function(a){ f.serverHost = a.host; f.serverScheme = a.scheme; f.serverPort = a.port; } });
   sHint(c, addrHint(PL, P));
+  // Failover: a second address for this server, tried when the main one doesn't answer
+  var ftg = document.createElement("div");
+  ftg.className = "tg";
+  ftg.innerHTML = "<label>FAILOVER ADDRESS (OPTIONAL)</label>";
+  ftg.appendChild(sSwitch(!!f.failover, function(v){ f.failover = v; sRender(); }));
+  c.appendChild(ftg);
+  if (f.failover) {
+    var fof = sLabel(c, "FAILOVER SERVER ADDRESS"), fox = sInputEl(f.failoverHost || "", "e.g. 192.168.1.10", "url");
+    fox.i.oninput = function(){ f.failoverHost = fox.i.value.trim(); };
+    fof.appendChild(fox.w);
+    sHint(c, FAILOVER_HINT);
+  } else sHint(c, "On: a second address for this server, used when the main server address doesn't answer.");
   // an older separate address for the server system on another host (still used until it's cleared)
   if (P !== "none" && f[PL[P].url]) {
     var ov = sRow(c, "Reboot / Shut down use " + f[PL[P].url], "A separate address from an older version of -board");
@@ -4823,6 +4989,8 @@ function saveSettings(){
     if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
   }
   if (!String(f.serverHost || "").trim()) { sEl("serr").textContent = "Enter your server's IP or name (Settings > Server)"; return; }
+  if (f.failover && !String(f.failoverHost || "").trim()) { sEl("serr").textContent = "Enter the failover server address, or switch Failover off"; return; }
+  if (f.failover && String(f.failoverHost).trim().toLowerCase() === String(f.serverHost).trim().toLowerCase()) { sEl("serr").textContent = "The failover server address has to be different from the main server address"; return; }
   if (f.baseUrl && !/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
   var urls = [];
   for (i = 0; i < urls.length; i++) {
@@ -4979,10 +5147,10 @@ async function showLiveDashboard(openStackId) {
           const item = makeCustom(d);
           let id = d.id;
           if (d.id && String(d.id).startsWith("b:")) {
-            data.edits[d.id] = { name: item.name, port: item.port, url: item.url, logo: item.logo };
+            data.edits[d.id] = { name: item.name, port: item.port, url: item.url, logo: item.logo, auto: item.auto, url2: item.url2 };
           } else if (d.id) {
             const i = data.custom.findIndex((c) => c.id === d.id);
-            if (i >= 0) data.custom[i] = { ...data.custom[i], name: item.name, port: item.port, url: item.url, logo: item.logo };
+            if (i >= 0) data.custom[i] = { ...data.custom[i], name: item.name, port: item.port, url: item.url, logo: item.logo, auto: item.auto, url2: item.url2 };
           } else {
             item.id = "c:" + Date.now();
             id = item.id;
@@ -5140,20 +5308,28 @@ async function showLiveDashboard(openStackId) {
           else if (d.act === "add") {
             // the new server's address and type; the login (if given) is checked before the server is added
             const own = cleanSettings({
-              ...SET, serverHost: d.host, serverScheme: d.scheme, serverPort: d.port, platform: d.platform || "none",
+              ...SAVED, serverHost: d.host, serverScheme: d.scheme, serverPort: d.port, platform: d.platform || "none",
+              failover: !!d.failoverHost, failoverHost: d.failoverHost || "",
               proxmoxNode: "", baseUrl: "", username: "", diskMounts: [], networkInterface: "",
               ...Object.fromEntries(PLATFORM_KEYS.map((k) => [PLATFORMS[k].url, ""])),
             });
             const withLogin = !!(DRIVERS[own.platform] && d.u && d.p);
             if (withLogin) {
-              const r = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, own), own);
+              let r = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, own), own);
+              // the main address can't be reached: check the login over the failover address
+              if (!r.ok && r.net && failoverReady(own)) {
+                const fo = viaFailover(own);
+                const r2 = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, fo), fo);
+                if (r2.ok || !r2.net) r = r2;
+              }
               if (!r.ok) {
                 const error = (r.msg || "The login didn't work.") + (r.net ? " Check the address, or add the server without the login and enter it later." : "");
                 await wv.evaluateJavaScript(`addServerResult(${JSON.stringify({ ok: false, error })})`, false);
                 return;
               }
             }
-            const id = addServer(d.name, { serverHost: own.serverHost, serverScheme: own.serverScheme, serverPort: own.serverPort, platform: own.platform });
+            const id = addServer(d.name, { serverHost: own.serverHost, serverScheme: own.serverScheme, serverPort: own.serverPort, platform: own.platform,
+              failover: own.failover, failoverHost: own.failoverHost });
             if (withLogin) {
               Keychain.set(loginKeys(own.platform, id).user, d.u);
               Keychain.set(loginKeys(own.platform, id).pass, d.p);
@@ -5211,19 +5387,33 @@ async function showLiveDashboard(openStackId) {
       await sleep(1000);
       continue;
     }
-    // a changed address is checked straight away
-    const rk = serverUrlOf(SET) + "|" + SET.platform + "|" + SET.monitoring + "|" + SET.baseUrl;
+    // a changed address is checked straight away. With Failover on, this also picks the address to use:
+    // the main one, or the failover one if only it answers.
+    const rk = serverUrlOf(SAVED) + "|" + SAVED.platform + "|" + SAVED.monitoring + "|" + SAVED.baseUrl + "|" + (failoverReady(SAVED) ? SAVED.failoverHost : "");
     if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > REACH_SECONDS * 1000)) {
       reachBusy = true;
+      const first = rk !== reachFor;
       reachFor = rk;
       const g = GEN;
-      serverReachable(SET)
-        .then((r) => (g === GEN ? wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r)})`, false) : null))
+      const check = resolveRoute(SAVED)
+        .then(async (r) => {
+          if (g !== GEN) return;
+          if (r.changed) {
+            // the buttons, Glances and Reboot / Shut down follow the address that answered
+            fsCache = null;
+            statusDirty = true;
+            await pushServices(wv);
+            await wv.evaluateJavaScript(`toast(${JSON.stringify(r.failover ? `Main address not answering: connected over the failover address (${SAVED.failoverHost})` : "Connected over the main address again")}, 3500)`, false);
+          }
+          await wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r.answered)}, ${JSON.stringify(onFailover())})`, false);
+        })
         .catch(() => {})
         .then(() => {
           reachBusy = false;
           lastReach = Date.now();
         });
+      // with Failover on, the first check decides the address before Glances and the buttons are asked
+      if (first && failoverReady(SAVED)) await check;
     }
     // Monitoring off: no requests to Glances at all
     if (SET.monitoring) {
