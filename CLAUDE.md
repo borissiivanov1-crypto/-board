@@ -4,13 +4,13 @@
 - **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
-  **The latest is `android-1.5/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
+  **The latest is `android-1.6/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
   `board-android-source/android/...` and the manual and README).
 
 ## How the user works
 - Requests come as bullet lists of fixes, ending with "build me the new source code and apk file as vX.Y and update
   the android user manual and send them here". For that:
-  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.5 = versionCode 6);
+  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.6 = versionCode 7);
   2. make the changes, build, run the unit tests;
   3. update the manual (add the new version's items to the "What's new in 1.3 to X.Y" section, set the date/version
      line under the title, fix every section the change touches) and the README's "New in Android X.Y" section;
