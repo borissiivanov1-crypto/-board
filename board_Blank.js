@@ -356,13 +356,93 @@ function dataPath() {
 
 // The data file is read from storage once per run and kept in memory (saveData updates the copy).
 // loadData still returns a fresh object every time, so callers can change it freely.
-function readDataFile() {
-  if (dataRaw === null) {
-    const fm = FileManager.local();
-    const p = dataPath();
-    dataRaw = fm.fileExists(p) ? fm.readString(p) || "" : "";
+// A file that can't be read is never treated as a fresh install, and never saved over:
+//  - damaged (e.g. the phone switched off mid-save): the last good copy (board-data.json.bak) is used,
+//    and the damaged file is kept as board-data.damaged-<time>.json;
+//  - missing, with a complete copy left from a save that was cut short: that copy is used;
+//  - a storage error while reading: nothing is saved this run, so the file stays as it is.
+let LOAD_NOTE = null;
+let DATA_READONLY = false;
+
+function validData(raw) {
+  if (!raw || !String(raw).trim()) return false;
+  try {
+    const v = JSON.parse(raw);
+    return typeof v === "object" && v !== null;
+  } catch (e) {
+    return false;
   }
-  return dataRaw;
+}
+
+function readValidFile(fm, p) {
+  if (!fm.fileExists(p)) return null;
+  const raw = fm.readString(p);
+  return validData(raw) ? raw : null;
+}
+
+function readDataFile() {
+  if (dataRaw !== null) return dataRaw;
+  const fm = FileManager.local();
+  const p = dataPath();
+  let raw = "";
+  let restore = null;
+  try {
+    if (!fm.fileExists(p)) {
+      restore = readValidFile(fm, p + ".tmp") || readValidFile(fm, p + ".bak");
+      if (restore) LOAD_NOTE = "Your settings were restored from the backup copy.";
+    } else {
+      const main = readValidFile(fm, p);
+      if (main) raw = main;
+      else {
+        let bak = null;
+        try { bak = readValidFile(fm, p + ".bak"); } catch (e) {}
+        const keep = fm.joinPath(fm.documentsDirectory(), "board-data.damaged-" + Date.now() + ".json");
+        try {
+          fm.move(p, keep);
+        } catch (e) {
+          // it can't be moved aside: leave it alone and save nothing over it
+          DATA_READONLY = true;
+          raw = bak || "";
+          LOAD_NOTE = "The settings file is damaged and couldn't be moved aside, so changes won't be saved this time.";
+        }
+        if (!DATA_READONLY) {
+          if (bak) {
+            restore = bak;
+            LOAD_NOTE = "The settings file was damaged, so the last good copy was restored. The damaged file was kept as " + fm.fileName(keep, true) + ".";
+          } else {
+            LOAD_NOTE = "The settings file was damaged and there was no backup copy. It was kept as " + fm.fileName(keep, true) + ", and -board starts empty.";
+          }
+        }
+      }
+    }
+  } catch (e) {
+    DATA_READONLY = true;
+    LOAD_NOTE = "Your settings couldn't be read (" + (e && e.message ? e.message : "storage error") + "). Changes won't be saved this run, so nothing is lost.";
+  }
+  if (restore) {
+    raw = restore;
+    try { safeWrite(fm, p, restore); } catch (e) { DATA_READONLY = true; }
+  }
+  try { if (fm.fileExists(p + ".tmp")) fm.remove(p + ".tmp"); } catch (e) {}
+  dataRaw = raw;
+  return raw;
+}
+
+// Saves without ever overwriting the file in place: the new text goes to .tmp (and is read back to check it's
+// complete), the current file is copied to .bak, then .tmp replaces the file. If the script dies at any point,
+// either the file, the .tmp or the .bak copy is complete.
+function safeWrite(fm, p, raw) {
+  const tmp = p + ".tmp";
+  const bak = p + ".bak";
+  if (fm.fileExists(tmp)) fm.remove(tmp);
+  fm.writeString(tmp, raw);
+  if (fm.readString(tmp) !== raw) throw new Error("The settings couldn't be written completely");
+  if (fm.fileExists(p)) {
+    if (fm.fileExists(bak)) fm.remove(bak);
+    fm.copy(p, bak);
+    fm.remove(p);
+  }
+  fm.move(tmp, p);
 }
 
 // ---------- Servers ----------
@@ -401,7 +481,7 @@ function readStore() {
 
 function writeStore(st) {
   const raw = JSON.stringify(st);
-  FileManager.local().writeString(dataPath(), raw);
+  if (!DATA_READONLY) safeWrite(FileManager.local(), dataPath(), raw);
   dataRaw = raw;
 }
 
@@ -5257,6 +5337,15 @@ if (config.runsInWidget) {
 } else if (PREVIEW_WIDGET_IN_APP) {
   await (await buildWidget()).presentMedium();
 } else {
+  // the settings file had to be restored (or couldn't be read): say so once
+  readDataFile();
+  if (LOAD_NOTE) {
+    const a = new Alert();
+    a.title = "-board";
+    a.message = LOAD_NOTE;
+    a.addAction("OK");
+    await a.presentAlert();
+  }
   await showLiveDashboard((args.queryParameters || {}).stack || null);
 }
 Script.complete();
