@@ -4,13 +4,13 @@
 - **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
-  **The latest is `android-1.6/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
+  **The latest is `android-1.7/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
   `board-android-source/android/...` and the manual and README).
 
 ## How the user works
 - Requests come as bullet lists of fixes, ending with "build me the new source code and apk file as vX.Y and update
   the android user manual and send them here". For that:
-  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.6 = versionCode 7);
+  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.7 = versionCode 8);
   2. make the changes, build, run the unit tests;
   3. update the manual (add the new version's items to the "What's new in 1.3 to X.Y" section, set the date/version
      line under the title, fix every section the change touches) and the README's "New in Android X.Y" section;
@@ -53,7 +53,9 @@
 - `SettingsForm.kt`: form state, `validateForm` (invalid values are reverted to saved ones and listed as problems),
   `TestLine`/`Fix` (one-tap fixes), page names.
 - `ui/SettingsSheet.kt`: pages This server (Server, Monitoring, Test connection, Delete server), Widget, Buttons,
-  Appearance, Backup, About. Everything saves as it changes; "Discard changes?" only for values that can't be saved.
+  Appearance, Backup, About. Everything saves as it changes; header has Cancel (`cancelSettings`: puts back the settings
+  as they were at open) and Save; "Discard changes?" only for values that can't be saved. Popups (`Modal`) ignore taps
+  outside since 1.7: they close with their own buttons or Back.
 - `Store.kt` + `DataFile.kt`: `board-data.json`, saved via .tmp + .bak + atomic rename; a damaged file is restored
   from the backup and kept aside, never saved over (`Store.loadNote`, `Store.readOnly`).
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
