@@ -4,13 +4,13 @@
 - **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
-  **The latest is `android-2.0/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
+  **The latest is `android-2.1/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
   `board-android-source/android/...` and the manual and README).
 
 ## How the user works
 - Requests come as bullet lists of fixes, ending with "build me the new source code and apk file as vX.Y and update
   the android user manual and send them here". For that:
-  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (2.0 = versionCode 11);
+  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (2.1 = versionCode 12);
   2. make the changes, build, run the unit tests;
   3. update the manual (add the new version's items to the "What's new in 1.3 to X.Y" section, set the date/version
      line under the title, fix every section the change touches) and the README's "New in Android X.Y" section;
@@ -58,6 +58,8 @@
   outside since 1.7: they close with their own buttons or Back.
 - `Store.kt` + `DataFile.kt`: `board-data.json`, saved via .tmp + .bak + atomic rename; a damaged file is restored
   from the backup and kept aside, never saved over (`Store.loadNote`, `Store.readOnly`).
+- `Certs.kt` (2.1): trust on first use for https. `PinTrust` (system trust + name, else `CertStore.check` per
+  host:port), `CertChanged` -> `CertStore.asked` -> `CertAskDialog` in `ui/App.kt`. The checks client keeps trust-all.
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
@@ -67,7 +69,7 @@
 - `ui/Look.kt`: press feedback (`pressScale`, `squish`, `glint`): Liquid Glass squish, Classic shrink + dim.
 - `ui/Components.kt`: `Modal` (Back / scrim, `onBack`, `scrollKey`), `DiscardAsk`, `Haptic`.
 - Manifest: `MainActivity` handles configuration changes itself, so rotation / dark mode / font size don't recreate it.
-- Unit tests in `app/src/test/java/app/board` (DataFileTest, NetTest, FailoverTest, LogicTest, ZimaTest, CtrTest).
+- Unit tests in `app/src/test/java/app/board` (DataFileTest, NetTest, FailoverTest, LogicTest, ZimaTest, CtrTest, CertTest).
 
 ## iOS script
 - `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
