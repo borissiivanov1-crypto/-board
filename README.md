@@ -3,7 +3,40 @@
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
 The whole app is one file: `board_Blank.js`.
 
+**iPhone app (work in progress):** a real app (Swift, with a home screen widget) to install for free with SideStore or
+AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
+
+**Android:** a native version (Kotlin + Jetpack Compose) is in [`android/`](android/). Install
+[`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
+[Android user manual](board_User_Manual_Android.docx). See also [Android app](#android-app) below.
+
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
+
+## New in the Scriptable script 2.2 (the same features as Android 2.2)
+
+- **Containers on every server type** (hold a button): Start, Stop (tap twice), Restart and Logs for ZimaOS apps,
+  Proxmox LXC containers and VMs (plus **Force stop**), TrueNAS apps, and Docker on Unraid, Synology, OpenMediaVault and
+  Linux. One driver per type in the script (`pveList`, `tnList`, `synoList`, `unraidList`, `helperList`); `ctrMatch` finds
+  a button's container by hand-picked `ctr`, the guest's address, the published port or the name. A missing login,
+  helper or Monitoring shows a setup button that opens *Settings > This server* at that spot.
+- **Pick from your server** in the + popup (*Pick from ZimaOS apps / Proxmox / TrueNAS apps / … containers*): Select all,
+  running ones first, address + port + logo filled in, repeated names numbered (Sonarr 2).
+- **Auto logo** (`autoLogo`): Auto and Pick from use the same search: dashboard-icons first through its weekly file
+  list (`tree.json`, `metadata.json` aliases, kept as `board-logo-index.json`) with loose matching; the server's own
+  icon (TrueNAS / ZimaOS) only when there's none.
+- **ZimaOS:** app controls, logs, App Store updates (the ↑ N updates chip), CPU power draw and drive health.
+- **Settings in pages** (This server, Widget, Buttons, Appearance, Backup, About); Test connection at the bottom of
+  This server with a one-tap fix under each red line.
+- **Dashboard:** pull to refresh, one-line folded Monitoring bar, dimmed old figures with "updated 40 s ago",
+  REBOOTING… until the server is back, Glances asked first (no LIVE checks while it answers), popups close only with
+  their own buttons, Classic press feedback. The widget takes the dashboard's latest figures when you close it
+  (`board-snapshot.json`, used for 3 minutes).
+- **Helper v3** (Linux and OpenMediaVault, the same as Android's): adds `/containers` endpoints and reads port ranges.
+  Run *Copy setup command* again once.
+- **Failover address** (merged from the earlier failover work).
+- Not ported, because Scriptable can't: remembering self-signed certificates (trust on first use), haptic feedback,
+  and saving Settings as you type (Save / Cancel as before).
+- The script's page talks to Scriptable over `rpc://` (`rpcOp` / `rpcReply`); the new page code is `LIVE_EXTRA`.
 
 ## Works with
 
@@ -46,6 +79,10 @@ order (name, server type, server address, and the login if the type uses one, ch
   (shown under "Shared by all servers" in every settings window).
 - A **widget** shows one server: long-press it, **Edit Widget**, and type the server's name or number (`1`, `2` ...)
   under **Parameter**. Empty = the first server. Tapping the widget opens the dashboard on that server.
+- **Failover address** (optional, per server, in Settings > Server and in Add server): a main server address plus a
+  failover server address (e.g. VPN address + home network IP). When the main address doesn't answer, -board connects
+  over the failover one (LIVE shows FAILOVER); buttons, Glances and Reboot / Shut down follow. A button whose address
+  is left empty uses the server's address(es).
 - **Delete server** is at the very bottom of each server's settings and asks to confirm first (your only server can't be deleted).
   Export / import covers every server.
 
@@ -67,16 +104,17 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 ## 2. Install the script
 
 1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
-2. Run it. Settings opens: under **Server**, give it a name, pick your **server type**, and type the **server address**:
+2. Run it. Settings opens on **This server**: give it a name, pick your **server type**, and type the **server address**:
    an http / https list plus the IP or name, with a port only if it isn't the usual one for that type
    (e.g. `192.168.1.10` or `192.168.1.10:90`). This one address is used for LIVE / OFFLINE, Reboot / Shut down and logins.
    Tap **Enter login** if the type uses one. Under **Monitoring**, leave the Glances address empty if Glances runs on
-   the same server on port 61208, or turn Monitoring off if you don't use Glances. Tap **Test connection**, then **Save**.
+   the same server on port 61208, or turn Monitoring off if you don't use Glances. Tap **Test connection** at the bottom of
+   the page, then **Save**.
 3. Add a Scriptable widget to your home screen and pick this script.
 
 ## Looks
 
-*Settings > Theme & look* has two optional extras, both off by default:
+*Settings > Appearance* has two optional extras, both off by default:
 
 - **Style**: *Classic* (the plain -board look) or *Liquid Glass* (iOS 26 style glass cards with a bright rim,
   a third background glow, springy animation on presses, menus, sheets and drags, and glass rings and pills on the widget).
@@ -100,10 +138,92 @@ Themes, accent colours, glow, corners, font and button size work with both style
   - stores the random secret key in `/etc/board-power.key` (readable by root only),
   - starts the `board-power` systemd service on port 61209 and opens that port in ufw / firewalld if they're active.
 
-  The helper only answers `/health`, `/reboot` and `/shutdown`, and only with the right key. Keep it on your LAN or VPN.
+  The helper only answers `/health`, `/reboot`, `/shutdown` and the `/containers` endpoints (list, logs, start / stop /
+  restart Docker or Podman containers), and only with the right key. Keep it on your LAN or VPN.
   To remove it:
 
   ```sh
   sudo systemctl disable --now board-power
   sudo rm /usr/local/bin/board-power /etc/board-power.key /etc/systemd/system/board-power.service
   ```
+
+## Android app
+
+[`android/`](android/) is a native Android port of the script (Kotlin, Jetpack Compose, a Jetpack Glance home screen widget)
+with the same features, logic and look: several servers, LIVE / OFFLINE, Glances monitoring with the enlarged cards
+(history graph, per-core load, top processes, drives, temperatures), service buttons with up/down dots, stacks,
+drag to rearrange, Widget layout, Reboot / Shut down for ZimaOS, Proxmox, TrueNAS, Unraid, Synology, OpenMediaVault
+and Linux (the same helper setup command), every theme and accent, Classic and Liquid Glass, the startup animation,
+and Settings with Test connection.
+
+Full guide: the [Android user manual](board_User_Manual_Android.docx) (Word document).
+
+### ZimaOS integration (Android and the Scriptable script, ZimaOS servers only)
+
+Only on servers whose type is **ZimaOS**, and only with the ZimaOS login saved (*Settings > Server > Enter login*).
+Other server types don't show any of this.
+
+- **Start, stop and restart apps:** hold a button that points at a ZimaOS app. The menu shows whether it's running and
+  gives **Start** or **Stop** (Stop asks for a second tap), plus **Restart**, **Logs**, and **Update** when the App Store
+  has a newer version. Buttons are linked to apps automatically by port (a button on the server's address and the port
+  of exactly one app), so Jellyfin, Immich and the others work with no setup. Apps are checked once a minute.
+- **App logs:** the last 300 lines in a scrollable popup with a **Refresh** button.
+- **App updates:** when the App Store has newer versions, a **↑ 2 updates** chip appears next to *Widget layout*.
+  It opens a list with an **Update** button per app. With nothing to update it stays hidden.
+- **Add apps from ZimaOS:** the **+** popup has **Pick from ZimaOS apps** (with the login saved), which lists everything installed. Apps that
+  already have a button are greyed out; the rest are added with their real address and icon.
+- **CPU power draw:** the enlarged CPU card shows watts (the same figure ZimaOS shows; it needs a CPU with Intel RAPL
+  and appears from the second reading on). If Glances has no CPU temperature, ZimaOS's is used.
+- **Drive health:** the enlarged storage card shows each drive's health check (**OK** / **FAILING**) and temperature
+  from ZimaOS, and drives without a Glances temperature get ZimaOS's, so no `drivetemp` module is needed.
+
+These work the same way as in the Scriptable script's ZimaOS integration, and buttons added from ZimaOS stay linked
+when settings are exported from one to the other.
+
+**Install:** copy [`android/dist/board.apk`](android/dist/board.apk) to the phone and open it (allow installing from
+that source when asked). Android 8.0 or newer. The APK is signed with a development key, so it installs
+directly but isn't from the Play Store.
+
+Differences from the iPhone version:
+- **Settings move between the two.** *Settings > Data > Export* on either one copies the same format, and *Import*
+  on the other reads it (all servers, buttons, stacks and layout; passwords stay on each phone).
+- Logins are stored encrypted on the phone (Android Keystore) instead of the iOS Keychain.
+- **Widget:** add it from the home screen's widget list. It asks which server to show (the Scriptable Parameter);
+  long-press it and pick *Reconfigure* to change it on Android 12 and newer. Resize it for the small, medium or
+  large layout. Android refreshes widgets at most every 15 minutes in the background; opening -board refreshes them too.
+- Self-signed https certificates: Android remembers each server's certificate the first time and asks if it changes;
+  the script accepts them for the server systems (Scriptable can't check a certificate).
+- The *Rounded* font option uses Android's sans-serif (SF Pro Rounded is Apple-only).
+
+**Build it yourself:** with JDK 17+ and the Android SDK (platform 35), run `./gradlew assembleRelease` in `android/`;
+the APK is `app/build/outputs/apk/release/app-release.apk`. `./gradlew testReleaseUnitTest` runs the unit tests.
+
+## iPhone app (SideStore / AltStore)
+
+> **Work in progress:** not compiled or tested yet, so there is no build to install. See [`ios/README.md`](ios/README.md).
+
+[`ios/`](ios/) is a native iPhone app version of the script. Its dashboard is the script's own page (so it looks and
+behaves exactly the same), backed by a Swift port of the script's logic, plus a WidgetKit home screen widget. It needs
+no Scriptable and no paid Apple account: you install it with SideStore or AltStore, which sign it with your own free
+Apple ID.
+
+GitHub Actions builds it on every change ([workflow](.github/workflows/ios.yml)) and publishes the latest build to the
+[`ios-latest` release](../../releases/tag/ios-latest), together with a SideStore / AltStore source.
+
+**Install:**
+1. Install **SideStore** (or **AltStore**) on the iPhone, following its own setup guide (it needs a computer once, for
+   the first install).
+2. In SideStore, open **Sources**, tap **+** and add this source:
+   `https://github.com/borissiivanov1-crypto/-board/releases/download/ios-latest/apps.json`
+3. Open the source and install **-board**. On iOS 16 and newer, turn on **Developer Mode** when iOS asks
+   (Settings > Privacy & Security > Developer Mode) and restart.
+4. Open -board: Settings opens by itself on first run, as in the script. To bring your setup over from Scriptable,
+   use *Settings > Data > Export settings* there and *Import settings* in the app.
+5. Add the widget: hold the home screen > **Edit** > **Add Widget** > **-board**. Hold it > **Edit Widget** to pick the
+   server (name or number), as with the Scriptable widget's Parameter.
+
+**Keep it working:** with a free Apple ID an app signed this way stops opening after 7 days unless it's refreshed;
+SideStore refreshes it from the phone (open SideStore and tap **Refresh** at least once a week). New builds of -board
+show up as updates in SideStore. A free Apple ID allows only a few sideloaded apps at a time.
+
+The app needs iOS 17 or newer.

@@ -76,3 +76,11 @@
 ## iOS script
 - `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
+- Since the 2.2 port it has the same features as Android 2.2 (`BOARD_VERSION`), except trust-on-first-use
+  certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
+  WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
+  (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`
+  (`set://` Settings, `pwr://`, `rpc://` -> `rpcOp` -> `rpcReply` for apps / containers / logos / refresh); script ->
+  page: `wv.evaluateJavaScript`. Container drivers, ZimaOS, AutoLogo, `uniqueName`: the "Apps and containers" section.
+- The iOS manual writes "-board" with a plain hyphen. No phone here: check with `node --check`, and run the page in
+  Chromium with a mock Scriptable (keep such test scripts in the scratchpad, not the repo).

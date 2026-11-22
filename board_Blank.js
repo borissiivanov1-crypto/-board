@@ -32,7 +32,10 @@
 // 2. Run it. Settings opens: give the server a name, pick its type, type its address (http / https + IP or name,
 //    with a port only if it isn't the usual one, e.g. 192.168.1.10:90) and its login if asked; turn Monitoring off
 //    if you don't run Glances, tap "Test connection", then Save.
-// 3. Add your services with the + button (name, address, port; "Auto" finds a logo).
+//    Optional: switch on "Failover address" and type a second address for the same server (e.g. VPN address as the
+//    main server address, home network IP as the failover server address).
+// 3. Add your services with the + button (name, address, port; "Auto" finds a logo). Leave the address empty to
+//    use the server's address (with Failover on: its main and failover addresses).
 // 4. Add a Scriptable widget to your home screen (large size shows the buttons), long-press it,
 //    choose Edit Widget and pick this script.
 //
@@ -40,9 +43,15 @@
 // - Tap the widget to open the live dashboard. LIVE / OFFLINE shows whether anything on the server answers.
 //   The CPU / RAM / storage cards and network speed sit in the fold-away "Monitoring" panel; tap a card for
 //   details, temperatures and a history graph. Monitoring off: no panel, no gauges, no requests to Glances.
-// - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack.
+// - Press and hold a button and drag to rearrange it; hold and release to edit, delete or add it to a stack,
+//   and to Start / Stop / Restart its app, container or VM and read its logs (ZimaOS, Proxmox, TrueNAS, Unraid,
+//   Synology, OpenMediaVault and Linux). The + popup's "Pick from ..." adds them as buttons in one go.
+// - Pull the dashboard down to refresh it.
 // - Stacks group related services into one collapsible card with a combined status dot.
 // - "Widget layout" arranges the large widget separately and lets you hide buttons from it.
+// - Failover address (optional, per server): when the main server address doesn't answer (e.g. the VPN is down),
+//   -board connects over the failover server address: LIVE shows FAILOVER, and the buttons, Glances and
+//   Reboot / Shut down use that address. The main address is used again as soon as it answers.
 // - Hold the server name to rename it. Tap it for Reboot / Shut down (asks to confirm).
 // - Several servers: swipe the server name left / right to switch (the dots under it show how many and which
 //   one is on screen); swipe left past the last one, or tap +, to add a server. Each server has its own
@@ -51,7 +60,8 @@
 // - Settings > Theme & look > Style: "Classic" (default) or "Liquid Glass" (iOS 26 style glass, springy
 //   animation on every press, menu and sheet, glass rings on the widget). "Startup animation" adds a short
 //   animated logo when the dashboard opens. Both are off by default.
-// - The gear icon opens Settings: server, monitoring, widget, buttons, theme & look, export / import.
+// - The gear icon opens Settings, in pages: This server (with Test connection at the bottom), Widget, Buttons,
+//   Appearance, Backup (export / import) and About.
 //   The values in CONFIG below are only the starting defaults; Settings saves your choices on the phone.
 // - Live polling only runs while the dashboard is open, so the widget stays light on battery.
 
@@ -59,6 +69,8 @@
 const CONFIG = {
   title: "MY SERVER",
   serverHost: "",                       // your server's IP or name, e.g. "192.168.1.10" (empty = asked on first run)
+  failover: false,                      // true = also try failoverHost when serverHost doesn't answer
+  failoverHost: "",                     // failover server address: IP or name of the same server, e.g. its home network IP
   monitoring: true,                     // Monitoring panel and widget gauges from Glances; false = no Glances requests at all
   baseUrl: "",                          // Glances address; empty = the server address on port 61208
   apiVersion: 4,                        // Glances 4.x = 4, Glances 3.x = 3
@@ -115,7 +127,7 @@ let CUR = null;
 // Settings that belong to one server (everything else in Settings is shared by all servers), and the parts
 // of the data file each server has for itself (see "Servers" below)
 const SERVER_SETTING_KEYS = [
-  "serverHost", "serverScheme", "serverPort", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
+  "serverHost", "serverScheme", "serverPort", "failover", "failoverHost", "monitoring", "baseUrl", "apiVersion", "username", "platform", "zimaUrl", "proxmoxUrl", "proxmoxNode",
   "truenasUrl", "unraidUrl", "synologyUrl", "omvUrl", "helperUrl", "showPower", "diskMounts", "maxDisks",
   "networkInterface", "monitoringOpen", "monitoringFixed", "tempLimits", "liveSeconds",
 ];
@@ -152,6 +164,8 @@ const DEFAULTS = {
   serverHost: CONFIG.serverHost,
   serverScheme: "",                // "" = the usual one for the server type, or "http" / "https"
   serverPort: "",                  // "" = the usual one for the server type
+  failover: CONFIG.failover,       // Failover address on: a second address for this server
+  failoverHost: CONFIG.failoverHost, // the failover server address (uses the main address's http / https and port)
   monitoring: CONFIG.monitoring,
   baseUrl: CONFIG.baseUrl,
   apiVersion: CONFIG.apiVersion,
@@ -223,6 +237,10 @@ function cleanSettings(raw) {
     if (!out.serverPort) out.serverPort = hp[2];
   }
   if (!out.serverHost && out.baseUrl) out.serverHost = hostOf(out.baseUrl);
+  // the failover address is only an IP or name: it uses the main address's http / https and port
+  bool("failover");
+  str("failoverHost", 200);
+  out.failoverHost = out.failoverHost.replace(/^[a-z]+:\/\//i, "").replace(/[\/?#].*$/, "").replace(/^([^\[\]:]+):\d+$/, "$1");
   bool("monitoring");
   num("apiVersion", 3, 4);
   str("username", 100);
@@ -316,15 +334,49 @@ function glancesUrl(s) {
   return s.baseUrl || (h ? `http://${h}:61208` : "");
 }
 
+// ---------- Failover (main server address + failover server address) ----------
+// Failover is in use only when it's switched on and a failover address (other than the main one) is entered
+function failoverReady(s) {
+  return !!(s.failover && s.failoverHost && s.failoverHost.toLowerCase() !== serverHostOf(s).toLowerCase());
+}
+
+// An address with its host swapped (only when it is on the host `from`)
+function swapHost(url, from, to) {
+  if (!url || !from || !to) return url;
+  const m = String(url).match(/^(https?:\/\/)([^\/:]+)(.*)$/i);
+  return m && m[2].toLowerCase() === from.toLowerCase() ? m[1] + to + m[3] : url;
+}
+
+// The same settings, reached over the failover address: the server address, and the Glances and
+// Reboot / Shut down addresses that point at the main address, use the failover address instead
+function viaFailover(s) {
+  if (!failoverReady(s)) return s;
+  const main = serverHostOf(s);
+  const to = s.failoverHost;
+  const o = { ...s, serverHost: to, baseUrl: swapHost(s.baseUrl, main, to) };
+  for (const k of PLATFORM_KEYS.map((x) => PLATFORMS[x].url)) o[k] = swapHost(s[k], main, to);
+  return o;
+}
+
+// Which address each server is reached over right now (true = the failover address). Worked out again
+// by every LIVE / OFFLINE check, in the dashboard and in the widget.
+const ROUTE = {};
+function onFailover(s = SAVED, id = CUR) {
+  return failoverReady(s) && ROUTE[id] === true;
+}
+
 CUR = initialServer();
-let SET = loadSettings();
+// SAVED: the settings as saved (main server address). SET: as used right now (over the failover address
+// while only that one answers). Everything that talks to the server uses SET; Settings shows and saves SAVED.
+let SAVED = loadSettings();
+let SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
 
 // Services shown as buttons in the live dashboard.
 // Ports are defaults; edit any that differ on your server.
 // Optional fields: path ("/admin"), https (true)
 // logo: image URL for the button (emoji "icon" is the fallback). Logos come from
 // the free dashboard-icons set: https://github.com/homarr-labs/dashboard-icons
-let HOST = serverHostOf(SET) || "localhost"; // built-in buttons use the server address
+let HOST = serverHostOf(SAVED) || "localhost"; // built-in buttons use the (main) server address
 const LOGO_CDN = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
 // Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
 // You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "🎬", logo: LOGO_CDN + "jellyfin.png" }
@@ -341,8 +393,9 @@ let SERVICES = buildServices();
 
 // After Settings are saved (or imported): use the new values right away
 function applySettings() {
-  SET = loadSettings();
-  HOST = serverHostOf(SET) || "localhost";
+  SAVED = loadSettings();
+  SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
+  HOST = serverHostOf(SAVED) || "localhost";
   SERVICES = buildServices();
 }
 
@@ -362,6 +415,8 @@ function dataPath() {
 //  - missing, with a complete copy left from a save that was cut short: that copy is used;
 //  - a storage error while reading: nothing is saved this run, so the file stays as it is.
 let LOAD_NOTE = null;
+// the feature level of this script: the same as the Android app's version it matches
+const BOARD_VERSION = "2.2";
 let DATA_READONLY = false;
 
 function validData(raw) {
@@ -620,15 +675,35 @@ function sortByOrder(list, order) {
 
 // All buttons: built-in (minus deleted, with edits applied), then custom.
 // forDashboard = true applies your dashboard drag-and-drop order.
-function getServices(forDashboard) {
+// via: which address to use (true = failover, false = main, undefined = the one the server is reached over now).
+// A button whose address was left empty (auto) follows the server's address. With Failover on, a button on the
+// server's main address opens the same port on the failover address while the server is reached over it.
+function getServices(forDashboard, via) {
   const d = loadData();
+  const st = cleanSettings(d.settings);
+  const host = serverHostOf(st) || "localhost";
+  const fo = failoverReady(st);
+  const useFo = fo && (via === undefined ? ROUTE[CUR] === true : !!via);
   const base = SERVICES.filter((s) => !d.hidden.includes(s.id)).map((s) =>
     d.edits[s.id] ? { ...s, ...d.edits[s.id] } : s
   );
   const list = base.concat(d.custom).map((s) => {
-    const u = splitUrl(s.url);
+    const main = s.auto ? swapHost(s.url, splitUrl(s.url).host, host) : s.url;
+    const url2 = typeof s.url2 === "string" ? s.url2 : "";
+    const foUrl = !fo ? null : url2 || (hostOf(main).toLowerCase() === host.toLowerCase() ? swapHost(main, host, st.failoverHost) : null);
+    const url = useFo && foUrl ? foUrl : main;
+    const u = splitUrl(url);
+    const m = splitUrl(main);
+    const u2 = url2 ? splitUrl(url2) : null;
     return {
       ...s,
+      url,
+      mainUrl: main,
+      failoverUrl: foUrl,
+      // what the edit form shows: an empty box for an address that follows the server's
+      addr1: s.auto ? "" : m.host + m.path,
+      scheme1: m.scheme,
+      addr2: u2 ? u2.host + u2.path : "",
       scheme: u.scheme,
       addr: u.host + u.path,
       label: s.port ? ":" + s.port : u.host,
@@ -779,7 +854,9 @@ function getPayload() {
     cdn: LOGO_CDN,
     hasLogin: PLATFORMS[SET.platform] ? hasLogin() : false,
     title: getTitle(),
-    host: serverHostOf(SET),
+    host: serverHostOf(SAVED),
+    // Failover: on (and set up), the failover server address, and whether it's in use right now
+    failover: { on: failoverReady(SAVED), host: SAVED.failoverHost, active: onFailover() },
     servers: listServers(),
     cur: CUR,
     platforms: PLATFORMS,
@@ -788,6 +865,9 @@ function getPayload() {
       // the Reboot / Shut down menu needs a known server type
       power: SET.showPower && !!PLATFORMS[SET.platform],
       platform: SET.platform,
+      // hold menu Start / Stop / Logs and + > Pick from (ZimaOS apps, or containers on the other types)
+      ctr: ctrSupported(),
+      liveSeconds: SET.liveSeconds,
       login: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].login : null,  // name in the login popup; null = no login
       userPh: PLATFORMS[SET.platform] ? PLATFORMS[SET.platform].userPh || "" : "",
       widgetMax: SET.widgetRows * 4,
@@ -1281,16 +1361,77 @@ async function helperPower(action) {
 }
 
 // The helper: one Python 3 file (standard library only) run by systemd as root.
-// It only answers requests that carry the secret key, and only knows /health, /reboot and /shutdown.
-const HELPER_PY = `#!/usr/bin/env python3
-# board-power: lets the -board app reboot or shut down this server.
+// It only answers requests that carry the secret key: /health, /reboot, /shutdown and the /containers endpoints
+// (list, logs, start / stop / restart Docker or Podman containers). The same helper as the Android app's (v3).
+const HELPER_PY = String.raw`#!/usr/bin/env python3
+# board-power: lets the -board app reboot or shut down this server, and start / stop / restart its
+# Docker or Podman containers and show their logs.
 # Remove it with: systemctl disable --now board-power; rm /usr/local/bin/board-power /etc/board-power.key /etc/systemd/system/board-power.service
-import hmac, json, os, socket, subprocess, threading, time
+import hmac, json, os, re, shutil, socket, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, unquote, urlsplit
 
+VERSION = 3
 KEY = open("/etc/board-power.key").read().strip()
-PORT = int(os.environ.get("BOARD_POWER_PORT", "${HELPER_PORT}"))
+PORT = int(os.environ.get("BOARD_POWER_PORT", "61209"))
 CMDS = {"/reboot": ["systemctl", "reboot"], "/shutdown": ["systemctl", "poweroff"]}
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+ACTIONS = ("start", "stop", "restart")
+
+
+class Err(Exception):
+    pass
+
+
+def engine():
+    for e in ("docker", "podman"):
+        p = shutil.which(e)
+        if p:
+            return p
+    return None
+
+
+def need_engine():
+    e = engine()
+    if not e:
+        raise Err("Docker (or Podman) isn't installed on this server")
+    return e
+
+
+def containers():
+    e = need_engine()
+    r = subprocess.run([e, "ps", "-a", "--no-trunc", "--format", "{{json .}}"], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        raise Err(r.stderr.strip() or "docker ps failed")
+    out = []
+    for line in r.stdout.splitlines():
+        try:
+            j = json.loads(line)
+        except ValueError:
+            continue
+        name = j.get("Names") or ""
+        if isinstance(name, list):
+            name = name[0] if name else ""
+        name = name.split(",")[0].lstrip("/")
+        ports = j.get("Ports")
+        if isinstance(ports, list):  # podman
+            pl = [str(p.get("host_port")) for p in ports if isinstance(p, dict) and p.get("host_port")]
+        else:
+            # "0.0.0.0:8080->80/tcp" and ranges "0.0.0.0:6881-6889->6881-6889/tcp" (the range's first port)
+            pl = re.findall(r":(\d+)(?:-\d+)?->", ports or "")
+        out.append({
+            "id": name, "name": name, "state": str(j.get("State") or "").lower(),
+            "status": j.get("Status") or "", "image": j.get("Image") or "", "ports": sorted(set(pl)),
+        })
+    return out
+
+
+def name_of(part):
+    n = unquote(part)
+    if not NAME.match(n):
+        raise Err("not a container name")
+    return n
+
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, obj):
@@ -1310,21 +1451,61 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_GET(self):
-        if self.path != "/health":
+        u = urlsplit(self.path)
+        parts = [p for p in u.path.split("/") if p]
+        if u.path == "/health":
+            if self.authed():
+                e = engine()
+                self.reply(200, {"ok": True, "host": socket.gethostname(), "version": VERSION, "containers": os.path.basename(e) if e else None})
+            return
+        if parts[:1] != ["containers"] or len(parts) not in (1, 3) or (len(parts) == 3 and parts[2] != "logs"):
             return self.reply(404, {"ok": False})
-        if self.authed():
-            self.reply(200, {"ok": True, "host": socket.gethostname()})
+        if not self.authed():
+            return
+        try:
+            if len(parts) == 1:
+                return self.reply(200, {"ok": True, "containers": containers()})
+            name = name_of(parts[1])
+            try:
+                lines = max(1, min(2000, int(parse_qs(u.query).get("lines", ["300"])[0])))
+            except ValueError:
+                lines = 300
+            r = subprocess.run([need_engine(), "logs", "--tail", str(lines), name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            text = r.stdout.decode("utf-8", "replace")
+            if r.returncode:
+                raise Err(text.strip() or "docker logs failed")
+            self.reply(200, {"ok": True, "text": text})
+        except Err as e:
+            self.reply(200, {"ok": False, "error": str(e)})
+        except subprocess.TimeoutExpired:
+            self.reply(200, {"ok": False, "error": "the server took too long to answer"})
 
     def do_POST(self):
-        cmd = CMDS.get(self.path)
-        if not cmd:
+        u = urlsplit(self.path)
+        cmd = CMDS.get(u.path)
+        if cmd:
+            if self.authed():
+                self.reply(200, {"ok": True})
+                threading.Timer(1.0, subprocess.run, [cmd]).start()
+            return
+        parts = [p for p in u.path.split("/") if p]
+        if len(parts) != 3 or parts[0] != "containers" or parts[2] not in ACTIONS:
             return self.reply(404, {"ok": False})
-        if self.authed():
+        if not self.authed():
+            return
+        try:
+            r = subprocess.run([need_engine(), parts[2], name_of(parts[1])], capture_output=True, text=True, timeout=110)
+            if r.returncode:
+                raise Err(r.stderr.strip() or "docker %s failed" % parts[2])
             self.reply(200, {"ok": True})
-            threading.Timer(1.0, subprocess.run, [cmd]).start()
+        except Err as e:
+            self.reply(200, {"ok": False, "error": str(e)})
+        except subprocess.TimeoutExpired:
+            self.reply(200, {"ok": False, "error": "the container took too long to %s" % parts[2]})
 
     def log_message(self, *args):
         pass
+
 
 ThreadingHTTPServer(("", PORT), Handler).serve_forever()
 `;
@@ -1333,7 +1514,7 @@ ThreadingHTTPServer(("", PORT), Handler).serve_forever()
 // It asks for sudo once (or runs straight away when you're root, e.g. on Proxmox).
 function helperSetupScript(key, port) {
   return `$(command -v sudo) bash -c "$(cat <<'BOARD_SETUP'
-# -board power helper setup (Debian, Ubuntu, Fedora and other systemd Linux)
+# -board helper setup (Debian, Ubuntu, Fedora, OpenMediaVault and other systemd Linux)
 set -e
 if ! command -v python3 >/dev/null; then
   if command -v apt-get >/dev/null; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 </dev/null
@@ -1346,7 +1527,7 @@ ${HELPER_PY}BOARD_PY
 chmod 755 /usr/local/bin/board-power
 cat > /etc/systemd/system/board-power.service <<'BOARD_UNIT'
 [Unit]
-Description=-board power helper (reboot / shut down from the -board app)
+Description=-board helper (reboot, shut down and containers from the -board app)
 After=network-online.target
 Wants=network-online.target
 
@@ -1363,7 +1544,7 @@ systemctl enable board-power >/dev/null 2>&1
 systemctl restart board-power
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow ${port}/tcp >/dev/null; fi
 if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then firewall-cmd -q --permanent --add-port=${port}/tcp && firewall-cmd -q --reload; fi
-echo "-board power helper is running on port ${port}. Go back to -board and tap Test connection."
+echo "-board helper is running on port ${port}. Go back to -board and tap Test connection."
 BOARD_SETUP
 )"
 `;
@@ -1402,21 +1583,21 @@ async function handlePower(d) {
 // One line for "Test connection" about the Reboot / Shut down side of the chosen server type
 async function testPower(s) {
   const P = s.platform;
-  if (!PLATFORMS[P]) return { ok: false, t: "Server type: not picked yet, so Reboot / Shut down is off. Pick it under SERVER TYPE." };
+  if (!PLATFORMS[P]) return { ok: false, t: "Server type: not picked yet, so Reboot / Shut down is off. Pick it under SERVER TYPE.", fix: [["type", "Pick server type"]] };
   const name = PLATFORMS[P].name;
   const base = platformBase(P, s);
   if (P === "linux") {
-    if (!hasLogin("linux")) return { ok: false, t: "Power helper: not set up yet (tap Copy setup command)" };
+    if (!hasLogin("linux")) return { ok: false, t: "Helper: not set up yet (tap Copy setup command)", fix: [["helper", "Copy setup command"]] };
     const code = await helperCall(base, Keychain.get(helperKey()), "/health", "GET");
-    if (code === 200) return { ok: true, t: "Power helper: OK at " + base };
-    if (code === 401) return { ok: false, t: "Power helper: answers, but refused the key. Run the setup command again." };
-    return { ok: false, t: "Power helper: no answer at " + base + (code ? ` (HTTP ${code})` : "") };
+    if (code === 200) return { ok: true, t: "Helper: OK at " + base };
+    if (code === 401) return { ok: false, t: "Helper: answers, but refused the key. Run the setup command again.", fix: [["helper", "Copy setup command"]] };
+    return { ok: false, t: "Helper: no answer at " + base + (code ? ` (HTTP ${code})` : ""), fix: [["helper", "Copy setup command"]] };
   }
   if (hasLogin(P)) {
     const { user, pass } = savedLogin(P);
     const r = await DRIVERS[P](null, user, pass, base, s);
     if (r.ok) return { ok: true, t: `${name}: OK, ${r.msg}` };
-    return { ok: false, t: `${name}: ` + (r.auth ? "the saved login was refused. " : "") + (r.msg || "no answer at " + base) };
+    return { ok: false, t: `${name}: ` + (r.auth ? "the saved login was refused. " : "") + (r.msg || "no answer at " + base), fix: r.auth ? [["login", "Enter login again"]] : [["address", "Edit address"]] };
   }
   try {
     const req = nasRequest(base, "GET", 6);
@@ -1425,6 +1606,969 @@ async function testPower(s) {
   } catch (e) {
     return { ok: false, t: `${name}: no answer at ${base}` };
   }
+}
+
+// ---------- Apps and containers (hold a button: Start / Stop / Restart / Logs; + > Pick from ...) ----------
+// The same features as the Android app (2.2), with the same saved fields on buttons ("zima", "ctr"), so exports
+// move between the two:
+// ZimaOS:  its App Management API with the ZimaOS login (apps, logs, updates), plus CPU power draw and drive health
+// Proxmox: LXC containers and VMs (Proxmox API, saved login); Force stop pulls the plug
+// TrueNAS: apps (JSON-RPC over a WebSocket on 25.04+, the REST API on 24.10; saved login)
+// Synology: Container Manager / Docker (DSM Web API, saved login)
+// Unraid:  Docker; the list comes from Glances, the commands are what Unraid's Docker page sends (saved login)
+// OpenMediaVault and Linux: Docker or Podman through the -board helper (Settings > Copy setup command)
+
+// One HTTP request. Self-signed certificates are accepted, as for Reboot / Shut down.
+async function http(url, o = {}) {
+  const r = new Request(url);
+  r.allowInsecureRequest = true;
+  r.timeoutInterval = o.timeout || 10;
+  r.method = o.method || "GET";
+  if (o.headers) r.headers = o.headers;
+  if (o.body != null) r.body = o.body;
+  if (o.follow === false) r.onRedirect = () => null;
+  const body = (await r.loadString()) || "";
+  const res = r.response || {};
+  return { code: res.statusCode || 0, body, headers: res.headers || {}, cookie: cookiesOf(r) };
+}
+function headerOf(h, name) {
+  for (const k of Object.keys(h || {})) if (k.toLowerCase() === name.toLowerCase()) return String(h[k]);
+  return "";
+}
+function jparse(t) {
+  try { return JSON.parse(t); } catch (e) { return null; }
+}
+const enc = (x) => encodeURIComponent(String(x));
+const ANSI = /\u001B\[[0-9;?]*[ -/]*[@-~]|\u001B[()][A-Za-z0-9]|\u001B[=>]/g;
+const cleanLog = (t) => String(t || "").replace(ANSI, "").replace(/\r/g, "");
+const lastLines = (t, n) => cleanLog(t).replace(/\s+$/, "").split("\n").slice(-n).join("\n");
+const sleepMs = (ms) => new Promise((res) => Timer.schedule(ms, false, res));
+
+// An error the hold menu shows. fix: what Settings > This server can do about it
+// ("login", "loginAgain", "helper", "helperAgain", "helperOld", "monitoring"; null = nothing to set up)
+function CtrErr(msg, fix) {
+  const e = new Error(msg);
+  e.fix = fix || null;
+  return e;
+}
+
+// ---------- ZimaOS ----------
+const ZTOK = {}; // login token per server, renewed after 15 minutes or when refused
+const ZPOW = {}; // CPU energy readings per server, for watts
+const zBase = (s = SET) => platformBase("zimaos", s);
+function zForget(id = CUR) {
+  for (const k of Object.keys(ZTOK)) if (k.startsWith(id + "|")) delete ZTOK[k];
+}
+async function zToken(s = SET) {
+  const key = CUR + "|" + zBase(s);
+  const t0 = ZTOK[key];
+  if (t0 && Date.now() - t0.at < 15 * 60 * 1000) return t0.t;
+  if (!hasLogin("zimaos")) throw CtrErr("Enter your ZimaOS login first: Settings > This server > Enter login.", "login");
+  const { user, pass } = savedLogin("zimaos");
+  let r;
+  try {
+    r = await http(zBase(s) + "/v1/users/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: user, password: pass }), timeout: 8 });
+  } catch (e) {
+    throw CtrErr("Can't reach ZimaOS at " + zBase(s));
+  }
+  const j = jparse(r.body);
+  const t = j && j.data && j.data.token && j.data.token.access_token;
+  if (!t) throw CtrErr("ZimaOS refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  ZTOK[key] = { t, at: Date.now() };
+  return t;
+}
+// One call with the saved login; an expired token is renewed once.
+// dropOk: a dropped connection counts as done (an update recreates the app and can cut the answer off)
+async function zCall(path, method = "GET", body = null, timeout = 10, dropOk = false) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const t = await zToken();
+    let r;
+    try {
+      r = await http(zBase() + path, { method, headers: { Authorization: t, "Content-Type": "application/json" }, body, timeout });
+    } catch (e) {
+      if (dropOk) return null;
+      throw CtrErr("Can't reach ZimaOS at " + zBase());
+    }
+    if (r.code === 401 || r.code === 403) {
+      zForget();
+      if (attempt === 0) continue;
+      throw CtrErr("ZimaOS refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+    }
+    return r;
+  }
+}
+// the "data" part of ZimaOS's { message, data } answers
+function zData(r) {
+  if (!r) return null;
+  const j = jparse(r.body);
+  if (j && typeof j === "object" && !Array.isArray(j)) {
+    if (r.code >= 400) throw CtrErr(j.message || "ZimaOS answered HTTP " + r.code);
+    return "data" in j ? j.data : j;
+  }
+  if (r.code >= 400) throw CtrErr("ZimaOS answered HTTP " + r.code);
+  return j != null ? j : r.body;
+}
+function zText(x) {
+  if (typeof x === "string") return x;
+  if (x && typeof x === "object") return x.en_us || x.en_US || Object.values(x).find((v) => typeof v === "string" && v) || "";
+  return "";
+}
+function zParse(o) {
+  const id = o.name || o.store_app_id || "";
+  if (!id) return null;
+  let path = String(o.index || "").trim();
+  if (path && !path.startsWith("/")) path = "/" + path;
+  if (path === "/") path = "";
+  return {
+    id, title: zText(o.title) || id.charAt(0).toUpperCase() + id.slice(1), icon: o.icon || "",
+    port: String(o.port == null ? "" : o.port).replace(/\D/g, "").slice(0, 5),
+    scheme: String(o.scheme).toLowerCase() === "https" ? "https" : "http", host: String(o.hostname || "").trim(),
+    status: String(o.status || "").toLowerCase(), path, storeId: o.store_app_id || "",
+    controllable: o.app_type === "v2app" && !o.is_uncontrolled,
+  };
+}
+const zRunning = (a) => /running|healthy/i.test(a.status);
+async function zApps() {
+  const d = zData(await zCall("/v2/app_management/web/appgrid"));
+  const arr = Array.isArray(d) ? d : (d && d.list) || [];
+  const seen = {};
+  return arr.map(zParse).filter((a) => a && !seen[a.id] && (seen[a.id] = true));
+}
+async function zUpdates() {
+  const d = zData(await zCall("/v2/app_management/apps/upgradable"));
+  return (Array.isArray(d) ? d : []).filter((o) => o.status !== "updating").map((o) => String(o.store_app_id || "").toLowerCase()).filter(Boolean);
+}
+function zAppUrl(a, host) {
+  const h = a.host || host || "localhost";
+  const usual = a.scheme === "https" ? "443" : "80";
+  return `${a.scheme}://${h}${a.port && a.port !== usual ? ":" + a.port : ""}${a.path}`;
+}
+// the app a button points at: the one it was added from, else the only app on that port of the server
+function zAppFor(sv, apps, host) {
+  if (sv.zima) return apps.find((a) => a.id === sv.zima) || null;
+  const u = splitUrl(sv.url);
+  if (u.host.toLowerCase() !== String(host).toLowerCase()) return null;
+  const port = u.port || (u.scheme === "https" ? "443" : "80");
+  const m = apps.filter((a) => a.port === port);
+  return m.length === 1 ? m[0] : null;
+}
+// CPU power: two readings of the CPU's energy counter (Intel RAPL, µJ) make watts; also ZimaOS's CPU temperature
+async function zSys() {
+  const key = CUR + "|" + zBase();
+  const p = ZPOW[key] || (ZPOW[key] = {});
+  const d = zData(await zCall("/v1/sys/utilization", "GET", null, 6));
+  const cpu = d && d.cpu;
+  if (cpu) {
+    const t = Number(cpu.temperature);
+    if (t > 0 && t < 150) p.temp = t;
+    const v = Number(cpu.power && typeof cpu.power === "object" ? cpu.power.value : cpu.power);
+    const now = Date.now();
+    if (v > 0) {
+      if (p.at && v >= p.e && now - p.at > 500) {
+        const w = (v - p.e) / 1e6 / ((now - p.at) / 1000);
+        if (w < 2000) p.watts = w;
+      }
+      p.at = now;
+      p.e = v;
+    }
+  }
+  return { watts: p.watts == null ? null : p.watts, temp: p.temp == null ? null : p.temp };
+}
+// drives with ZimaOS's health check and temperature
+async function zDrives() {
+  const d = zData(await zCall("/v1/disks"));
+  const arr = Array.isArray(d) ? d : (d && (d.disks || d.list)) || [];
+  return arr.map((o) => {
+    const h = o.health;
+    const bad = h === false || (typeof h === "string" && ["false", "failed", "failing", "bad"].includes(h.toLowerCase()));
+    const t = Number(o.temperature);
+    return { name: o.name || String(o.path || "").split("/").pop(), model: String(o.model || "").trim(), path: o.path || "", ok: !bad, temp: t > 0 && t < 150 ? t : null,
+      type: String(o.disk_type || ""), size: Number(o.size) || 0 };
+  }).filter((x) => x.name || x.path);
+}
+// a mounted drive (/dev/sda1, /dev/nvme0n1p2) to the ZimaOS drive it's on
+function zDriveFor(device, drives) {
+  const dev = String(device || "").split("/").pop();
+  if (!dev) return null;
+  let best = null;
+  for (const z of drives) {
+    const n = z.path.split("/").pop();
+    if (n && dev.startsWith(n) && (!best || z.path.length > best.path.length)) best = z;
+  }
+  return best;
+}
+
+// ---------- Containers on the other server types ----------
+const CTR_TYPES = ["proxmox", "truenas", "unraid", "synology", "omv", "linux"];
+const ctrRunning = (c) => /running|healthy|^up/i.test(c.status || "");
+const ctrLabel = (c) => ({ lxc: "LXC container", qemu: "Virtual machine", app: "App" })[c.kind] || "Container";
+function needLogin(P) {
+  throw CtrErr(`Enter your ${(PLATFORMS[P] && PLATFORMS[P].login) || P} login first: Settings > This server > Enter login.`, "login");
+}
+function ctrLogin(P) {
+  if (!hasLogin(P)) needLogin(P);
+  return savedLogin(P);
+}
+
+// Ports that aren't web pages (DNS, discovery, torrents, databases, VPN ...)
+const NOT_WEB = new Set([21, 22, 23, 25, 53, 67, 68, 69, 110, 123, 137, 138, 139, 143, 161, 389, 445, 514, 636, 993, 995,
+  1194, 1883, 1900, 3306, 3478, 3479, 5353, 5432, 6379, 6881, 6882, 7359, 8883, 10001, 27017, 51413, 51820]);
+function webPort(c) {
+  const p = (c.ports || []).map(Number).filter((n) => n > 0 && !NOT_WEB.has(n));
+  return p.length ? String(Math.min(...p)) : "";
+}
+const webScheme = (port) => ([443, 5001, 8443, 9443].includes(Number(port)) ? "https" : "http");
+const ownAddr = (c) => (c.ips || []).find((x) => /^\d+\.\d+\.\d+\.\d+$/.test(x)) || "";
+function ctrTitle(c) {
+  const n = String(c.name || "").trim();
+  const t = /[A-Z]/.test(n) ? n : n.split(/[-_. ]+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  return (t || n).slice(0, 24);
+}
+const ctrNorm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+// The one picked by hand; else the guest at the button's address (Proxmox); else the only one published on the
+// button's port of the server; else the only one with the button's name (or a name that contains it)
+function ctrMatch(sv, list, host) {
+  if (sv.ctr) return list.find((c) => c.id === sv.ctr) || list.find((c) => c.name.toLowerCase() === String(sv.ctr).toLowerCase()) || null;
+  const u = splitUrl(sv.url);
+  let m = list.filter((c) => (c.ips || []).some((x) => x.toLowerCase() === u.host.toLowerCase()));
+  if (m.length === 1) return m[0];
+  if (u.host.toLowerCase() === String(host).toLowerCase()) {
+    const port = u.port || (u.scheme === "https" ? "443" : "80");
+    m = list.filter((c) => (c.ports || []).includes(port));
+    if (m.length === 1) return m[0];
+  }
+  const n = ctrNorm(sv.name);
+  if (n.length < 2) return null;
+  m = list.filter((c) => ctrNorm(c.name) === n);
+  if (m.length === 1) return m[0];
+  if (n.length >= 3) {
+    m = list.filter((c) => { const k = ctrNorm(c.name); return k.length >= 3 && (k.includes(n) || n.includes(k)); });
+    if (m.length === 1) return m[0];
+  }
+  return null;
+}
+
+// --- the -board helper (Linux, OpenMediaVault) ---
+async function helperApi(path, method = "GET", timeout = 20) {
+  if (!kcHas(helperKey())) throw CtrErr("Set up the -board helper on the server first: Settings > This server > " + (SET.platform === "omv" ? "Containers helper" : "Copy setup command") + ".", "helper");
+  const base = helperBase();
+  let r;
+  try {
+    r = await http(base + path, { method, headers: { Authorization: "Bearer " + (Keychain.get(helperKey()) || "") }, body: method === "POST" ? "" : null, timeout });
+  } catch (e) {
+    throw CtrErr(`Can't reach the -board helper at ${base}. Is it set up on the server?`, "helperAgain");
+  }
+  if (r.code === 401) throw CtrErr("The helper refused the key. Copy the setup command from Settings and run it on the server again.", "helperAgain");
+  if (r.code === 404) throw CtrErr("The helper on the server is from an older -board and can't control containers. Copy the setup command from Settings (This server) and run it on the server again.", "helperOld");
+  const j = jparse(r.body);
+  if (!j) throw CtrErr("The helper answered HTTP " + r.code);
+  if (r.code >= 300 || j.ok === false) throw CtrErr(j.error || "The helper answered HTTP " + r.code);
+  return j;
+}
+async function helperList() {
+  const j = await helperApi("/containers");
+  return (j.containers || []).map((o) => ({ id: o.id || o.name, name: o.name || "", status: o.state || o.status || "", ports: (o.ports || []).map(String), image: o.image || "", kind: "container" })).filter((c) => c.name);
+}
+
+// --- Proxmox VE ---
+const PVET = {};
+async function pveAuthC(base) {
+  const { user, pass } = ctrLogin("proxmox");
+  const key = CUR + "|" + base + "|" + user;
+  const t = PVET[key];
+  if (t && Date.now() - t.at < 60 * 60 * 1000) return t.h;
+  const lg = await pveLogin(user, pass, base);
+  if (lg.net) throw CtrErr("Can't reach Proxmox at " + base);
+  if (!lg.ticket) throw CtrErr("Proxmox refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  const h = { Cookie: "PVEAuthCookie=" + lg.ticket, CSRFPreventionToken: lg.csrf };
+  PVET[key] = { h, at: Date.now() };
+  return h;
+}
+async function pveApi(path, method = "GET", timeout = 10, what = "do that") {
+  const base = platformBase("proxmox");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const h = await pveAuthC(base);
+    let r;
+    try {
+      r = await http(base + "/api2/json" + path, { method, headers: method === "POST" ? { ...h, "Content-Type": "application/x-www-form-urlencoded" } : h, body: method === "POST" ? "" : null, timeout });
+    } catch (e) {
+      throw CtrErr("Can't reach Proxmox at " + base);
+    }
+    if (r.code === 401) {
+      for (const k of Object.keys(PVET)) delete PVET[k];
+      if (attempt === 0) continue;
+      throw CtrErr("Proxmox refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+    }
+    if (r.code === 403) throw CtrErr(`This Proxmox user isn't allowed to ${what}.`);
+    if (r.code >= 300) throw CtrErr("Proxmox answered HTTP " + r.code);
+    const j = jparse(r.body);
+    return j ? j.data : null;
+  }
+}
+async function pveList() {
+  const arr = (await pveApi("/cluster/resources?type=vm", "GET", 10, "list the guests (needs VM.Audit)")) || [];
+  const guests = arr.filter((o) => o.template !== 1 && (o.type === "lxc" || o.type === "qemu"));
+  const out = await Promise.all(guests.map(async (o) => {
+    let ips = [];
+    if (o.status === "running") {
+      try {
+        if (o.type === "lxc") {
+          ips = ((await pveApi(`/nodes/${enc(o.node)}/lxc/${o.vmid}/interfaces`, "GET", 4)) || []).flatMap((i) => [i.inet, i.inet6]);
+        } else {
+          const r = await pveApi(`/nodes/${enc(o.node)}/qemu/${o.vmid}/agent/network-get-interfaces`, "GET", 4);
+          ips = ((r && r.result) || []).flatMap((i) => (i["ip-addresses"] || []).map((a) => a["ip-address"]));
+        }
+      } catch (e) {}
+      ips = ips.filter(Boolean).map((x) => String(x).split("/")[0]).filter((x) => x && x !== "127.0.0.1" && x !== "::1");
+    }
+    return { id: `${o.node}/${o.type}/${o.vmid}`, name: o.name || `${o.type} ${o.vmid}`, status: o.status || "", ports: [], ips, kind: o.type };
+  }));
+  return out.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+}
+async function pveAction(c, action) {
+  const [node, type, vmid] = c.id.split("/");
+  // Stop shuts the guest down cleanly; Force stop ("kill") is Proxmox's Stop, which pulls the plug
+  const cmd = { start: "start", stop: "shutdown", kill: "stop" }[action] || "reboot";
+  await pveApi(`/nodes/${enc(node)}/${type}/${vmid}/status/${cmd}`, "POST", 30, "start or stop guests (needs VM.PowerMgmt)");
+}
+// Proxmox keeps no console log of a guest: its recent Proxmox tasks and the log of the last one
+async function pveLogs(c) {
+  const [node, , vmid] = c.id.split("/");
+  const tasks = (await pveApi(`/nodes/${enc(node)}/tasks?vmid=${vmid}&limit=20&source=all`, "GET", 10, "read tasks (needs Sys.Audit)")) || [];
+  if (!tasks.length) return "No Proxmox tasks for this guest yet.\n(Proxmox keeps no console log of the guest itself.)";
+  const d2 = (n) => String(n).padStart(2, "0");
+  const f = (t) => { const d = new Date(t * 1000); return `${d.getFullYear()}-${d2(d.getMonth() + 1)}-${d2(d.getDate())} ${d2(d.getHours())}:${d2(d.getMinutes())}:${d2(d.getSeconds())}`; };
+  let s = `Recent Proxmox tasks for ${c.name}:\n`;
+  for (const t of tasks.slice().reverse()) s += `${f(t.starttime)}  ${String(t.type || "").padEnd(10)}  ${t.status || "running"}  ${t.user || ""}\n`;
+  const lastT = tasks[0];
+  const log = ((await pveApi(`/nodes/${enc(node)}/tasks/${enc(lastT.upid)}/log?limit=500`)) || []).map((x) => x.t).join("\n");
+  return s + `\nLog of the last task (${lastT.type}):\n` + (log || "(empty)") + "\n\n(Proxmox keeps no console log of the guest itself.)";
+}
+
+// --- TrueNAS (apps, 24.10 and newer) ---
+// Like truenasWs, plus: with collectMs, gathers the lines the last call (core.subscribe) sends for up to that long
+async function tnRpc(base, user, pass, calls, collectMs = 0) {
+  const url = base.replace(/^http/i, "ws") + "/api/current";
+  const wv = new WebView();
+  await wv.loadHTML("<html><body></body></html>");
+  const js = `(function(){
+    var url = ${JSON.stringify(url)}, user = ${JSON.stringify(user)}, pass = ${JSON.stringify(pass)}, calls = ${JSON.stringify(calls)}, collectMs = ${Number(collectMs) || 0};
+    var done = false, id = 0, pending = {}, ws, results = [], events = [], connected = false, collecting = false, lastEv = 0;
+    function finish(r){ if (done) return; done = true; r.connected = connected; r.results = results; r.events = events; try { ws.close(); } catch (e) {} completion(r); }
+    setTimeout(function(){ finish(collecting ? { ok: true } : { error: "timeout" }); }, 15000 + collectMs);
+    try { ws = new WebSocket(url); } catch (e) { finish({ error: String(e) }); return; }
+    function call(method, params, cb){ var i = ++id; pending[i] = cb; ws.send(JSON.stringify({ jsonrpc: "2.0", id: i, method: method, params: params })); }
+    function msg(e){ return (e && ((e.data && e.data.reason) || e.message)) || "error"; }
+    ws.onerror = function(){ finish(collecting ? { ok: true } : { error: "connection" }); };
+    ws.onclose = function(){ finish(collecting ? { ok: true } : { error: "closed" }); };
+    ws.onmessage = function(e){
+      var m; try { m = JSON.parse(e.data); } catch (x) { return; }
+      if (m.id != null && pending[m.id]) { var cb = pending[m.id]; delete pending[m.id]; cb(m); return; }
+      if (m.method === "collection_update" && m.params && m.params.fields) { events.push(String(m.params.fields.data || "")); lastEv = Date.now(); }
+    };
+    ws.onopen = function(){
+      connected = true;
+      call("auth.login", [user, pass], function(m){
+        if (m.error || m.result !== true) { finish({ auth: true }); return; }
+        var k = 0;
+        (function next(){
+          if (k >= calls.length) {
+            if (!collectMs) { finish({ ok: true }); return; }
+            collecting = true; lastEv = Date.now();
+            var until = Date.now() + collectMs;
+            var iv = setInterval(function(){ if (Date.now() > until || Date.now() - lastEv > 1200) { clearInterval(iv); finish({ ok: true }); } }, 100);
+            return;
+          }
+          var c = calls[k];
+          call(c[0], c[1], function(r){
+            if (r.error) { finish({ error: msg(r.error) }); return; }
+            results.push(r.result); k++; next();
+          });
+        })();
+      });
+    };
+  })();`;
+  try {
+    return await wv.evaluateJavaScript(js, true);
+  } catch (e) {
+    return { error: String((e && e.message) || e) };
+  }
+}
+function tnApp(o) {
+  const w = o.active_workloads || {};
+  const ports = [];
+  for (const p of w.used_ports || []) for (const h of p.host_ports || []) if (h.host_port != null && !ports.includes(String(h.host_port))) ports.push(String(h.host_port));
+  const meta = o.metadata || {};
+  return { id: o.name, name: o.name, status: String(o.state || "").toLowerCase(), ports, kind: "app",
+    sub: (w.container_details || []).map((c) => c.id).filter(Boolean), image: meta.name || "", icon: /^https?:/i.test(meta.icon || "") ? meta.icon : "" };
+}
+function tnErr(r, what) {
+  if (r.auth) throw CtrErr("TrueNAS refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  throw CtrErr(`TrueNAS couldn't ${what}: ${r.error || "no answer"}`);
+}
+const tnBasic = (u, p) => ({ Authorization: "Basic " + Data.fromString(`${u}:${p}`).toBase64String() });
+async function tnList() {
+  const { user, pass } = ctrLogin("truenas");
+  const base = platformBase("truenas");
+  const r = await tnRpc(base, user, pass, [["app.query", []]]);
+  if (r.ok) return (r.results[0] || []).map(tnApp);
+  if (r.connected) tnErr(r, "list its apps");
+  // older TrueNAS (24.10): the REST API
+  let rr;
+  try {
+    rr = await http(base + "/api/v2.0/app", { headers: tnBasic(user, pass) });
+  } catch (e) {
+    throw CtrErr("Can't reach TrueNAS at " + base);
+  }
+  if (rr.code === 401) throw CtrErr("TrueNAS refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  if (rr.code === 404) throw CtrErr("This TrueNAS has no apps API. App controls need TrueNAS SCALE 24.10 or newer.");
+  if (rr.code >= 300) throw CtrErr("TrueNAS answered HTTP " + rr.code);
+  return (jparse(rr.body) || []).map(tnApp);
+}
+async function tnAction(c, action) {
+  const { user, pass } = ctrLogin("truenas");
+  const base = platformBase("truenas");
+  // Restart redeploys the app, as TrueNAS's own Restart button does
+  const m = { start: "app.start", stop: "app.stop" }[action] || "app.redeploy";
+  const r = await tnRpc(base, user, pass, [[m, [c.id]]]);
+  if (r.ok) return;
+  if (r.connected) tnErr(r, `${action} ${c.name}`);
+  let rr;
+  try {
+    rr = await http(`${base}/api/v2.0/app/${m.replace("app.", "")}`, { method: "POST", headers: { ...tnBasic(user, pass), "Content-Type": "application/json" }, body: JSON.stringify(c.id) });
+  } catch (e) {
+    throw CtrErr("Can't reach TrueNAS at " + base);
+  }
+  if (rr.code === 401) throw CtrErr("TrueNAS refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  if (rr.code >= 300) throw CtrErr(`TrueNAS didn't accept the command (HTTP ${rr.code}).`);
+}
+async function tnLogs(c, lines) {
+  const { user, pass } = ctrLogin("truenas");
+  const base = platformBase("truenas");
+  const sub = c.sub || [];
+  if (!sub.length) return ctrRunning(c) ? `TrueNAS didn't list a container for ${c.name}.` : `${c.name} isn't running, so it has no containers to show logs for.`;
+  let s = "";
+  for (const cid of sub.slice(0, 4)) {
+    const ev = "app.container_log_follow:" + JSON.stringify({ app_name: c.id, container_id: cid, tail_lines: lines });
+    const r = await tnRpc(base, user, pass, [["core.subscribe", [ev]]], 6000);
+    if (!r.ok) {
+      if (!r.connected) throw CtrErr("Logs need TrueNAS 25.04 or newer (its WebSocket API).");
+      tnErr(r, "show the logs");
+    }
+    if (sub.length > 1) s += `── container ${cid.slice(0, 12)} ──\n`;
+    s += r.events.map((x) => (x.endsWith("\n") ? x : x + "\n")).join("");
+  }
+  return s;
+}
+
+// --- Synology DSM (Container Manager / Docker package) ---
+const SYNOSID = {}; // one DSM session per server, kept 10 minutes (DSM keeps every login as a session)
+const SESSION_MS = 10 * 60 * 1000;
+async function synoSid(base) {
+  const { user, pass } = ctrLogin("synology");
+  const key = CUR + "|" + base + "|" + user;
+  const c = SYNOSID[key];
+  if (c && Date.now() - c.at < SESSION_MS) return c.sid;
+  let j;
+  try {
+    const login = { api: "SYNO.API.Auth", method: "login", account: user, passwd: pass, session: "board", format: "sid" };
+    j = await (await synoApi(base, "entry.cgi", { ...login, version: 6 })).loadJSON();
+    if (j && !j.success && j.error && [102, 103, 104].includes(j.error.code)) j = await (await synoApi(base, "auth.cgi", { ...login, version: 3 })).loadJSON();
+  } catch (e) {
+    throw CtrErr("Can't reach Synology DSM at " + base);
+  }
+  const sid = j && j.data && j.data.sid;
+  if (!sid) throw CtrErr("Synology refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  SYNOSID[key] = { sid, at: Date.now() };
+  return sid;
+}
+async function synoCall(api, method, params) {
+  const base = platformBase("synology");
+  let j = {};
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const sid = await synoSid(base);
+    try {
+      const req = await synoApi(base, "entry.cgi", { api, version: 1, method, ...params, _sid: sid });
+      req.timeoutInterval = 30;
+      j = jparse((await req.loadString()) || "{}") || {};
+    } catch (e) {
+      throw CtrErr("Synology didn't answer");
+    }
+    // 106 / 107 / 119: the session ran out or was closed: log in again once
+    if (attempt === 0 && !j.success && j.error && [106, 107, 119].includes(j.error.code)) {
+      for (const k of Object.keys(SYNOSID)) delete SYNOSID[k];
+      continue;
+    }
+    break;
+  }
+  if (!j.success) {
+    const code = j.error && j.error.code;
+    if (code === 105) throw CtrErr("This Synology account isn't an administrator.", "loginAgain");
+    throw CtrErr(code === 102 ? "Container Manager (or the Docker package) isn't installed on this Synology." : `Synology didn't accept the command (error ${code}).`);
+  }
+  return j.data || {};
+}
+async function synoList() {
+  const d = await synoCall("SYNO.Docker.Container", "list", { limit: -1, offset: 0, type: '"all"' });
+  return (d.containers || []).map((o) => {
+    const st = o.status || (o.State && o.State.Running ? "running" : "stopped");
+    const ports = [];
+    for (const p of o.port_bindings || o.Ports || []) {
+      const h = String(p.host_port != null ? p.host_port : p.PublicPort != null ? p.PublicPort : "");
+      if (h && h !== "0" && !ports.includes(h)) ports.push(h);
+    }
+    const n = String(o.name || "").replace(/^\//, "");
+    return { id: n, name: n, status: String(st).toLowerCase(), ports, image: o.image || "", kind: "container" };
+  }).filter((c) => c.name);
+}
+async function synoAction(c, action) {
+  const name = { name: JSON.stringify(c.id) };
+  if (action !== "restart") return synoCall("SYNO.Docker.Container", action, name);
+  try {
+    await synoCall("SYNO.Docker.Container", "restart", name);
+  } catch (e) {
+    await synoCall("SYNO.Docker.Container", "stop", name);
+    await synoCall("SYNO.Docker.Container", "start", name);
+  }
+}
+async function synoLogs(c, lines) {
+  const d = await synoCall("SYNO.Docker.Container.Log", "get", { name: JSON.stringify(c.id), from: '""', to: '""', level: '""', keyword: '""', sort_dir: '"DESC"', offset: 0, limit: lines });
+  return (d.logs || []).slice().reverse().map((x) => String(x.text || "").replace(/\s+$/, "")).join("\n");
+}
+
+// --- Unraid (Docker) ---
+const UNRAIDS = {}; // one Unraid login per server, kept 10 minutes
+const unraidRefused = (r) => r.code === 401 || r.code === 403 || (r.code >= 300 && r.code < 400 && /login/i.test(headerOf(r.headers, "Location")));
+async function unraidSession(base) {
+  const { user, pass } = ctrLogin("unraid");
+  const key = CUR + "|" + base + "|" + user;
+  const c = UNRAIDS[key];
+  if (c && Date.now() - c.at < SESSION_MS) return c;
+  let lg;
+  try {
+    lg = await http(base + "/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: formBody({ username: user || "root", password: pass }), follow: false });
+  } catch (e) {
+    throw CtrErr("Can't reach Unraid at " + base);
+  }
+  if (lg.code < 300 || lg.code >= 400) throw CtrErr("Unraid refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  const cookie = lg.cookie || headerOf(lg.headers, "Set-Cookie").split(";")[0];
+  let html = "";
+  try {
+    html = (await http(base + "/Docker", { headers: { Cookie: cookie } })).body;
+  } catch (e) {}
+  const m = html.match(/csrf_token["'\s]*[:=]\s*["']([0-9A-Za-z]{8,})["']/);
+  if (!m) throw CtrErr("Logged in to Unraid, but couldn't read its security token.");
+  return (UNRAIDS[key] = { cookie, csrf: m[1], at: Date.now() });
+}
+const unraidForget = () => { for (const k of Object.keys(UNRAIDS)) delete UNRAIDS[k]; };
+// the list comes from Glances (its Containers plugin), which runs with access to Docker on most Unraid setups
+async function unraidList() {
+  if (!SET.monitoring) throw CtrErr("On Unraid the container list comes from Glances: turn on Monitoring in Settings > This server.", "monitoring");
+  let raw;
+  const pass = glancesPass();
+  try {
+    raw = await glancesRequest(SET, "containers", pass);
+  } catch (e) {
+    try {
+      raw = await glancesRequest(SET, "docker", pass);
+    } catch (e2) {
+      throw CtrErr("Glances didn't list the containers. Glances needs access to Docker (map /var/run/docker.sock into the Glances container).");
+    }
+  }
+  const arr = Array.isArray(raw) ? raw : (raw && raw.containers) || [];
+  const list = arr.map((o) => {
+    const name = String(o.name || o.Names || "").replace(/^\//, "");
+    const img = Array.isArray(o.image) ? o.image[0] : o.image || "";
+    return { id: name, name, status: String(o.status || o.Status || "").toLowerCase(), ports: [], image: String(img || ""), kind: "container" };
+  }).filter((c) => c.name);
+  if (!list.length) throw CtrErr("Glances lists no containers. Glances needs access to Docker (map /var/run/docker.sock into the Glances container).");
+  return list;
+}
+// what Unraid's Docker page sends for Start / Stop / Restart
+async function unraidAction(c, action) {
+  const base = platformBase("unraid");
+  let r;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const s = await unraidSession(base);
+    try {
+      r = await http(base + "/plugins/dynamix.docker.manager/include/Events.php", { method: "POST", headers: { Cookie: s.cookie, "Content-Type": "application/x-www-form-urlencoded" },
+        body: formBody({ action, container: c.id, csrf_token: s.csrf }), timeout: 120, follow: false });
+    } catch (e) {
+      throw CtrErr("Can't reach Unraid at " + base);
+    }
+    if (attempt === 0 && unraidRefused(r)) { unraidForget(); continue; }
+    break;
+  }
+  if (unraidRefused(r)) { unraidForget(); throw CtrErr("Unraid refused the saved login. Enter it again in Settings > This server.", "loginAgain"); }
+  if (r.code >= 300) throw CtrErr(`Unraid didn't accept the command (HTTP ${r.code}).`);
+  const b = r.body.trim();
+  if (b && !/success/i.test(b) && /error|no such|not found/i.test(b)) throw CtrErr("Unraid: " + b.slice(0, 200));
+}
+// what Unraid's Docker page shows for Logs: a log window (ttyd) running "docker logs". A browser can't send a cookie
+// with a WebSocket, so a hidden web view opens Unraid's own page, logs in there and opens the log window.
+async function unraidLogs(c, lines) {
+  const base = platformBase("unraid");
+  const { user, pass } = ctrLogin("unraid");
+  const wv = new WebView();
+  try {
+    await wv.loadURL(base + "/login");
+  } catch (e) {
+    throw CtrErr("Can't reach Unraid at " + base + (/^https/i.test(base) ? " (the log window needs a certificate the iPhone trusts, or plain http)" : ""));
+  }
+  const js = `(function(){
+    var user = ${JSON.stringify(user || "root")}, pass = ${JSON.stringify(pass)}, name = ${JSON.stringify(c.id)}, lines = ${Number(lines) || 300};
+    var out = "", done = false, last = Date.now();
+    function finish(r){ if (done) return; done = true; r.text = out; completion(r); }
+    setTimeout(function(){ finish(out ? {} : { error: "timeout" }); }, 14000);
+    function form(o){ return Object.keys(o).map(function(k){ return encodeURIComponent(k) + "=" + encodeURIComponent(o[k]); }).join("&"); }
+    fetch("/login", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: form({ username: user, password: pass }), credentials: "include" })
+      .then(function(){ return fetch("/Docker", { credentials: "include" }); })
+      .then(function(r){ return r.text(); })
+      .then(function(html){
+        var m = /csrf_token["'\\s]*[:=]\\s*["']([0-9A-Za-z]{8,})["']/.exec(html);
+        if (!m) { finish({ auth: true }); return; }
+        return fetch("/webGui/include/OpenTerminal.php?tag=docker&name=" + encodeURIComponent(name) + "&more=.log&csrf_token=" + m[1], { credentials: "include" })
+          .then(function(){ return new Promise(function(res){ setTimeout(res, 700); }); })
+          .then(function(){
+            var ws = new WebSocket(location.origin.replace(/^http/, "ws") + "/logterminal/" + encodeURIComponent(name) + ".log/ws", ["tty"]);
+            ws.binaryType = "arraybuffer";
+            ws.onopen = function(){ ws.send(JSON.stringify({ AuthToken: "", columns: 160, rows: 60 })); };
+            ws.onmessage = function(e){
+              var t = typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data);
+              if (t.charAt(0) === "0") out += t.slice(1);
+              last = Date.now();
+            };
+            ws.onerror = function(){ finish(out ? {} : { error: "connection" }); };
+            ws.onclose = function(){ finish({}); };
+            var until = Date.now() + 7000;
+            var iv = setInterval(function(){ if (Date.now() > until || (out && Date.now() - last > 1200)) { clearInterval(iv); try { ws.close(); } catch (x) {} finish({}); } }, 100);
+          });
+      })
+      .catch(function(e){ finish({ error: String(e) }); });
+  })();`;
+  let r;
+  try {
+    r = await wv.evaluateJavaScript(js, true);
+  } catch (e) {
+    r = { error: String((e && e.message) || e) };
+  }
+  if (r && r.auth) throw CtrErr("Unraid refused the saved login. Enter it again in Settings > This server.", "loginAgain");
+  if (!(r && r.text) && r && r.error) throw CtrErr(`Unraid didn't open the log (${r.error}).`);
+  return String((r && r.text) || "").split("\n").slice(-lines).join("\n");
+}
+
+// --- one entry point per action ---
+async function ctrList() {
+  switch (SET.platform) {
+    case "proxmox": return pveList();
+    case "truenas": return tnList();
+    case "synology": return synoList();
+    case "unraid": return unraidList();
+    case "omv": case "linux": return helperList();
+    default: throw CtrErr("Pick your server type first: Settings > This server > Server type.");
+  }
+}
+async function ctrAction(c, action) {
+  if (action === "kill" && SET.platform !== "proxmox") throw CtrErr("Force stop is only for Proxmox guests.");
+  switch (SET.platform) {
+    case "proxmox": return pveAction(c, action);
+    case "truenas": return tnAction(c, action);
+    case "synology": return synoAction(c, action);
+    case "unraid": return unraidAction(c, action);
+    default: return helperApi(`/containers/${enc(c.id)}/${action}`, "POST", 120);
+  }
+}
+async function ctrLogs(c, lines = 300) {
+  let t;
+  switch (SET.platform) {
+    case "proxmox": t = await pveLogs(c); break;
+    case "truenas": t = await tnLogs(c, lines); break;
+    case "synology": t = await synoLogs(c, lines); break;
+    case "unraid": t = await unraidLogs(c, lines); break;
+    default: t = (await helperApi(`/containers/${enc(c.id)}/logs?lines=${lines}`)).text || "";
+  }
+  return lastLines(t, lines);
+}
+
+// ---------- Auto logo: the dashboard-icons logo for a name ----------
+// Used by "Auto" in the add / edit form and by every "Pick from ...", so both find the same logo.
+// dashboard-icons logos have no background, so they're preferred to the icon the server gives (TrueNAS and ZimaOS
+// store icons often have a square background, and some are SVG files); that one is only used when there's none.
+// The collection's file list (tree.json, plus the aliases in metadata.json) is downloaded once a week, so names
+// match loosely ("AdGuardHome" finds adguard-home.png). Without the list, the likeliest names are checked one by one.
+const LOGO_REPO = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/";
+let LOGO_INDEX = null;
+let LOGO_TRIED = 0;
+const logoSlug = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+const logoNorm = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const LOGO_SUFFIX = /-(server|media-server|ce|ee|oss|app|docker|web|webui|ui|official|community|stable|latest|nightly|beta|lts|aio|ls\d*)$/;
+function logoCandidates(names) {
+  const out = [];
+  const firsts = [];
+  const add = (x) => { if (!out.includes(x)) out.push(x); };
+  for (const n of names) {
+    const s = logoSlug(n);
+    if (s.length < 2) continue;
+    add(s);
+    let t = s;
+    for (;;) { const u = t.replace(LOGO_SUFFIX, ""); if (u === t || u.length < 2) break; t = u; add(t); }
+    const w = s.split("-")[0];
+    if (w.length >= 4 && w !== s) firsts.push(w);
+  }
+  firsts.forEach(add);
+  return out;
+}
+// every *.png name in tree.json (light / dark variants only when there's no plain one), plus metadata.json's aliases
+function buildLogoIndex(tree, meta) {
+  const pngs = [];
+  (function walk(x) {
+    if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === "object") Object.values(x).forEach(walk);
+    else if (typeof x === "string" && /\.png$/i.test(x)) { const b = x.split("/").pop().slice(0, -4); if (!pngs.includes(b)) pngs.push(b); }
+  })(tree);
+  const m = {};
+  const variant = /-(light|dark)$/;
+  const put = (k, v) => { if (!(k in m)) m[k] = v; };
+  pngs.filter((b) => !variant.test(b)).forEach((b) => put(logoNorm(b), b));
+  pngs.filter((b) => variant.test(b)).forEach((b) => { put(logoNorm(b), b); put(logoNorm(b.replace(variant, "")), b); });
+  if (meta && typeof meta === "object") {
+    for (const k of Object.keys(meta)) {
+      if (!pngs.includes(k)) continue;
+      for (const a of (meta[k] && meta[k].aliases) || []) if (String(a).trim()) put(logoNorm(a), k);
+    }
+  }
+  return m;
+}
+function logoIndexPath() {
+  const fm = FileManager.local();
+  return fm.joinPath(fm.documentsDirectory(), "board-logo-index.json");
+}
+async function logoIndex() {
+  if (LOGO_INDEX) return LOGO_INDEX;
+  const fm = FileManager.local();
+  const p = logoIndexPath();
+  const fromFile = (maxAge) => {
+    try {
+      if (!fm.fileExists(p) || Date.now() - fm.modificationDate(p).getTime() > maxAge) return null;
+      const o = JSON.parse(fm.readString(p));
+      const m = buildLogoIndex(o.tree, o.meta);
+      return Object.keys(m).length >= 50 ? (LOGO_INDEX = m) : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const fresh = fromFile(7 * 24 * 3600 * 1000);
+  if (fresh) return fresh;
+  if (Date.now() - LOGO_TRIED < 10 * 60 * 1000) return fromFile(Infinity);
+  LOGO_TRIED = Date.now();
+  try {
+    const t = await http(LOGO_REPO + "tree.json", { timeout: 15 });
+    const tree = t.code < 300 ? jparse(t.body) : null;
+    if (!tree) return fromFile(Infinity);
+    let meta = null;
+    try { const r = await http(LOGO_REPO + "metadata.json", { timeout: 15 }); if (r.code < 300) meta = jparse(r.body); } catch (e) {}
+    const m = buildLogoIndex(tree, meta);
+    if (Object.keys(m).length < 50) return fromFile(Infinity);
+    try { fm.writeString(p, JSON.stringify({ tree, meta })); } catch (e) {}
+    return (LOGO_INDEX = m);
+  } catch (e) {
+    return fromFile(Infinity);
+  }
+}
+function pickLogo(names, idx) {
+  for (const c of logoCandidates(names)) if (idx[logoNorm(c)]) return idx[logoNorm(c)];
+  return null;
+}
+// a working image at this URL?
+async function logoExists(url) {
+  try {
+    const r = new Request(url);
+    r.timeoutInterval = 8;
+    const img = await r.loadImage();
+    return !!(img && img.size && img.size.width > 0) && !((r.response && r.response.statusCode) >= 400);
+  } catch (e) {
+    return false;
+  }
+}
+// at most 4 lookups at once (Pick from adds many buttons together)
+let LOGO_BUSY = 0;
+async function autoLogo(names, serverIcon = "") {
+  while (LOGO_BUSY >= 4) await sleepMs(50);
+  LOGO_BUSY++;
+  try {
+    const idx = await logoIndex();
+    if (idx) {
+      const b = pickLogo(names, idx);
+      if (b) return LOGO_CDN + b + ".png";
+    } else {
+      for (const c of logoCandidates(names).slice(0, 6)) if (await logoExists(LOGO_CDN + c + ".png")) return LOGO_CDN + c + ".png";
+    }
+    return /^https?:/i.test(serverIcon) && (await logoExists(serverIcon)) ? serverIcon : "";
+  } finally {
+    LOGO_BUSY--;
+  }
+}
+
+// "Sonarr" -> "Sonarr 2", "Sonarr 3" ... when the name is taken (names are 24 characters at most)
+function uniqueName(name0, used) {
+  const name = String(name0).trim().slice(0, 24);
+  if (!used.has(name.toLowerCase())) return name;
+  for (let k = 2; ; k++) {
+    const tail = " " + k;
+    const c = name.slice(0, 24 - tail.length).replace(/\s+$/, "") + tail;
+    if (!used.has(c.toLowerCase())) return c;
+  }
+}
+
+// ---------- The page asks, Scriptable answers (rpc://) ----------
+// Apps / containers cached for 20 s per server and settings, like the Android app
+let CTRS = null;
+async function loadCtrs(force) {
+  const key = CUR + "|" + JSON.stringify(SET);
+  if (!force && CTRS && CTRS.key === key && Date.now() - CTRS.at < 20000) return CTRS;
+  const zima = SET.platform === "zimaos";
+  try {
+    const list = zima ? await zApps() : await ctrList();
+    const updates = zima ? await zUpdates().catch(() => []) : [];
+    CTRS = { key, at: Date.now(), list, updates };
+  } catch (e) {
+    CTRS = { key, at: Date.now(), err: { msg: e.message || String(e), fix: e.fix || null } };
+  }
+  return CTRS;
+}
+const ctrSupported = () => SET.platform === "zimaos" || CTR_TYPES.includes(SET.platform);
+function serviceById(id) {
+  return getServices(true).find((s) => s.id === id) || null;
+}
+function ctrForService(sv, cache) {
+  if (!sv || !cache.list) return null;
+  return SET.platform === "zimaos" ? zAppFor(sv, cache.list, serverHostOf(SET)) : ctrMatch(sv, cache.list, serverHostOf(SET));
+}
+// what the page gets for an app / container
+function ctrOut(c, updates) {
+  if (!c) return null;
+  if (SET.platform === "zimaos") {
+    return { id: c.id, name: c.title, label: "ZimaOS app", running: zRunning(c), known: true, status: c.status || "stopped", controllable: c.controllable,
+      update: c.controllable && (updates || []).includes(String(c.storeId || c.id).toLowerCase()), zima: true, icon: c.icon, port: c.port };
+  }
+  return { id: c.id, name: c.name, title: ctrTitle(c), label: ctrLabel(c), running: ctrRunning(c), known: !!c.status, status: c.status, controllable: true,
+    kind: c.kind, where: SET.platform === "proxmox" ? (c.kind === "qemu" ? "VM" : "LXC") + " · " + (ownAddr(c) || "address not known") : webPort(c) ? "port " + webPort(c) : "no port known" };
+}
+
+async function addPicked(ids) {
+  const cache = await loadCtrs(false);
+  if (!cache.list) throw new Error(cache.err ? cache.err.msg : "Couldn't list them");
+  const host = serverHostOf(SAVED) || "localhost";
+  const zima = SET.platform === "zimaos";
+  const items = cache.list.filter((c) => ids.includes(c.id));
+  const logos = await Promise.all(items.map((c) => (zima ? autoLogo([c.title, c.id], c.icon) : autoLogo([ctrTitle(c), c.name, String(c.image || "").split("/").pop().split(":")[0].split("@")[0]], c.icon))));
+  const data = loadData();
+  const used = new Set(getServices(true).map((s) => s.name.trim().toLowerCase()));
+  const t = Date.now();
+  items.forEach((c, n) => {
+    const logo = logos[n] || "";
+    let item;
+    if (zima) {
+      item = { name: uniqueName(c.title, used), port: c.port, icon: "📦", logo, custom: true, zima: c.id, app: c.id, url: zAppUrl(c, host), auto: !c.host };
+    } else {
+      const guest = c.kind === "lxc" || c.kind === "qemu";
+      const port = guest ? "" : webPort(c);
+      item = { ...makeCustom({ name: uniqueName(ctrTitle(c), used), scheme: webScheme(port), addr: guest ? ownAddr(c) || c.name : "", port, logo }), icon: "📦", ctr: c.id };
+    }
+    used.add(item.name.toLowerCase());
+    item.id = `c:${t}-${n}`;
+    data.custom.push(item);
+    clearLogoFail(logo);
+  });
+  saveData(data);
+  return items.length;
+}
+
+function linkCtr(id, ctr) {
+  const data = loadData();
+  if (String(id).startsWith("b:")) data.edits[id] = { ...(data.edits[id] || {}), ctr };
+  else {
+    const i = data.custom.findIndex((c) => c.id === id);
+    if (i >= 0) data.custom[i] = { ...data.custom[i], ctr };
+  }
+  saveData(data);
+}
+
+async function rpcOp(d) {
+  switch (d.op) {
+    // the hold menu: the app / container behind a button
+    case "ctrFor": {
+      if (!ctrSupported()) return { ok: true, none: true };
+      const cache = await loadCtrs(!!d.force);
+      if (cache.err) return { ok: false, err: cache.err };
+      return { ok: true, c: ctrOut(ctrForService(serviceById(d.id), cache), cache.updates) };
+    }
+    // + > Pick from ..., and Pick its container: everything on the server
+    case "ctrList": {
+      const cache = await loadCtrs(true);
+      if (cache.err) return { ok: false, err: cache.err };
+      const taken = new Set(getServices(true).map((s) => ctrForService(s, cache)).filter(Boolean).map((c) => c.id));
+      const list = cache.list.map((c) => ({ ...ctrOut(c, cache.updates), has: taken.has(c.id) }))
+        .sort((a, b) => (a.running === b.running ? (a.title || a.name).toLowerCase().localeCompare((b.title || b.name).toLowerCase()) : a.running ? -1 : 1));
+      return { ok: true, list };
+    }
+    case "ctrAction": {
+      const cache = await loadCtrs(false);
+      const c = (cache.list || []).find((x) => x.id === d.cid);
+      if (!c) return { ok: false, msg: "It's no longer on the server. Try again." };
+      const name = SET.platform === "zimaos" ? c.title : c.name;
+      try {
+        if (SET.platform === "zimaos") {
+          if (d.action === "update") zData(await zCall(`/v2/app_management/compose/${enc(c.id)}`, "PATCH", "", 300, true));
+          else zData(await zCall(`/v2/app_management/compose/${enc(c.id)}/status`, "PUT", JSON.stringify(d.action), 60));
+        } else await ctrAction(c, d.action);
+      } catch (e) {
+        return { ok: false, msg: e.message || String(e) };
+      }
+      statusDirty = true;
+      await sleepMs(1500);
+      await loadCtrs(true);
+      return { ok: true, msg: name + " " + ({ start: "started", stop: "stopped", kill: "force stopped", update: "is updating" }[d.action] || "restarted") };
+    }
+    case "ctrLogs": {
+      const cache = await loadCtrs(false);
+      const c = (cache.list || []).find((x) => x.id === d.cid);
+      if (!c) return { ok: false, text: "It's no longer on the server." };
+      try {
+        const text = SET.platform === "zimaos"
+          ? lastLines(String(zData(await zCall(`/v2/app_management/compose/${enc(c.id)}/logs?lines=300`, "GET", null, 20)) || ""), 300)
+          : await ctrLogs(c, 300);
+        return { ok: true, text: text || "(no log lines)" };
+      } catch (e) {
+        return { ok: false, text: e.message || String(e) };
+      }
+    }
+    case "ctrAdd": {
+      const n = await addPicked(d.ids || []);
+      statusDirty = true;
+      return { ok: true, n, reload: true };
+    }
+    case "ctrLink": {
+      linkCtr(d.id, d.cid || "");
+      return { ok: true, reload: true };
+    }
+    // ZimaOS: the apps the App Store has a newer version of
+    case "zUpdates": {
+      const cache = await loadCtrs(!!d.force);
+      if (cache.err || SET.platform !== "zimaos") return { ok: true, list: [] };
+      const list = cache.list.filter((a) => a.controllable && cache.updates.includes(String(a.storeId || a.id).toLowerCase())).map((a) => ctrOut(a, cache.updates));
+      return { ok: true, list };
+    }
+    case "logo": {
+      return { ok: true, url: await autoLogo([d.name]) };
+    }
+    case "refresh": {
+      statusDirty = true;
+      REFRESH = true;
+      return { ok: true };
+    }
+  }
+  return { ok: false, msg: "Unknown request" };
 }
 
 // ---------- Settings sheet (gear icon): load / save / test / maintenance ----------
@@ -1450,11 +2594,13 @@ async function settingsOp(d) {
     } catch (e) {}
     return {
       ok: true,
-      s: SET,
+      s: SAVED,
       defaults: DEFAULTS,
-      host: serverHostOf(SET),
+      host: serverHostOf(SAVED),
       hasBuiltin: BUILTIN.length > 0,
-      firstRun: !serverHostOf(SET),
+      firstRun: !serverHostOf(SAVED),
+      version: BOARD_VERSION,
+      loadNote: LOAD_NOTE,
       mounts,
       ifaces,
       hidden: data.hidden.map((id) => ({ id, name: id.replace(/^b:/, "") })),
@@ -1478,13 +2624,23 @@ async function settingsOp(d) {
   }
   if (d.op === "test") {
     // tests the values in the form, saved or not
-    const s = cleanSettings(d.s);
+    let s = cleanSettings(d.s);
     const lines = [];
     if (!serverHostOf(s)) return { ok: true, lines: [{ ok: false, t: "Enter your server's IP or name first, e.g. 192.168.1.10" }] };
-    const reach = await serverReachable(s);
+    const reach = await serverReachable(s, 4, getServices(false, false));
     lines.push(reach
-      ? { ok: true, t: `Server: reachable (${reach} answered)` }
-      : { ok: false, t: `Server: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)` });
+      ? { ok: true, t: `Main server address: reachable (${reach} answered)` }
+      : { ok: false, t: `Main server address: nothing answered at ${serverHostOf(s)} (check the address, and your VPN if you're away from home)`, fix: [["address", "Edit address"]] });
+    // Failover: the failover address is tested too; with the main address down, the other tests use it
+    if (s.failover && !s.failoverHost) lines.push({ ok: false, t: "Failover: enter the failover server address, or switch Failover off", fix: [["failoverOff", "Switch Failover off"]] });
+    else if (failoverReady(s)) {
+      const fo = viaFailover(s);
+      const foR = await serverReachable(fo, 4, getServices(false, true));
+      lines.push(foR
+        ? { ok: true, t: `Failover server address: reachable (${foR} answered)` }
+        : { ok: false, t: `Failover server address: nothing answered at ${s.failoverHost} (fine if you're away from that network)`, fix: [["failoverOff", "Switch Failover off"]] });
+      if (!reach && foR) s = fo;
+    }
     if (s.monitoring) {
       const t0 = Date.now();
       try {
@@ -1500,8 +2656,8 @@ async function settingsOp(d) {
         } catch (e2) {}
         lines.push(
           otherOk
-            ? { ok: false, t: `Glances: answers with API version ${other}, not ${s.apiVersion}. Pick ${other} under GLANCES API VERSION.` }
-            : { ok: false, t: "Glances: no answer at " + glancesUrl(s) + " (check the address and that Glances runs with -w, or turn Monitoring off)" }
+            ? { ok: false, t: `Glances: answers with API version ${other}, not ${s.apiVersion}.`, fix: [["api" + other, `Use API version ${other}`]] }
+            : { ok: false, t: "Glances: no answer at " + glancesUrl(s) + " (check the address and that Glances runs with -w, or turn Monitoring off)" + (/HTTP 401/.test(String(e && e.message)) ? ". It asks for a password." : ""), fix: [["glances", "Edit Glances address"], ["monitoringOff", "Turn Monitoring off"]] }
         );
       }
     }
@@ -1515,7 +2671,9 @@ async function settingsOp(d) {
     const user = String(d.u || "").trim();
     const pass = String(d.p || "");
     if (!user || !pass) return { ok: false, error: "Enter a username and a password." };
-    const s = cleanSettings(d.s);
+    const s0 = cleanSettings(d.s);
+    // checked over the address the server is reached over right now (main or failover)
+    const s = onFailover() && failoverReady(s0) && serverHostOf(s0).toLowerCase() === serverHostOf(SAVED).toLowerCase() ? viaFailover(s0) : s0;
     const base = platformBase(P, s);
     const r = await DRIVERS[P](null, user, pass, base, s);
     if (!r.ok) {
@@ -1723,7 +2881,16 @@ async function refreshLogos(wv) {
   logoBusy = false;
 }
 
+// A button from the add / edit form. An empty address follows the server's (main) address (auto);
+// addr2 is the failover address (only with Failover on; empty = the server's failover address).
 function makeCustom(d) {
+  const auto = !String(d.addr || "").trim();
+  const item = { ...buildCustom({ ...d, addr: auto ? serverHostOf(SAVED) || "localhost" : d.addr }), auto };
+  item.url2 = failoverReady(SAVED) && String(d.addr2 || "").trim() ? buildCustom({ ...d, addr: d.addr2 }).url : "";
+  return item;
+}
+
+function buildCustom(d) {
   let addr = String(d.addr).trim();
   const m = addr.match(/^(https?):\/\//i);
   const scheme = m ? m[1].toLowerCase() : d.scheme === "https" ? "https" : "http";
@@ -1889,6 +3056,20 @@ function pickNetwork(net) {
 let expanded = null;
 let lastStats = null;
 
+// ZimaOS: CPU power draw (watts) and its CPU temperature when Glances has none
+async function zimaCpu(glancesTemp) {
+  if (SET.platform !== "zimaos" || !hasLogin("zimaos")) return {};
+  try {
+    const z = await zSys();
+    const o = {};
+    if (z.watts != null) o.watts = z.watts;
+    if (glancesTemp == null && z.temp != null) o.temp = z.temp;
+    return o;
+  } catch (e) {
+    return {};
+  }
+}
+
 async function getDetail(key, stats) {
   const list = (x) => (Array.isArray(x) ? x : []);
   if (key === "cpu") {
@@ -1922,6 +3103,7 @@ async function getDetail(key, stats) {
       hot: ct.hot,
       nCoreTemps: ct.cores.length,
       top,
+      ...(await zimaCpu(ct.pkg)),
     };
   }
   if (key === "ram") {
@@ -1978,7 +3160,21 @@ async function getDetail(key, stats) {
       t = parseTemps(await api("sensors"));
     } catch (err) {}
     const temps = stats.disks.map((disk) => (t ? driveTemp(disk, t) : null));
-    return { kind: "disk", io, temps, nvme: t ? t.nvme : [], hdd: t ? t.hdd : [] };
+    // ZimaOS: each drive's health check, and its temperature where Glances has none
+    let zd = null;
+    if (SET.platform === "zimaos" && hasLogin("zimaos")) {
+      try {
+        zd = await zDrives();
+        stats.disks.forEach((disk, i) => {
+          const z = zDriveFor(disk.device, zd);
+          if (z && !temps[i] && z.temp != null) temps[i] = { kind: /nvme/i.test(z.path) ? "nvme" : "hdd", values: [z.temp] };
+        });
+        zd = zd.map((x) => ({ ...x, kind: /nvme/i.test(x.path + x.name) ? "nvme" : /ssd/i.test(x.type) ? "ssd" : "hdd" }));
+      } catch (e) {
+        zd = null;
+      }
+    }
+    return { kind: "disk", io, temps, zd, nvme: t ? t.nvme : [], hdd: t ? t.hdd : [] };
   }
   return null;
 }
@@ -2045,7 +3241,7 @@ async function reachProbe(url, timeout) {
 // the server system's own address (Reboot / Shut down), Glances when Monitoring is on, and your service
 // buttons on that host. Any answer, even an error page, counts. Returns what answered first, or "" for none.
 const REACH_SECONDS = 10; // how often the dashboard checks
-async function serverReachable(s = SET, timeout = 4) {
+async function serverReachable(s = SET, timeout = 4, services) {
   const host = serverHostOf(s);
   if (!host) return "";
   // the server address from Settings first (with its port), then the usual web ports
@@ -2053,7 +3249,7 @@ async function serverReachable(s = SET, timeout = 4) {
   if (PLATFORMS[s.platform]) urls.add(platformBase(s.platform, s) + "/");
   if (s.monitoring) urls.add(glancesUrl(s) + "/");
   try {
-    for (const sv of getServices(false)) if (hostOf(sv.url) === host && urls.size < 12) urls.add(sv.url);
+    for (const sv of services || getServices(false)) if (hostOf(sv.url) === host && urls.size < 12) urls.add(sv.url);
   } catch (e) {}
   const label = (u) => (u.match(/^https?:\/\/[^\/]+/i) || [u])[0].replace(/^https?:\/\//i, "");
   return new Promise((resolve) => {
@@ -2065,6 +3261,36 @@ async function serverReachable(s = SET, timeout = 4) {
       });
     }
   });
+}
+
+// ---------- Main / failover address ----------
+// Asks the main address and (with Failover on) the failover address at the same time. The main address wins
+// whenever it answers; the failover address is used only when the main one doesn't. The answer is kept in
+// ROUTE and SET is switched to match, so the buttons, Glances and Reboot / Shut down use the address that
+// answered. Returns { failover, answered, changed }.
+async function resolveRoute(s = SAVED, timeout = 4) {
+  const id = CUR;
+  const before = onFailover(s, id);
+  if (!failoverReady(s)) {
+    ROUTE[id] = false;
+    const answered = await serverReachable(s, timeout, getServices(false, false));
+    return { failover: false, answered, changed: before };
+  }
+  const foP = serverReachable(viaFailover(s), timeout, getServices(false, true)).catch(() => "");
+  const main = await serverReachable(s, timeout, getServices(false, false)).catch(() => "");
+  let r;
+  if (main) {
+    ROUTE[id] = false;
+    r = { failover: false, answered: main };
+  } else {
+    const fo = await foP;
+    // nothing answers: stay on the address used last, so the buttons don't jump back and forth
+    if (fo) ROUTE[id] = true;
+    r = { failover: !!fo, answered: fo };
+  }
+  r.changed = onFailover(s, id) !== before;
+  if (id === CUR) SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
+  return r;
 }
 
 // ---------- Temperatures (from the Glances sensors plugin) ----------
@@ -2281,7 +3507,7 @@ function addSymbolText(parent, symbol, text, color) {
 
 // The slow part of the button grid (status checks, logo downloads). The widget starts it at the same
 // time as the stats request, so the two run side by side.
-async function prepareGrid(maxCells) {
+async function prepareGrid(maxCells, knownUp) {
   // Uses your widget layout (set in the live dashboard: Widget layout)
   const list = widgetCells(getLayout()).slice(0, maxCells || 99);
   // a stack pill needs the status of every button inside it
@@ -2289,7 +3515,7 @@ async function prepareGrid(maxCells) {
   for (const c of list) toCheck.push(...(c.kind === "group" ? c.members : [c]));
   // status checks and any missing logo downloads run together (logos are only downloaded once)
   const [status] = await Promise.all([
-    SET.widgetStatusDots ? checkServices(toCheck, Math.min(SET.pingTimeout, 3)) : {},
+    SET.widgetStatusDots ? (knownUp ? Promise.resolve(knownUp) : checkServices(toCheck, Math.min(SET.pingTimeout, 3))) : {},
     SET.useLogos ? ensureLogos(list, 4).catch(() => false) : false,
   ]);
   // stack dot: green = all up, orange = some down, red = all down
@@ -2321,24 +3547,22 @@ function addServiceGrid(w, prep) {
       if (!s) continue;
       pill.centerAlignContent();
       glassStack(pill, { classic: 8, glass: 9 }, 1, 0.1);
-      pill.setPadding(0, 4, 0, 4);
+      pill.setPadding(0, 5, 0, 6);
       // a stack pill opens the live dashboard with that stack open
       pill.url =
         s.kind === "group"
           ? URLScheme.forRunningScript() + "?server=" + encodeURIComponent(CUR) + "&stack=" + encodeURIComponent(s.id)
           : s.url;
-      if (SET.widgetStatusDots) {
-        const dot = pill.addText("●");
-        dot.font = Font.systemFont(6);
-        dot.textColor = new Color(dotColor(s));
-        pill.addSpacer(2);
-      }
+      // logo / emoji in a fixed-size box, so every name starts at the same spot
+      const icBox = pill.addStack();
+      icBox.size = new Size(13, 13);
+      icBox.centerAlignContent();
       const logo = SET.useLogos ? cachedLogo(s.logo) : null;
       if (logo) {
-        const li = pill.addImage(logo);
+        const li = icBox.addImage(logo);
         li.imageSize = new Size(12, 12);
       } else {
-        const ic = pill.addText(s.icon);
+        const ic = icBox.addText(s.icon);
         ic.font = Font.systemFont(10);
       }
       pill.addSpacer(3);
@@ -2347,6 +3571,15 @@ function addServiceGrid(w, prep) {
       t.textColor = Color.white();
       t.lineLimit = 1;
       t.minimumScaleFactor = 0.6;
+      // the status dot sits at the right edge of every button, so the dots line up in a column
+      pill.addSpacer();
+      if (SET.widgetStatusDots) {
+        pill.addSpacer(3);
+        const dot = pill.addStack();
+        dot.size = new Size(6, 6);
+        dot.cornerRadius = 3;
+        dot.backgroundColor = new Color(dotColor(s));
+      }
     }
   }
 }
@@ -2387,10 +3620,14 @@ async function buildWidget() {
   // everything runs side by side: is the server reachable, the buttons' checks and (with Monitoring) the stats.
   // Without Monitoring the widget shows buttons instead of gauges (medium: 2 rows; small: a summary).
   const mon = SET.monitoring;
-  const reachP = serverReachable(SET).catch(() => "");
-  const gridPrep = large || !mon ? prepareGrid(large ? 0 : small ? 0 : 8).catch(() => null) : null;
-  let stats = null;
-  if (mon) {
+  // Failover on: find out first which address answers (main or failover); the buttons and Glances then use it
+  // the dashboard's figures from the last few minutes (same settings): no requests needed
+  const snap = readSnapshot();
+  const routeR = !snap && failoverReady(SAVED) ? await resolveRoute(SAVED).catch(() => null) : null;
+  const reachP = snap ? Promise.resolve(snap.reach) : routeR ? Promise.resolve(routeR.answered) : serverReachable(SET).catch(() => "");
+  const gridPrep = large || !mon ? prepareGrid(large ? 0 : small ? 0 : 8, snap && snap.up).catch(() => null) : null;
+  let stats = snap && mon ? snap.stats : null;
+  if (mon && !stats) {
     try {
       // the small widget only shows CPU and RAM
       stats = await getStats(small ? { disks: false, net: false } : {});
@@ -2540,6 +3777,7 @@ main{position:relative;min-height:100vh;padding:calc(env(safe-area-inset-top,0px
 header{display:flex;align-items:center;justify-content:space-between}
 h1{font-size:22px;font-weight:800;letter-spacing:.12em}
 .live{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;letter-spacing:.1em;padding:6px 12px;border-radius:99px;background:rgba(255,255,255,.1)}
+.live .fo{font-size:9px;letter-spacing:.08em;color:#ffb454}
 .dot{width:8px;height:8px;border-radius:50%;background:#34e0a1;box-shadow:0 0 6px rgba(52,224,161,.7)}
 .dot.off{background:#ff5d73;box-shadow:0 0 6px rgba(255,93,115,.7)}
 .dot.wait{background:rgba(255,255,255,.35);box-shadow:none}
@@ -2695,6 +3933,31 @@ img.ic{width:26px;height:26px;object-fit:contain;display:block;pointer-events:no
 .toast.show{opacity:1;transform:translate(-50%,0)}
 #ov,#mv,#rv,#gv,#pv,#cv,#av,#dv{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
 #ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show,#av.show,#dv.show{display:flex}
+#xv{position:fixed;inset:0;z-index:11;display:none;align-items:center;justify-content:center;background:rgba(5,10,20,.55);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);padding:20px;overflow:auto}
+#xv.show{display:flex}
+#xv .btns.col button,#mctr .btns button{flex:none}
+#xv .btns button.gtxt,#mctr .btns button.gtxt{color:#34e0a1}
+#xv .btns button.rtxt,#mctr .btns button.rtxt{color:#ff5d73}
+#mctr{display:flex;flex-direction:column;gap:10px}
+#mctr:empty{display:none}
+.cctr{display:flex;justify-content:center}
+.cctr .chip{margin:0}
+pre.logs{max-height:52vh;overflow:auto;-webkit-overflow-scrolling:touch;margin:0;padding:10px;border-radius:12px;background:rgba(0,0,0,.35);font:11px/1.35 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+pre.logs.bad{color:#ff5d73}
+.pfl{display:flex;flex-direction:column;gap:12px;max-height:52vh;overflow:auto;-webkit-overflow-scrolling:touch}
+.pfr{display:flex;align-items:center;gap:10px}
+.pfr.has{opacity:.4}
+.pft{flex:1;min-width:0;display:flex;flex-direction:column}
+.pft b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pft span{font-size:11px;opacity:.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lay.upd{margin-right:6px;color:#34e0a1}
+body:not(.glass) .prs{transform:scale(.96);opacity:.72;transition:transform .08s,opacity .08s}
+body.stale #grid,body.stale .netcard{opacity:.45;transition:opacity .4s}
+.monbtn.line span:first-child{display:none}
+.monbtn.line #monst{color:#fff;opacity:.85;font-weight:700;letter-spacing:.02em;margin-left:0;flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 6px);z-index:9;transform:translate(-50%,calc(var(--pd,0px) - 60px));padding:7px 14px;border-radius:99px;background:rgba(30,38,64,.9);border:1px solid rgba(255,255,255,.14);font-size:12px;font-weight:700;opacity:0;pointer-events:none;transition:opacity .2s}
+#ptr.show{opacity:1}
+#ptr.busy{transform:translate(-50%,10px);transition:transform .25s,opacity .2s}
 .modal{width:min(86vw,340px);padding:22px 18px 18px;border-radius:30px;background:rgba(30,38,64,.94);border:1px solid rgba(255,255,255,.14);box-shadow:0 20px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:12px;animation:pop .22s cubic-bezier(.22,1,.36,1)}
 @keyframes pop{from{transform:scale(.9);opacity:0}}
 .modal h2{font-size:17px;font-weight:800;letter-spacing:.06em;text-align:center}
@@ -2753,6 +4016,16 @@ body.c3 #svc:not(.wide) .sd,body.c3 .gbody .sd{top:12px;right:12px}
 .trow>*{min-width:0}
 .trow.th span{font-size:10px;font-weight:700;letter-spacing:.12em;opacity:.5;text-align:center}
 .sres{display:flex;flex-direction:column;gap:6px;font-size:12px}
+.sfix{display:flex;flex-wrap:wrap;gap:6px;padding-left:16px}
+.sfix .chip{margin:0}
+.sback{display:flex}
+.sback .chip{margin:0}
+.spage{display:flex;align-items:center;gap:10px;padding:4px 0;cursor:pointer}
+.spage div{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.spage b{font-size:15px}
+.spage span{font-size:11px;opacity:.5}
+.spage i{font-style:normal;font-size:22px;opacity:.4}
+.spage+.spage{border-top:1px solid rgba(255,255,255,.08);padding-top:12px}
 .sres div{display:flex;gap:8px;align-items:flex-start;line-height:1.35}
 .sres i{flex:none;width:8px;height:8px;border-radius:50%;margin-top:4px;background:#34e0a1}
 .sres .bad i{background:#ff5d73}
@@ -2964,7 +4237,7 @@ body:not(.splashon) #splash{display:none}
 <div class="bg"><div class="blob b1"></div><div class="blob b2"></div><div class="b3"></div></div>
 <div class="topfade"></div>
 <main>
-<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
+<header class="intro"><div class="tw" id="tw"><h1 id="title"></h1><svg class="tchev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="pmenu"><button onclick="openPower('restart')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>Reboot</button><button class="red" onclick="openPower('off')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg>Shut down</button></div></div><div class="hr"><div class="live"><div class="dot wait" id="dot"></div><span id="st">...</span><span class="fo" id="fot" style="display:none">FAILOVER</span></div><button class="gear" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div></header>
 <div class="sdots intro" id="sdots" style="animation-delay:.04s"></div>
 <div class="monwrap intro" style="animation-delay:.08s"><button class="monbtn" id="monb" onclick="toggleMon()"><span>MONITORING</span><span id="monst"></span><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="mon" id="mon"><div class="moninner"><div class="monpad">
 <div id="grid"></div>
@@ -2978,7 +4251,7 @@ body:not(.splashon) #splash{display:none}
 <div id="wextra" style="display:none"><div class="wnote" id="wnote">The large widget fits 24 buttons. Dimmed ones will not show. Press, hold and drag to reorder, or drag a button between the two panels to show or hide it.</div><div id="hidwrap" style="display:none"><div class="sec" style="margin:0 4px 8px">NOT ON WIDGET</div><div id="hid" class="wide"></div></div></div>
 <div class="addwrap intro" style="animation-delay:.3s" id="addwrap"><button class="addbtn" onclick="openAdd()">+</button></div>
 </main>
-<div id="cv" onclick="if(event.target===this&&Date.now()>=ign)closePower()">
+<div id="cv">
 <div class="modal">
 <h2 id="cvt">REBOOT SERVER?</h2>
 <div class="cnote" id="cvn"></div>
@@ -2992,18 +4265,20 @@ body:not(.splashon) #splash{display:none}
 </div>
 </div>
 <div class="toast" id="toast"></div>
-<div id="sv" onclick="if(event.target===this&&Date.now()>=ign)closeSettings()">
+<div id="sv">
 <div class="modal smod">
 <div class="shd"><button onclick="closeSettings()">Cancel</button><h2 id="sttl">SETTINGS</h2><button class="ok" id="ssave" onclick="saveSettings()">Save</button></div>
 <div class="serr" id="serr"></div>
 <div id="sbody"><div class="swait">Loading...</div></div>
 </div>
 </div>
-<div id="ov" onclick="if(event.target===this&&Date.now()>=ign)closeAdd()">
+<div id="ov">
 <div class="modal">
 <h2 id="at">ADD SERVICE</h2>
 <div class="f"><label>SERVICE NAME</label><div class="in"><input id="fn" type="text" placeholder="e.g. Jellyfin" maxlength="24" autocomplete="off"></div></div>
-<div class="f"><label>ADDRESS</label><div class="in"><select id="fs"><option value="http">http://</option><option value="https">https://</option></select><span class="chev">&#9662;</span><input id="fa" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="f"><label id="fal">ADDRESS</label><div class="in"><select id="fs"><option value="http">http://</option><option value="https">https://</option></select><span class="chev">&#9662;</span><input id="fa" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="f" id="ff2"><label>FAILOVER ADDRESS</label><div class="in"><input id="fa2" type="text" inputmode="url" placeholder="192.168.1.10" autocapitalize="none" autocorrect="off" spellcheck="false"></div></div>
+<div class="fh" id="fah"></div>
 <div class="tg"><label>USE PORT</label><div class="sw on" id="sw" onclick="togglePort()"><i></i></div></div>
 <div class="f" id="pf"><label>PORT</label><div class="in"><input id="fp" type="text" inputmode="numeric" placeholder="8080" maxlength="5"></div></div>
 <div class="f"><label>LOGO URL (OPTIONAL)</label><div class="in"><input id="fl" type="text" inputmode="url" placeholder="https://.../logo.png" autocapitalize="none" autocorrect="off" spellcheck="false" oninput="previewLogo('fl','flp')"><img id="flp" class="lp" alt="" onload="this.className='lp ok'" onerror="this.className='lp'"><button class="chip" type="button" onclick="guessLogo('fn','fl','flp','flh')">Auto</button></div><div class="fh" id="flh">Empty = emoji. Auto guesses from the name.</div></div>
@@ -3012,17 +4287,17 @@ body:not(.splashon) #splash{display:none}
 <div class="btns"><button onclick="closeAdd()">Cancel</button><button class="ok" id="okb" onclick="submitAdd()">Add</button></div>
 </div>
 </div>
-<div id="av" onclick="if(event.target===this&&Date.now()>=ign)closeAddServer()">
+<div id="av">
 <div class="modal" id="avm"></div>
 </div>
-<div id="dv" onclick="if(event.target===this&&Date.now()>=ign)closeDelServer()">
+<div id="dv">
 <div class="modal">
 <h2 id="dvt">DELETE SERVER?</h2>
 <div class="cnote" id="dvn"></div>
 <div class="btns"><button onclick="closeDelServer()">Cancel</button><button class="del" onclick="confirmDelServer()">Delete</button></div>
 </div>
 </div>
-<div id="rv" onclick="if(event.target===this&&Date.now()>=ign)closeRename()">
+<div id="rv">
 <div class="modal">
 <h2>RENAME</h2>
 <div class="f"><label>DASHBOARD NAME</label><div class="in"><input id="rn" type="text" maxlength="20" autocomplete="off"></div></div>
@@ -3030,20 +4305,20 @@ body:not(.splashon) #splash{display:none}
 <div class="btns"><button onclick="closeRename()">Cancel</button><button class="ok" onclick="saveRename()">Save</button></div>
 </div>
 </div>
-<div id="mv" onclick="if(event.target===this&&Date.now()>=ign)closeMenu()">
+<div id="mv">
 <div class="modal">
 <h2 id="mt"></h2>
 <div class="btns col"><button id="sbtn" onclick="menuStack()">Add to stack</button><button class="gtxt" onclick="menuEdit()">Edit</button><button class="rtxt" id="dbtn" onclick="menuDel()">Delete</button><button onclick="closeMenu()">Cancel</button></div>
 </div>
 </div>
-<div id="pv" onclick="if(event.target===this&&Date.now()>=ign)closePick()">
+<div id="pv">
 <div class="modal">
 <h2 id="pvt">ADD TO STACK</h2>
 <div class="btns col" id="pl"></div>
 <div class="btns col"><button class="ok" onclick="pickNew()">New stack</button><button class="del" id="prm" onclick="pickRemove()">Remove from stack</button><button onclick="closePick()">Cancel</button></div>
 </div>
 </div>
-<div id="gv" onclick="if(event.target===this&&Date.now()>=ign)closeStack()">
+<div id="gv">
 <div class="modal">
 <h2 id="gvt">NEW STACK</h2>
 <div class="f"><label>STACK NAME</label><div class="in"><input id="gnm" type="text" placeholder="e.g. Media" maxlength="24" autocomplete="off"></div></div>
@@ -3108,7 +4383,11 @@ function setStatus(ok){
   document.getElementById("dot").className = ok ? "dot" : "dot off";
   document.getElementById("st").textContent = ok ? "LIVE" : "OFFLINE";
 }
-function setReach(ok){ setStatus(!!ok); }
+// fo: reached over the failover server address (FAILOVER next to LIVE)
+function setReach(ok, fo){
+  setStatus(!!ok);
+  document.getElementById("fot").style.display = ok && fo ? "" : "none";
+}
 // Glances answering or not: shown on the Monitoring bar, separate from LIVE / OFFLINE
 function glancesState(ok){
   document.getElementById("monst").textContent = ok ? "" : "NO DATA";
@@ -3178,6 +4457,7 @@ function renderDetail(id){
       stats.push(stat(d.nCores, "CORES"));
       if (d.temp != null) stats.push(tstat(d.temp, "TEMP", "cpu"));
       if (d.hot != null && d.nCoreTemps > 1) stats.push(tstat(d.hot, "HOTTEST CORE", "cpu"));
+      if (d.watts != null) stats.push(stat(d.watts.toFixed(1) + " W", "POWER"));
       h += '<div class="dgrid">' + stats.join("") + '</div>';
       if (d.cores && d.cores.length) {
         h += '<div><div class="dh">PER CORE</div><div class="cores">';
@@ -3212,6 +4492,18 @@ function renderDetail(id){
       h += '<div><div class="dh">TEMPERATURES</div><div class="dgrid">' + ts.join("") + '</div></div>';
     } else if (d) {
       h += '<div class="hint">NO DRIVE TEMPERATURES REPORTED BY GLANCES</div>';
+    }
+    // ZimaOS: each drive's SMART health and temperature (no drivetemp module needed)
+    if (d && d.zd && d.zd.length) {
+      h += '<div><div class="dh">DRIVE HEALTH (ZIMAOS)</div>';
+      for (i = 0; i < d.zd.length; i++) {
+        var zx = d.zd[i], zs = [];
+        zs.push('<div class="ds"><b style="color:' + (zx.ok ? "#34e0a1" : "#ff5d73") + '">' + (zx.ok ? "OK" : "FAILING") + '</b><span>SMART</span></div>');
+        if (zx.temp != null) zs.push(tstat(zx.temp, "TEMP", zx.kind === "hdd" ? "hdd" : "nvme"));
+        zs.push(stat(zx.kind.toUpperCase(), "TYPE"));
+        h += '<div class="drv"><div class="drvh"><b>' + esc(zx.model || zx.name) + '</b><span>' + esc(zx.name) + (zx.size > 0 ? ' &middot; ' + sz(zx.size) : '') + '</span></div><div class="dgrid">' + zs.join("") + '</div></div>';
+      }
+      h += '</div>';
     }
     if (drv.length) {
       h += '<div><div class="dh">DRIVES</div>';
@@ -3604,7 +4896,7 @@ function focusStack(id){
   var w = document.querySelector('.grp[data-id="' + id + '"]');
   if (w) setTimeout(function(){ w.scrollIntoView({ behavior: "smooth", block: "start" }); }, 150);
 }
-function setUp(m){ svcUp = m; applyDots(); }
+function setUp(m){ svcUp = m; applyDots(); if (typeof refreshDone === "function") refreshDone(); }
 function makeBtn(sv, drag){
   var a = document.createElement("a");
   a.className = "svc";
@@ -3757,7 +5049,7 @@ function confirmDelServer(){
 }
 function openAddServer(){
   togglePmenu(false);
-  AS = { name: "", platform: "none", host: "", scheme: "", port: "", u: "", p: "", err: "", busy: false };
+  AS = { name: "", platform: "none", host: "", scheme: "", port: "", fo: false, foHost: "", u: "", p: "", err: "", busy: false };
   renderAddServer();
   document.getElementById("av").className = "show";
   setTimeout(function(){ var n = document.getElementById("asn"); if (n) n.focus(); }, 80);
@@ -3793,8 +5085,17 @@ function renderAddServer(){
   tl.appendChild(radioRow(typeOpts(PL), AS.platform, function(v){ AS.platform = v; AS.scheme = ""; AS.err = ""; renderAddServer(); }));
   m.appendChild(tl);
   hint(TYPE_HINT[AS.platform] || TYPE_HINT.none);
-  serverAddrField(m, "SERVER ADDRESS", { PL: PL, platform: AS.platform, host: AS.host, scheme: AS.scheme, port: AS.port,
+  serverAddrField(m, AS.fo ? "MAIN SERVER ADDRESS" : "SERVER ADDRESS", { PL: PL, platform: AS.platform, host: AS.host, scheme: AS.scheme, port: AS.port,
     onChange: function(a){ AS.host = a.host; AS.scheme = a.scheme; AS.port = a.port; } });
+  var ftg = document.createElement("div");
+  ftg.className = "tg";
+  ftg.innerHTML = "<label>FAILOVER ADDRESS (OPTIONAL)</label>";
+  ftg.appendChild(sSwitch(AS.fo, function(v){ AS.fo = v; AS.err = ""; renderAddServer(); }));
+  m.appendChild(ftg);
+  if (AS.fo) {
+    field("FAILOVER SERVER ADDRESS", AS.foHost, "e.g. 192.168.1.10", "text", function(v){ AS.foHost = v; }).inputMode = "url";
+    hint(FAILOVER_HINT);
+  }
   var pl = PL[AS.platform];
   if (pl && pl.login) {
     field(pl.login.toUpperCase() + " USERNAME", AS.u, pl.userPh || "", "text", function(v){ AS.u = v; });
@@ -3830,11 +5131,13 @@ function submitAddServer(){
   var fail = function(t){ AS.err = t; renderAddServer(); };
   if (AS.platform === "none") return fail("Pick the server type");
   if (!AS.host.trim()) return fail("Enter the server's IP or name");
+  if (AS.fo && !AS.foHost.trim()) return fail("Enter the failover server address, or switch Failover off");
+  if (AS.fo && AS.foHost.trim().toLowerCase() === AS.host.trim().toLowerCase()) return fail("The failover server address has to be different from the main server address");
   if ((AS.u.trim() && !AS.p) || (!AS.u.trim() && AS.p)) return fail("Enter both the username and the password, or neither");
   AS.err = "";
   AS.busy = true;
   renderAddServer();
-  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: AS.name.trim(), platform: AS.platform, host: AS.host.trim(), scheme: AS.scheme, port: AS.port, u: AS.u.trim(), p: AS.p, dir: 1 }));
+  location.href = "srv://go?d=" + encodeURIComponent(JSON.stringify({ act: "add", name: AS.name.trim(), platform: AS.platform, host: AS.host.trim(), scheme: AS.scheme, port: AS.port, failoverHost: AS.fo ? AS.foHost.trim() : "", u: AS.u.trim(), p: AS.p, dir: 1 }));
 }
 // the answer to Add: added (the server is on screen now) or what went wrong (the popup stays open)
 function addServerResult(r){
@@ -3897,7 +5200,7 @@ var usePort = true;
 function applyPort(){
   document.getElementById("sw").className = usePort ? "sw on" : "sw";
   document.getElementById("pf").style.display = usePort ? "" : "none";
-  document.getElementById("fa").placeholder = usePort ? (st.host || "192.168.1.10") : "app.example.com";
+  document.getElementById("fa").placeholder = st.host || "192.168.1.10";
 }
 var onW = true;
 function applyW(){
@@ -3920,8 +5223,18 @@ function openAdd(sv){
   document.getElementById("at").textContent = sv ? "EDIT SERVICE" : "ADD SERVICE";
   document.getElementById("okb").textContent = sv ? "Save" : "Add";
   document.getElementById("fn").value = sv ? sv.name : "";
-  document.getElementById("fs").value = sv && sv.scheme === "https" ? "https" : "http";
-  document.getElementById("fa").value = sv ? sv.addr : "";
+  document.getElementById("fs").value = sv && (sv.scheme1 || sv.scheme) === "https" ? "https" : "http";
+  // an address left empty follows the server's address, so it shows as empty again here
+  document.getElementById("fa").value = sv ? (sv.addr1 != null ? sv.addr1 : sv.addr) : "";
+  // Failover on: a main and a failover address (both may stay empty: the server's own addresses)
+  var fo = st.failover || {}, mh = st.host || "192.168.1.10";
+  document.getElementById("fal").textContent = fo.on ? "MAIN ADDRESS" : "ADDRESS";
+  document.getElementById("ff2").style.display = fo.on ? "" : "none";
+  document.getElementById("fa2").value = sv && fo.on ? sv.addr2 || "" : "";
+  document.getElementById("fa2").placeholder = fo.host || "";
+  document.getElementById("fah").textContent = fo.on
+    ? "Leave both empty to use the server's main address (" + mh + ") and failover address (" + fo.host + "). The button opens the address the server is reached over right now, with the port below."
+    : "Leave empty to use the server's address (" + mh + ").";
   document.getElementById("fp").value = sv && sv.port ? sv.port : "";
   document.getElementById("fl").value = sv && sv.logo ? sv.logo : "";
   document.getElementById("flh").textContent = "Empty = emoji. Auto guesses from the name.";
@@ -3942,10 +5255,11 @@ function submitAdd(){
   var sc = document.getElementById("fs").value;
   var p = usePort ? document.getElementById("fp").value.replace(/[^0-9]/g, "") : "";
   var lu = document.getElementById("fl").value.trim();
-  if (!n || !a) { document.getElementById("er").textContent = "Enter a name and an address"; return; }
+  var a2 = (st.failover || {}).on ? document.getElementById("fa2").value.trim() : "";
+  if (!n) { document.getElementById("er").textContent = "Enter a name"; return; }
   if (lu && !/^https?:\\/\\//i.test(lu)) { document.getElementById("er").textContent = "Logo URL must start with http:// or https://"; return; }
   closeAdd();
-  location.href = "add://go?d=" + encodeURIComponent(JSON.stringify({ id: editId, name: n, scheme: sc, addr: a, port: p, onWidget: onW, logo: lu }));
+  location.href = "add://go?d=" + encodeURIComponent(JSON.stringify({ id: editId, name: n, scheme: sc, addr: a, addr2: a2, port: p, onWidget: onW, logo: lu }));
 }
 var lpT = {};
 function previewLogo(uid, iid){
@@ -4194,6 +5508,7 @@ function setReply(rq, r){
   sEl("sbody").classList.remove("sbusy");
   if (cb) cb(r || { ok: false, error: "No answer" });
 }
+var setupNext = null;
 function openSettings(){
   if (Date.now() < ign) return;
   togglePmenu(false);
@@ -4217,6 +5532,16 @@ function openSettings(){
     S.lu = "";
     S.lp = "";
     S.lerr = "";
+    S.page = r.firstRun ? "server" : null;
+    // from a setup button in a button's menu ("Add Proxmox login", "Set up the helper" ...)
+    var fx = setupNext;
+    setupNext = null;
+    if (fx) {
+      S.page = "server";
+      if (fx === "login" || fx === "loginAgain") { S.loginOpen = S.f.platform; S.focus = "login"; }
+      else if (fx === "monitoring") { S.f.monitoring = true; S.focus = "monitoring"; }
+      else S.focus = "helper";
+    }
     sEl("ssave").style.display = "";
     sRender();
   });
@@ -4363,6 +5688,7 @@ function addrHint(PL, P){
     : "";
   return "Pick http or https, then type the IP or name, plus a port if it isn't the usual one (e.g. 192.168.1.10:90)." + usual + " LIVE / OFFLINE checks this address, Reboot / Shut down use it, and Glances is looked for on it. Use your VPN address to reach it away from home.";
 }
+var FAILOVER_HINT = "Used when the main server address doesn't answer (e.g. the VPN is down): -board then connects over this address, with the same http / https and port. The main address is always tried first, and used again as soon as it answers. Your buttons follow the address that answers.";
 // The one server address field: http / https list + IP or name with an optional port.
 // o: { PL, platform, host, scheme ("" = the usual one), port, onChange({ host, scheme, port }) }
 function serverAddrField(parent, label, o){
@@ -4566,15 +5892,23 @@ function sRender(){
   if (I.firstRun) {
     var wel = document.createElement("div");
     wel.className = "cnote";
-    wel.textContent = "Welcome to -board. Enter your server's IP or name below, pick its server type, tap Test connection, then Save. After that, add your services with the + button.";
+    wel.textContent = "Welcome to -board. Enter your server's IP or name below and pick its server type, then tap Test connection at the bottom of this page, and Save. After that, add your services with the + button.";
     b.appendChild(wel);
   }
 
-  var dv0 = document.createElement("div");
-  dv0.className = "sdiv";
-  dv0.textContent = "THIS SERVER";
-  b.appendChild(dv0);
+  // the list of pages; each page shows only its own sections
+  var PG = S.page || "";
+  if (!PG) {
+    sPages(b);
+    if (!S.animated) { S.animated = true; restagger(b.children); }
+    return;
+  }
+  var bk = document.createElement("div");
+  bk.className = "sback";
+  sChip(bk, "‹ All settings", function(){ S.page = null; S.animated = false; sRender(); sTopReset(); });
+  b.appendChild(bk);
 
+  if (PG === "server") {
   // ---------- SERVER ----------
   // the same order as Add server: name, type, address, login
   var c = sSec(b, "SERVER");
@@ -4584,11 +5918,27 @@ function sRender(){
   nmx.i.oninput = function(){ S.title = nmx.i.value; };
   nmf.appendChild(nmx.w);
   var tf = sLabel(c, "SERVER TYPE");
+  tf.id = "sf-type";
   tf.appendChild(radioRow(typeOpts(PL), P, function(v){ f.platform = v; sRender(); }));
   sHint(c, TYPE_HINT[P] || TYPE_HINT.none);
-  serverAddrField(c, "SERVER ADDRESS", { PL: PL, platform: P, host: f.serverHost, scheme: f.serverScheme, port: f.serverPort,
+  var am = document.createElement("div");
+  am.id = "sf-address";
+  c.appendChild(am);
+  serverAddrField(c, f.failover ? "MAIN SERVER ADDRESS" : "SERVER ADDRESS", { PL: PL, platform: P, host: f.serverHost, scheme: f.serverScheme, port: f.serverPort,
     onChange: function(a){ f.serverHost = a.host; f.serverScheme = a.scheme; f.serverPort = a.port; } });
   sHint(c, addrHint(PL, P));
+  // Failover: a second address for this server, tried when the main one doesn't answer
+  var ftg = document.createElement("div");
+  ftg.className = "tg";
+  ftg.innerHTML = "<label>FAILOVER ADDRESS (OPTIONAL)</label>";
+  ftg.appendChild(sSwitch(!!f.failover, function(v){ f.failover = v; sRender(); }));
+  c.appendChild(ftg);
+  if (f.failover) {
+    var fof = sLabel(c, "FAILOVER SERVER ADDRESS"), fox = sInputEl(f.failoverHost || "", "e.g. 192.168.1.10", "url");
+    fox.i.oninput = function(){ f.failoverHost = fox.i.value.trim(); };
+    fof.appendChild(fox.w);
+    sHint(c, FAILOVER_HINT);
+  } else sHint(c, "On: a second address for this server, used when the main server address doesn't answer.");
   // an older separate address for the server system on another host (still used until it's cleared)
   if (P !== "none" && f[PL[P].url]) {
     var ov = sRow(c, "Reboot / Shut down use " + f[PL[P].url], "A separate address from an older version of -board");
@@ -4607,7 +5957,23 @@ function sRender(){
       sSend({ op: "helper", s: S.f, key: k }, function(r){ if (sMsg(r)) { I.logins.linux = true; st.hasLogin = (UI.platform === "linux") || st.hasLogin; sRender(); } });
     });
     hb.style.alignSelf = "flex-start";
+    hb.id = "sf-helper";
     sHint(c, "Then SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It asks for your sudo password once, installs the helper as a system service and opens its port in ufw / firewalld if they're on. Run it again after changing the address or port.");
+  }
+  if (P === "omv") {
+    // OpenMediaVault's API has no container controls, so the -board helper runs them (the same one as for Linux)
+    var oh = sChip(c, I.logins.linux ? "Containers helper: copy setup command" : "Containers helper: create key & copy setup command", function(){
+      var k = "";
+      try {
+        var a = new Uint8Array(24);
+        crypto.getRandomValues(a);
+        for (var i = 0; i < a.length; i++) k += ("0" + a[i].toString(16)).slice(-2);
+      } catch (e) { k = ""; }
+      sSend({ op: "helper", s: S.f, key: k }, function(r){ if (sMsg(r)) { I.logins.linux = true; sRender(); } });
+    });
+    oh.style.alignSelf = "flex-start";
+    oh.id = "sf-helper";
+    sHint(c, "For Start / Stop / Restart / Logs of your Docker containers (hold a button). OpenMediaVault's API doesn't offer these, so a tiny helper runs them: SSH into the server (ssh you@" + hostPh + "), paste and press Enter. It uses port 61209.");
   }
   if (P !== "linux" && P !== "none") {
     var LN = PL[P].login;
@@ -4626,6 +5992,7 @@ function sRender(){
     if (S.loginOpen === P) {
       var lf = document.createElement("div");
       lf.className = "slogin";
+      lf.id = "sf-login";
       c.appendChild(lf);
       var uf = sLabel(lf, LN.toUpperCase() + " USERNAME"), ux = sInputEl(S.lu, PL[P].userPh || "", null);
       ux.i.setAttribute("autocomplete", "username");
@@ -4669,28 +6036,10 @@ function sRender(){
     });
   }
   sToggle(c, "SHOW REBOOT / SHUT DOWN", "showPower", "Off hides the arrow and menu next to the server name.");
-  var res = document.createElement("div");
-  res.className = "sres";
-  var tb = sChip(c, "Test connection", function(){
-    res.innerHTML = '<div><span>Testing...</span></div>';
-    sSend({ op: "test", s: S.f, gpass: S.gpass }, function(r){
-      res.innerHTML = "";
-      if (!r.ok) { res.textContent = r.error || "Test failed"; return; }
-      r.lines.forEach(function(l){
-        var d = document.createElement("div");
-        if (!l.ok) d.className = "bad";
-        d.innerHTML = "<i></i><span></span>";
-        d.querySelector("span").textContent = l.t;
-        res.appendChild(d);
-      });
-    });
-  });
-  tb.style.alignSelf = "flex-start";
-  c.appendChild(res);
-  sHint(c, "Tests the server, Glances (below) and Reboot / Shut down with the values in this form, even before you save them.");
 
   // ---------- MONITORING ----------
   c = sSec(b, "MONITORING");
+  c.id = "sf-monitoring";
   var mt = document.createElement("div");
   mt.className = "tg";
   mt.innerHTML = "<label>MONITORING (GLANCES)</label>";
@@ -4700,6 +6049,9 @@ function sRender(){
     ? "CPU, RAM, storage and network from Glances, in a fold-away panel on the dashboard and as gauges on the widget."
     : "Off: no Monitoring panel, no gauges on the widget (it shows your service buttons instead), and -board sends no requests to Glances. The LIVE / OFFLINE status still works.");
   if (f.monitoring) {
+    var gm = document.createElement("div");
+    gm.id = "sf-glances";
+    c.appendChild(gm);
     var gh = f.serverHost || I.host;
     sUrl(c, "GLANCES ADDRESS", "baseUrl", { scheme: "http", ports: { http: 61208, https: 61208 }, host: gh, ph: gh ? gh + " (the server)" : "IP or name" }, "Leave empty for " + (gh ? "http://" + gh + ":61208" : "the server address on port 61208") + ". Otherwise pick http or https and type the IP or name; port 61208 is added for IP addresses and local names unless you type another. A public domain (behind a reverse proxy) gets no port added.");
     sSelect(c, "GLANCES API VERSION", "apiVersion", [[4, "4 (Glances 4.x)"], [3, "3 (Glances 3.x)"]], null, true);
@@ -4763,12 +6115,42 @@ function sRender(){
     });
   }
 
-  // ---------- WIDGET ----------
-  var dv1 = document.createElement("div");
-  dv1.className = "sdiv";
-  dv1.textContent = "SHARED BY ALL SERVERS";
-  b.appendChild(dv1);
+  // ---------- TEST CONNECTION: where you end up after typing the server and Monitoring details ----------
+  c = sSec(b, "TEST CONNECTION");
+  var res = document.createElement("div");
+  res.className = "sres";
+  var showTest = function(){
+    res.innerHTML = "";
+    if (!S.test) return;
+    if (S.test === "busy") { res.innerHTML = '<div><span>Testing...</span></div>'; return; }
+    S.test.forEach(function(l){
+      var d = document.createElement("div");
+      if (!l.ok) d.className = "bad";
+      d.innerHTML = "<i></i><span></span>";
+      d.querySelector("span").textContent = l.t;
+      res.appendChild(d);
+      if (!l.ok && l.fix && l.fix.length) {
+        var fx = document.createElement("div");
+        fx.className = "sfix";
+        l.fix.forEach(function(x){ sChip(fx, x[1], function(){ testFix(x[0]); }); });
+        res.appendChild(fx);
+      }
+    });
+  };
+  var tb = document.createElement("div");
+  tb.className = "sbtns";
+  var tbb = document.createElement("button");
+  tbb.className = "ok";
+  tbb.textContent = "Test connection";
+  tbb.onclick = function(){ if (!S.busy) runTest(); };
+  tb.appendChild(tbb);
+  c.appendChild(tb);
+  c.appendChild(res);
+  showTest();
+  sHint(c, S.test && S.test !== "busy" ? "Tap a button under a red line to fix it." : "Checks the server address, Glances and Reboot / Shut down with the values above, even before you save them. Anything that fails comes with a button that fixes it.");
+  }
 
+  if (PG === "widget") {
   c = sSec(b, "WIDGET");
   sHint(c, "Each widget shows one server: long-press the widget, Edit Widget, and type the server's name or number (1 = the first) under Parameter. Empty = the first server.");
   sNum(c, "REFRESH EVERY (MINUTES)", "refreshMinutes", "5", "iOS decides the exact moment, so this is the shortest gap, not a promise.");
@@ -4777,7 +6159,9 @@ function sRender(){
   sText(c, "WIDGET TITLE", "widgetTitle", "Same as the dashboard name");
   sSelect(c, "BUTTON ROWS", "widgetRows", [[1, "1 row (4 buttons)"], [2, "2 rows (8 buttons)"], [3, "3 rows (12 buttons)"], [4, "4 rows (16 buttons)"], [5, "5 rows (20 buttons)"], [6, "6 rows (24 buttons)"]], null, true);
 
-  // ---------- BUTTONS ----------
+  }
+
+  if (PG === "buttons") {
   c = sSec(b, "BUTTONS");
   sToggle(c, "SHOW LOGOS", "useLogos", "Off shows the emoji instead.");
   sSelect(c, "DASHBOARD COLUMNS", "columns", [[2, "2 columns"], [3, "3 columns"]], null, true);
@@ -4805,7 +6189,9 @@ function sRender(){
     sRow(rl, "None", "Built-in buttons you delete show up here");
   }
 
-  // ---------- THEME & LOOK ----------
+  }
+
+  if (PG === "look") {
   c = sSec(b, "THEME & LOOK");
   sRadio(c, "STYLE", "style", [["classic", "Classic"], ["glass", "Liquid Glass"]], function(){ sChanged("style"); sRender(); });
   sHint(c, f.style === "glass"
@@ -4839,8 +6225,10 @@ function sRender(){
   sSelect(c, "BUTTON SIZE", "buttonSize", [["normal", "Normal"], ["compact", "Compact"]]);
   sHint(c, "Changes show on the dashboard behind this sheet as you pick them. Cancel puts the old look back. The widget background follows the theme and glow.");
 
-  // ---------- DATA ----------
-  c = sSec(b, "DATA");
+  }
+
+  if (PG === "backup") {
+  c = sSec(b, "BACKUP");
   var bx = document.createElement("div");
   bx.className = "sbtns";
   c.appendChild(bx);
@@ -4865,7 +6253,12 @@ function sRender(){
   bx.appendChild(b4);
   sHint(c, "Export copies all settings, buttons, stacks and layout to the clipboard (passwords stay on the phone). Import reads them back from the clipboard. Reset layout clears the button order and stacks but keeps your own buttons.");
 
-  // ---------- DELETE SERVER (the very bottom, asks to confirm) ----------
+  }
+
+  if (PG === "about") sAbout(b);
+
+  // ---------- DELETE SERVER (the very bottom of This server, asks to confirm) ----------
+  if (PG === "server") {
   var dname = document.getElementById("title").textContent;
   c = sSec(b, "DELETE SERVER");
   var dbx = document.createElement("div");
@@ -4881,7 +6274,89 @@ function sRender(){
   sHint(c, only
     ? "This is your only server, so it can't be deleted. Add another server first (swipe the server name left)."
     : "Deletes this server's settings, logins, buttons, stacks and layout from the phone. Your other servers stay. Asks to confirm.");
+  }
   if (!S.animated) { S.animated = true; restagger(b.children); }
+  // opened from a setup button in a button's menu: scroll to the part that fixes it
+  if (S.focus) {
+    var fe = sEl("sf-" + S.focus);
+    S.focus = null;
+    if (fe) setTimeout(function(){ fe.scrollIntoView({ behavior: "smooth", block: "center" }); var ip = fe.querySelector("input"); if (ip && !ip.value) ip.focus(); }, 120);
+  }
+}
+
+// the first screen of Settings: the pages
+var SPAGES = [
+  ["server", "This server", "Address, type, login, Monitoring, Test connection", true],
+  ["widget", "Widget", "Refresh, corner button, rows"],
+  ["buttons", "Buttons", "Logos, columns, up / down checks"],
+  ["look", "Appearance", "Style, theme, accent, font"],
+  ["backup", "Backup", "Export, import, logo cache, reset layout"],
+  ["about", "About", "Version and how -board keeps your data"]
+];
+function sPages(b){
+  var sec = null;
+  SPAGES.forEach(function(pg, i){
+    if (i === 0 || i === 1) {
+      var dv = document.createElement("div");
+      dv.className = "sdiv";
+      dv.textContent = i === 0 ? "THIS SERVER" : "SHARED BY ALL SERVERS";
+      b.appendChild(dv);
+      sec = document.createElement("div");
+      sec.className = "scard";
+      b.appendChild(sec);
+    }
+    var row = document.createElement("div");
+    row.className = "spage";
+    row.innerHTML = "<div><b></b><span></span></div><i>›</i>";
+    row.querySelector("b").textContent = pg[1];
+    row.querySelector("span").textContent = pg[2];
+    row.onclick = function(){ if (Date.now() < ign || S.busy) return; S.page = pg[0]; S.animated = false; sRender(); sTopReset(); };
+    sec.appendChild(row);
+  });
+}
+function sTopReset(){ var sb = sEl("sbody"); if (sb && sb.parentNode) sb.parentNode.scrollTop = 0; }
+function sAbout(b){
+  var c = sSec(b, "-BOARD");
+  var r1 = sRow(c, "Version", "-board for Scriptable");
+  var v = document.createElement("b");
+  v.textContent = S.info.version || "";
+  r1.appendChild(v);
+  sRow(c, "Servers", (st.servers || []).map(function(x){ return x.name; }).join(", "));
+  sHint(c, "A live dashboard and home screen widget for your home server: LIVE / OFFLINE, Glances monitoring, service buttons, app and container controls, and Reboot / Shut down for ZimaOS, Proxmox, TrueNAS, Unraid, Synology, OpenMediaVault and Linux.");
+  c = sSec(b, "YOUR DATA");
+  sHint(c, "Settings, buttons and layout are stored only on this phone (in Scriptable's folder). Logins are kept in the iOS Keychain and never leave the phone, not even in an export.");
+  sHint(c, "Every save writes a complete new copy first and keeps the previous one as a backup, so a phone that switches off mid-save can't wipe your servers and buttons.");
+  if (S.info.loadNote) {
+    var n = document.createElement("div");
+    n.className = "sres";
+    n.innerHTML = '<div class="bad"><i></i><span></span></div>';
+    n.querySelector("span").textContent = S.info.loadNote;
+    c.appendChild(n);
+  }
+  c = sSec(b, "THANKS");
+  sHint(c, "Monitoring figures come from Glances (nicolargo/glances). Logos come from the dashboard-icons collection.");
+}
+// Test connection with the values in the form
+function runTest(){
+  S.test = "busy";
+  sRender();
+  sSend({ op: "test", s: S.f, gpass: S.gpass }, function(r){
+    S.test = r.ok ? r.lines : [{ ok: false, t: r.error || "Test failed" }];
+    sRender();
+    var tc = document.querySelector(".sres");
+    if (tc) tc.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+// the buttons under a failed test line
+function testFix(code){
+  var f = S.f;
+  if (code === "failoverOff") { f.failover = false; runTest(); return; }
+  if (code === "monitoringOff") { f.monitoring = false; runTest(); return; }
+  if (code === "api3" || code === "api4") { f.apiVersion = code === "api3" ? 3 : 4; runTest(); return; }
+  if (code === "login") { S.loginOpen = f.platform; S.lu = ""; S.lp = ""; S.lerr = ""; S.focus = "login"; sRender(); return; }
+  if (code === "helper") { var hb = sEl("sf-helper"); if (hb) hb.click(); return; }
+  S.focus = { address: "address", type: "type", glances: "glances" }[code] || null;
+  sRender();
 }
 
 function saveSettings(){
@@ -4896,6 +6371,8 @@ function saveSettings(){
     if (Number(t.hot) <= Number(t.warm)) { sEl("serr").textContent = "Red has to start above orange (" + tk[i].toUpperCase() + ")"; return; }
   }
   if (!String(f.serverHost || "").trim()) { sEl("serr").textContent = "Enter your server's IP or name (Settings > Server)"; return; }
+  if (f.failover && !String(f.failoverHost || "").trim()) { sEl("serr").textContent = "Enter the failover server address, or switch Failover off"; return; }
+  if (f.failover && String(f.failoverHost).trim().toLowerCase() === String(f.serverHost).trim().toLowerCase()) { sEl("serr").textContent = "The failover server address has to be different from the main server address"; return; }
   if (f.baseUrl && !/^https?:\\/\\/[^\\/:]+/i.test(f.baseUrl)) { sEl("serr").textContent = "The Glances address must start with http:// or https://"; return; }
   var urls = [];
   for (i = 0; i < urls.length; i++) {
@@ -4978,13 +6455,12 @@ function rectOf(e){
   }
   return e.getBoundingClientRect();
 }
-// press: squish + a glint where the finger lands (the styles only exist in the glass look)
+// press: squish + a glint where the finger lands in the glass look; Classic shrinks and dims a little
 var PRESS = ".svc,.monbtn,.addbtn,.gear,.lay,.btns button,.sbtns button,.shd button,.chip,.pmenu button,.swt,.card,.live,.seg button";
 var prEl = null, prX = 0, prY = 0;
 function clearPress(){ if (prEl) { prEl.classList.remove("prs"); prEl = null; } }
 document.addEventListener("touchstart", function(e){
   clearPress();
-  if (!isGlass()) return;
   var el = e.target.closest && e.target.closest(PRESS);
   if (!el || el.classList.contains("ghost")) return;
   var t = e.touches[0], r = el.getBoundingClientRect();
@@ -5026,8 +6502,76 @@ setTimeout(function(){ if (!booted) skipSplash(); }, 3000); // in case the data 
 
 // Changing the server on screen: everything fetched for the last one is dropped, then the page redraws
 let GEN = 0;
+// ---------- Widget snapshot: the dashboard's latest figures, handed to the widget when you leave it ----------
+// The widget uses them when they're under 3 minutes old and were taken with the same settings (no extra requests).
+const SNAP_MS = 3 * 60 * 1000;
+let lastUp = null;
+function snapPath() {
+  const fm = FileManager.local();
+  return fm.joinPath(fm.documentsDirectory(), "board-snapshot.json");
+}
+function snapKey() {
+  return JSON.stringify([serverHostOf(SAVED), SAVED.platform, SAVED.monitoring, SAVED.baseUrl, SAVED.apiVersion, SAVED.diskMounts, SAVED.maxDisks, SAVED.networkInterface, onFailover()]);
+}
+function writeSnapshot(stats, reach) {
+  try {
+    const fm = FileManager.local();
+    const p = snapPath();
+    let all = {};
+    try { if (fm.fileExists(p)) all = JSON.parse(fm.readString(p)) || {}; } catch (e) {}
+    all[CUR] = { at: Date.now(), key: snapKey(), stats: stats || null, reach: !!reach, up: lastUp };
+    fm.writeString(p, JSON.stringify(all));
+  } catch (e) {}
+}
+function readSnapshot() {
+  try {
+    const fm = FileManager.local();
+    const p = snapPath();
+    if (!fm.fileExists(p)) return null;
+    const sn = (JSON.parse(fm.readString(p)) || {})[CUR];
+    return sn && Date.now() - sn.at < SNAP_MS && sn.key === snapKey() ? sn : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------- Reboot / Shut down sent: the dashboard follows the server until it's back (or off) ----------
+const WATCH_SECONDS = 3;
+let WATCH = null; // { a, server, since, sawDown }
+let REFRESH = false; // pull to refresh: check everything now
+function fmtDur(ms) {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  return t < 60 ? `${t} s` : t < 3600 ? `${Math.floor(t / 60)} m ${t % 60} s` : `${Math.floor(t / 3600)} h ${Math.floor((t % 3600) / 60)} m`;
+}
+// returns a message for the toast when the watch ends
+function watchTick(up) {
+  const w = WATCH;
+  if (!w) return null;
+  if (w.server !== CUR) { WATCH = null; return ""; }
+  const took = Date.now() - w.since;
+  if (!up) {
+    if (w.a === "off") { WATCH = null; return `${getTitle()} is off (after ${fmtDur(took)})`; }
+    w.sawDown = true;
+    if (took > 20 * 60 * 1000) { WATCH = null; return `Still offline after ${fmtDur(took)}. Check the server.`; }
+    return null;
+  }
+  if (w.sawDown) {
+    WATCH = null;
+    statusDirty = true;
+    return `Back online after ${fmtDur(took)}`;
+  }
+  if (took > 4 * 60 * 1000) {
+    // it never went away: the command probably didn't do anything
+    WATCH = null;
+    return `The server kept answering for ${fmtDur(took)}. It may not have ${w.a === "off" ? "shut down" : "rebooted"}.`;
+  }
+  return null;
+}
+
 async function showServer(wv, dir) {
   GEN++;
+  WATCH = null;
+  lastUp = null;
   fsCache = null;
   lastStats = null;
   expanded = null;
@@ -5040,6 +6584,7 @@ async function showServer(wv, dir) {
 async function showLiveDashboard(openStackId) {
   const sleep = (ms) => new Promise((resolve) => Timer.schedule(ms, false, resolve));
   const wv = new WebView();
+  let lastReach = 0;
 
   // Service buttons use an open:// link; open it in an in-app browser
   // instead of navigating away from the dashboard.
@@ -5052,10 +6597,10 @@ async function showLiveDashboard(openStackId) {
           const item = makeCustom(d);
           let id = d.id;
           if (d.id && String(d.id).startsWith("b:")) {
-            data.edits[d.id] = { name: item.name, port: item.port, url: item.url, logo: item.logo };
+            data.edits[d.id] = { name: item.name, port: item.port, url: item.url, logo: item.logo, auto: item.auto, url2: item.url2 };
           } else if (d.id) {
             const i = data.custom.findIndex((c) => c.id === d.id);
-            if (i >= 0) data.custom[i] = { ...data.custom[i], name: item.name, port: item.port, url: item.url, logo: item.logo };
+            if (i >= 0) data.custom[i] = { ...data.custom[i], name: item.name, port: item.port, url: item.url, logo: item.logo, auto: item.auto, url2: item.url2 };
           } else {
             item.id = "c:" + Date.now();
             id = item.id;
@@ -5193,8 +6738,14 @@ async function showLiveDashboard(openStackId) {
         } catch (e) {
           r = { ok: false, msg: "Something went wrong: " + ((e && e.message) || e), a: d.a, hasLogin: hasLogin() };
         }
+        if (r && r.ok) {
+          // REBOOTING... / SHUTTING DOWN... until the server is back (or off)
+          WATCH = { a: d.a === "off" ? "off" : "restart", server: CUR, since: Date.now(), sawDown: false };
+          lastReach = 0;
+        }
         try {
           await wv.evaluateJavaScript(`powerResult(${JSON.stringify(r)})`, false);
+          if (WATCH) await wv.evaluateJavaScript(`watchState(${JSON.stringify(WATCH.a)})`, false);
         } catch (e) {}
       })();
       return false;
@@ -5213,20 +6764,28 @@ async function showLiveDashboard(openStackId) {
           else if (d.act === "add") {
             // the new server's address and type; the login (if given) is checked before the server is added
             const own = cleanSettings({
-              ...SET, serverHost: d.host, serverScheme: d.scheme, serverPort: d.port, platform: d.platform || "none",
+              ...SAVED, serverHost: d.host, serverScheme: d.scheme, serverPort: d.port, platform: d.platform || "none",
+              failover: !!d.failoverHost, failoverHost: d.failoverHost || "",
               proxmoxNode: "", baseUrl: "", username: "", diskMounts: [], networkInterface: "",
               ...Object.fromEntries(PLATFORM_KEYS.map((k) => [PLATFORMS[k].url, ""])),
             });
             const withLogin = !!(DRIVERS[own.platform] && d.u && d.p);
             if (withLogin) {
-              const r = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, own), own);
+              let r = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, own), own);
+              // the main address can't be reached: check the login over the failover address
+              if (!r.ok && r.net && failoverReady(own)) {
+                const fo = viaFailover(own);
+                const r2 = await DRIVERS[own.platform](null, d.u, d.p, platformBase(own.platform, fo), fo);
+                if (r2.ok || !r2.net) r = r2;
+              }
               if (!r.ok) {
                 const error = (r.msg || "The login didn't work.") + (r.net ? " Check the address, or add the server without the login and enter it later." : "");
                 await wv.evaluateJavaScript(`addServerResult(${JSON.stringify({ ok: false, error })})`, false);
                 return;
               }
             }
-            const id = addServer(d.name, { serverHost: own.serverHost, serverScheme: own.serverScheme, serverPort: own.serverPort, platform: own.platform });
+            const id = addServer(d.name, { serverHost: own.serverHost, serverScheme: own.serverScheme, serverPort: own.serverPort, platform: own.platform,
+              failover: own.failover, failoverHost: own.failoverHost });
             if (withLogin) {
               Keychain.set(loginKeys(own.platform, id).user, d.u);
               Keychain.set(loginKeys(own.platform, id).pass, d.p);
@@ -5247,6 +6806,29 @@ async function showLiveDashboard(openStackId) {
       })();
       return false;
     }
+    // apps / containers, Pick from, logos, pull to refresh: the page asks, rpcReply answers
+    if (req.url.startsWith("rpc://")) {
+      (async () => {
+        let d = {};
+        try {
+          d = JSON.parse(decodeURIComponent(req.url.slice(req.url.indexOf("?d=") + 3)));
+        } catch (e) {}
+        let r;
+        try {
+          r = await rpcOp(d);
+        } catch (e) {
+          r = { ok: false, msg: (e && e.message) || String(e) };
+        }
+        try {
+          if (r && r.reload) {
+            await pushServices(wv);
+            refreshLogos(wv);
+          }
+          await wv.evaluateJavaScript(`rpcReply(${JSON.stringify(d.rq)}, ${JSON.stringify(r)})`, false);
+        } catch (e) {}
+      })();
+      return false;
+    }
     if (req.url.startsWith("open://")) {
       Safari.open(decodeURIComponent(req.url.split("u=")[1]));
       return false;
@@ -5256,7 +6838,7 @@ async function showLiveDashboard(openStackId) {
 
   // the chosen style and startup screen are set before the first paint (no flash of the other look)
   const bodyCls = [SET.style === "glass" ? "glass" : "", SET.splash ? "splashon" : ""].join(" ").trim();
-  await wv.loadHTML(LIVE_HTML.replace("<body>", `<body class="${bodyCls}">`));
+  await wv.loadHTML(LIVE_HTML.replace("<body>", `<body class="${bodyCls}">`).replace("</script></body>", LIVE_EXTRA + "</script></body>"));
   await wv.evaluateJavaScript(
     `init(${JSON.stringify(getTitle())}, ${JSON.stringify(getPayload())})`,
     false
@@ -5274,41 +6856,80 @@ async function showLiveDashboard(openStackId) {
     open = false;
   });
 
-  // LIVE / OFFLINE: is anything on the server answering? Checked in the background every REACH_SECONDS.
+  // LIVE / OFFLINE: is anything on the server answering? Checked in the background every REACH_SECONDS
+  // (every WATCH_SECONDS while a reboot is followed), and not at all while Glances answers on the main address.
   let reachBusy = false;
-  let lastReach = 0;
   let reachFor = "";
+  let lastGlancesOk = 0;
+  let lastReachOk = false;
+  const endWatch = async (m) => {
+    if (m === null) return;
+    await wv.evaluateJavaScript(`watchState(null)`, false);
+    if (m) await wv.evaluateJavaScript(`toast(${JSON.stringify(m)}, 5500)`, false);
+  };
   while (open) {
+    if (REFRESH) {
+      REFRESH = false;
+      lastReach = 0;
+      statusDirty = true;
+      lastStatus = 0;
+    }
     if (!serverHostOf(SET)) {
       await wv.evaluateJavaScript("offline(true)", false);
       await sleep(1000);
       continue;
     }
-    // a changed address is checked straight away
-    const rk = serverUrlOf(SET) + "|" + SET.platform + "|" + SET.monitoring + "|" + SET.baseUrl;
-    if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > REACH_SECONDS * 1000)) {
+    // a changed address is checked straight away. With Failover on, this also picks the address to use:
+    // the main one, or the failover one if only it answers.
+    const rk = serverUrlOf(SAVED) + "|" + SAVED.platform + "|" + SAVED.monitoring + "|" + SAVED.baseUrl + "|" + (failoverReady(SAVED) ? SAVED.failoverHost : "");
+    // Glances is asked first, so it never waits behind the LIVE checks
+    const gG = GEN;
+    const statsP = SET.monitoring && (rk === reachFor || !failoverReady(SAVED)) ? getStats({ fsMaxAge: 10000 }).then((x) => ({ ok: x }), () => ({ ok: null })) : null;
+    const every = (WATCH ? WATCH_SECONDS : REACH_SECONDS) * 1000;
+    // Glances answered on the main address within the last check interval: the server is up, no LIVE checks needed
+    // (on the failover address the checks still run, so -board notices when the main address is back)
+    if (!reachBusy && rk === reachFor && Date.now() - lastReach > every && SET.monitoring && !onFailover() && Date.now() - lastGlancesOk < every) {
+      lastReach = Date.now();
+      lastReachOk = true;
+      await wv.evaluateJavaScript(`setReach(true, false)`, false);
+      await endWatch(watchTick(true));
+    } else if (!reachBusy && (rk !== reachFor || Date.now() - lastReach > every)) {
       reachBusy = true;
+      const first = rk !== reachFor;
       reachFor = rk;
       const g = GEN;
-      serverReachable(SET)
-        .then((r) => (g === GEN ? wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r)})`, false) : null))
+      const check = resolveRoute(SAVED)
+        .then(async (r) => {
+          if (g !== GEN) return;
+          if (r.changed) {
+            // the buttons, Glances and Reboot / Shut down follow the address that answered
+            fsCache = null;
+            statusDirty = true;
+            await pushServices(wv);
+            await wv.evaluateJavaScript(`toast(${JSON.stringify(r.failover ? `Main address not answering: connected over the failover address (${SAVED.failoverHost})` : "Connected over the main address again")}, 3500)`, false);
+          }
+          lastReachOk = !!r.answered;
+          await wv.evaluateJavaScript(`setReach(${JSON.stringify(!!r.answered)}, ${JSON.stringify(onFailover())})`, false);
+          await endWatch(watchTick(!!r.answered));
+        })
         .catch(() => {})
         .then(() => {
           reachBusy = false;
           lastReach = Date.now();
         });
+      // with Failover on, the first check decides the address before Glances and the buttons are asked
+      if (first && failoverReady(SAVED)) await check;
     }
     // Monitoring off: no requests to Glances at all
     if (SET.monitoring) {
-      const g = GEN;
-      try {
-        const stats = await getStats({ fsMaxAge: 10000 });
-        if (g === GEN) {
-          lastStats = stats;
-          await wv.evaluateJavaScript(`update(${JSON.stringify(stats)})`, false);
-        }
-      } catch (e) {
-        if (g === GEN) await wv.evaluateJavaScript("offline()", false);
+      const g = gG;
+      const sr = statsP ? await statsP : await getStats({ fsMaxAge: 10000 }).then((x) => ({ ok: x }), () => ({ ok: null }));
+      if (g === GEN) {
+        if (sr.ok) {
+          lastStats = sr.ok;
+          if (!onFailover()) lastGlancesOk = Date.now();
+          await wv.evaluateJavaScript(`update(${JSON.stringify(sr.ok)})`, false);
+        } else await wv.evaluateJavaScript("offline()", false);
       }
       try {
         await pushDetail(wv);
@@ -5319,17 +6940,504 @@ async function showLiveDashboard(openStackId) {
       statusDirty = false;
       const g = GEN;
       checkServices(getServices(false), SET.pingTimeout)
-        .then((m) => (g === GEN ? wv.evaluateJavaScript(`setUp(${JSON.stringify(m)})`, false) : null))
+        .then((m) => { if (g !== GEN) return null; lastUp = m; return wv.evaluateJavaScript(`setUp(${JSON.stringify(m)})`, false); })
         .catch(() => {})
         .then(() => {
           statusBusy = false;
           lastStatus = Date.now();
         });
     }
-    await sleep(SET.liveSeconds * 1000);
+    // the next round; pull to refresh cuts the wait short
+    const until = Date.now() + (WATCH ? Math.min(SET.liveSeconds, WATCH_SECONDS) : SET.liveSeconds) * 1000;
+    while (open && !REFRESH && Date.now() < until) await sleep(250);
   }
   await presented;
+  // leaving the dashboard: the widget gets its latest figures
+  if (serverHostOf(SAVED)) writeSnapshot(SET.monitoring ? lastStats : null, lastReachOk || !!lastStats);
 }
+
+// The apps / containers part of the dashboard page (added to LIVE_HTML when it's loaded)
+const LIVE_EXTRA = String.raw`
+// ================= Apps and containers (same features as the Android app 2.2) =================
+// The page asks Scriptable over rpc:// and gets the answer in rpcReply.
+var rq2 = 0, rcb = {};
+function rpc(d, cb){
+  d.rq = "r" + (++rq2);
+  rcb[d.rq] = cb;
+  location.href = "rpc://go?d=" + encodeURIComponent(JSON.stringify(d));
+}
+function rpcReply(rq, r){
+  var cb = rcb[rq];
+  delete rcb[rq];
+  if (cb) cb(r || { ok: false, msg: "No answer" });
+}
+function h(tag, cls, text){
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function hbtn(parent, text, cls, fn){
+  var b = h("button", cls || "", text);
+  b.onclick = function(){ if (Date.now() >= ign) fn(b); };
+  parent.appendChild(b);
+  return b;
+}
+// a button that needs a second tap
+function armed(parent, text, again, cls, fn){
+  var on = false;
+  return hbtn(parent, text, cls, function(b){
+    if (!on) { on = true; b.textContent = again; return; }
+    fn(b);
+  });
+}
+var PSHORT = { zimaos: "ZimaOS", proxmox: "Proxmox", truenas: "TrueNAS", unraid: "Unraid", synology: "Synology", omv: "OMV", linux: "Linux" };
+function ctrOn(){ return !!UI.ctr; }
+function isZima(){ return UI.platform === "zimaos"; }
+function pickLabel(){
+  var P = UI.platform;
+  return P === "zimaos" ? "Pick from ZimaOS apps" : P === "proxmox" ? "Pick from Proxmox" : P === "truenas" ? "Pick from TrueNAS apps" : "Pick from " + (PSHORT[P] || "server") + " containers";
+}
+
+// one popup for everything below (filled by each feature)
+function xModal(){
+  var v = document.getElementById("xv");
+  if (!v) {
+    v = h("div");
+    v.id = "xv";
+    v.innerHTML = '<div class="modal" id="xm"></div>';
+    document.body.appendChild(v);
+  }
+  return v;
+}
+function xOpen(title){
+  var v = xModal(), m = document.getElementById("xm");
+  m.innerHTML = "";
+  m.appendChild(h("h2", "", title));
+  v.className = "show";
+  return m;
+}
+function xClose(){ var v = document.getElementById("xv"); if (v) v.className = ""; }
+
+// ---------- what Settings can do about a problem ("Add Proxmox login", "Set up the helper" ...) ----------
+function ctrProblem(parent, err, what, onClose, retry){
+  var fix = err && err.fix;
+  if (!fix) {
+    var e = h("div", "err", (err && err.msg) || "Something went wrong");
+    e.style.textAlign = "center";
+    parent.appendChild(e);
+    var b = h("div", "btns col");
+    hbtn(b, "Try again", "", retry);
+    parent.appendChild(b);
+    return;
+  }
+  var login = UI.login || "server";
+  var t = {
+    login: [what + " need your " + login + " login.", "Add " + login + " login"],
+    loginAgain: [login + " didn't accept the saved login.", "Enter " + login + " login again"],
+    helper: [what + " need a small helper on the server.", "Set up the helper"],
+    helperOld: ["The helper on the server is from an older -board.", "Update the helper"],
+    helperAgain: ["The helper on the server doesn't answer or refused the key.", "Set up the helper again"],
+    monitoring: ["On Unraid the container list comes from Glances.", "Turn on Monitoring"]
+  }[fix] || [err.msg, "Open Settings"];
+  parent.appendChild(h("div", "cnote", t[0]));
+  var bx = h("div", "btns col");
+  hbtn(bx, t[1], "gtxt", function(){ onClose(); openSetup(fix); });
+  parent.appendChild(bx);
+}
+// opens Settings > This server where the problem is fixed (with the login form already open)
+function openSetup(fix){
+  setupNext = fix;
+  setTimeout(openSettings, 0);
+}
+
+// ---------- the hold menu: Start / Stop / Restart / Logs for the button's app or container ----------
+var menuSv = null, menuGen = 0;
+function ctrSection(){
+  var m = document.getElementById("mctr");
+  if (!m) {
+    m = h("div");
+    m.id = "mctr";
+    var mod = document.querySelector("#mv .modal");
+    mod.insertBefore(m, mod.querySelector(".btns"));
+  }
+  return m;
+}
+function menuCtr(sv, force){
+  var box = ctrSection();
+  box.innerHTML = "";
+  menuSv = sv;
+  if (!ctrOn() || !sv || sv.kind === "group") return;
+  // ZimaOS without its login: no app controls (Settings > This server > Enter login)
+  if (isZima() && !st.hasLogin) return;
+  var g = ++menuGen;
+  box.appendChild(h("div", "cnote", isZima() ? "Looking for its app..." : "Looking for its container..."));
+  rpc({ op: "ctrFor", id: sv.id, force: !!force }, function(r){
+    if (g !== menuGen) return;
+    box.innerHTML = "";
+    if (r.none) return;
+    if (!r.ok) {
+      ctrProblem(box, r.err, isZima() ? "App controls" : "Start, Stop and Logs", closeMenu, function(){ menuCtr(sv, true); });
+      return;
+    }
+    var c = r.c;
+    if (!c) {
+      if (isZima()) return;
+      var bp = h("div", "btns col");
+      hbtn(bp, "Pick its container", "", function(){ closeMenu(); openCtrPick(sv); });
+      box.appendChild(bp);
+      return;
+    }
+    var nm = c.name && c.name.toLowerCase() !== String(sv.name).toLowerCase() ? " " + c.name : "";
+    box.appendChild(h("div", "cnote", c.label + nm + " · " + (c.running ? "running" : c.status || "stopped") + (c.update ? " · update available" : "")));
+    var bx = h("div", "btns col");
+    if (c.controllable) {
+      if (!c.known || c.running) {
+        armed(bx, "Stop", "Tap again to stop", "rtxt", function(){ ctrRun(c, "stop", "Stopping"); });
+        hbtn(bx, "Restart", "", function(){ ctrRun(c, "restart", "Restarting"); });
+        // Proxmox: Stop asks the guest to shut down; one that ignores it needs Force stop
+        if (UI.platform === "proxmox") armed(bx, "Force stop", "Tap again to force stop (like pulling the plug)", "rtxt", function(){ ctrRun(c, "kill", "Force stopping"); });
+      }
+      if (!c.running) hbtn(bx, "Start", "gtxt", function(){ ctrRun(c, "start", "Starting"); });
+    }
+    hbtn(bx, "Logs", "", function(){ closeMenu(); openLogs(c); });
+    if (c.update) hbtn(bx, "Update", "gtxt", function(){ ctrRun(c, "update", "Updating"); });
+    box.appendChild(bx);
+    if (!isZima()) {
+      var ch = h("div", "cctr");
+      var k = h("button", "chip", sv.ctr ? "Change container" : "Not this one? Pick another");
+      k.onclick = function(){ closeMenu(); openCtrPick(sv); };
+      ch.appendChild(k);
+      box.appendChild(ch);
+    }
+  });
+}
+function ctrRun(c, action, busy){
+  closeMenu();
+  xClose();
+  toast(busy + " " + c.name + "...", 120000);
+  rpc({ op: "ctrAction", cid: c.id, action: action }, function(r){
+    toast(r.msg || (r.ok ? "Done" : "The server didn't accept the command"), 4000);
+    if (isZima()) checkUpdates(true);
+  });
+}
+
+// ---------- Logs: the last 300 lines ----------
+function openLogs(c){
+  var m = xOpen(c.name);
+  var pre = h("pre", "logs", "Loading...");
+  m.appendChild(pre);
+  var bx = h("div", "btns");
+  var load = function(){
+    pre.textContent = "Loading...";
+    pre.classList.remove("bad");
+    rpc({ op: "ctrLogs", cid: c.id }, function(r){
+      pre.textContent = r.text || "";
+      pre.classList.toggle("bad", !r.ok);
+      pre.scrollTop = pre.scrollHeight;
+    });
+  };
+  hbtn(bx, "Refresh", "", load);
+  hbtn(bx, "Close", "ok", xClose);
+  m.appendChild(bx);
+  load();
+}
+
+// ---------- Pick its container (hold menu) ----------
+function openCtrPick(sv){
+  var m = xOpen("CONTAINER");
+  m.appendChild(h("div", "cnote", "Which container does " + sv.name + " control?"));
+  var list = h("div", "btns col");
+  list.appendChild(h("div", "cnote", "Loading..."));
+  m.appendChild(list);
+  var back = function(){ xClose(); showMenu(sv); };
+  var load = function(){
+    list.innerHTML = "";
+    list.appendChild(h("div", "cnote", "Loading..."));
+    rpc({ op: "ctrList" }, function(r){
+      list.innerHTML = "";
+      if (!r.ok) { ctrProblem(list, r.err, "Start, Stop and Logs", xClose, load); return; }
+      if (!r.list.length) list.appendChild(h("div", "cnote", "The server lists no containers."));
+      r.list.forEach(function(c){
+        hbtn(list, c.name + (c.known ? "  ·  " + (c.running ? "running" : c.status) : ""), sv.ctr === c.id ? "ok" : "", function(){
+          rpc({ op: "ctrLink", id: sv.id, cid: c.id }, function(){ sv.ctr = c.id; back(); });
+        });
+      });
+    });
+  };
+  var bx = h("div", "btns col");
+  if (sv.ctr) hbtn(bx, "Find it automatically", "", function(){ rpc({ op: "ctrLink", id: sv.id, cid: "" }, function(){ sv.ctr = ""; back(); }); });
+  hbtn(bx, "Cancel", "", back);
+  m.appendChild(bx);
+  load();
+}
+
+// ---------- + > Pick from ...: add apps / containers as buttons ----------
+function pickFromRow(){
+  var w = document.getElementById("pfw");
+  if (!w) {
+    w = h("div", "btns col");
+    w.id = "pfw";
+    var b = h("button", "", "");
+    b.id = "pfb";
+    b.onclick = function(){ if (Date.now() < ign) return; closeAdd(); openPickFrom(); };
+    w.appendChild(b);
+    var mod = document.querySelector("#ov .modal");
+    mod.insertBefore(w, mod.querySelector(".f"));
+  }
+  return w;
+}
+function openPickFrom(){
+  var zima = isZima(), P = UI.platform;
+  var m = xOpen(zima ? "ADD FROM ZIMAOS" : "ADD FROM " + (PSHORT[P] || "SERVER").toUpperCase());
+  m.appendChild(h("div", "cnote", zima ? "Your installed apps. Pick the ones to add as buttons; they get their address, a logo and the app controls."
+    : P === "proxmox" ? "Your containers and VMs. Pick the ones to add as buttons; they get the guest's address, a logo and the Start / Stop / Logs controls."
+    : "Your " + (P === "truenas" ? "apps" : "containers") + ". Pick the ones to add as buttons; they get the address and port, a logo and the Start / Stop / Logs controls."));
+  var body = h("div", "pfl");
+  body.appendChild(h("div", "cnote", "Loading..."));
+  m.appendChild(body);
+  var picked = {}, list = [], adding = false;
+  var bx = h("div", "btns");
+  hbtn(bx, "Cancel", "", xClose);
+  var add = hbtn(bx, "Add", "ok", function(){
+    if (adding) return;
+    var ids = list.filter(function(c){ return picked[c.id] && !c.has; }).map(function(c){ return c.id; });
+    if (!ids.length) return;
+    adding = true;
+    add.textContent = "Adding...";
+    rpc({ op: "ctrAdd", ids: ids }, function(r){
+      adding = false;
+      if (!r.ok) { add.textContent = "Add"; toast("Couldn't add them" + (r.msg ? ": " + r.msg : ""), 4000); return; }
+      xClose();
+      toast(r.n + (zima ? " app" : " button") + (r.n === 1 ? "" : "s") + " added", 3500);
+    });
+  });
+  var count = function(){
+    var n = list.filter(function(c){ return picked[c.id] && !c.has; }).length;
+    add.textContent = n ? "Add " + n : "Add";
+  };
+  var render = function(){
+    body.innerHTML = "";
+    var free = list.filter(function(c){ return !c.has; });
+    if (free.length > 1) {
+      var all = free.every(function(c){ return picked[c.id]; });
+      var sa = h("div", "cctr");
+      var chip = h("button", "chip", all ? "Select none" : "Select all");
+      chip.onclick = function(){ free.forEach(function(c){ picked[c.id] = !all; }); render(); };
+      sa.appendChild(chip);
+      body.appendChild(sa);
+    }
+    list.forEach(function(c){
+      var row = h("div", "pfr" + (c.has ? " has" : ""));
+      var tx = h("div", "pft");
+      tx.appendChild(h("b", "", c.title || c.name));
+      tx.appendChild(h("span", "", c.has ? "Already a button" : (zima ? (c.port ? "port " + c.port : "") : c.where) + (c.known ? " · " + (c.running ? "running" : c.status) : "")));
+      row.appendChild(tx);
+      if (!c.has) {
+        var sw = h("div", picked[c.id] ? "sw on" : "sw");
+        sw.appendChild(h("i"));
+        sw.onclick = function(){ picked[c.id] = !picked[c.id]; render(); };
+        row.appendChild(sw);
+      }
+      body.appendChild(row);
+    });
+    body.appendChild(h("div", "fh", zima ? "Apps that already have a button are greyed out." : P === "proxmox" ? "A button opens the guest's address; add its port afterwards with Edit if its page isn't on port 80." : "Check the port with Edit afterwards if a container publishes several."));
+    count();
+  };
+  var load = function(){
+    body.innerHTML = "";
+    body.appendChild(h("div", "cnote", "Loading..."));
+    rpc({ op: "ctrList" }, function(r){
+      body.innerHTML = "";
+      if (!r.ok) { ctrProblem(body, r.err, "These", xClose, load); return; }
+      list = r.list;
+      if (!list.length) { body.appendChild(h("div", "cnote", "The server lists nothing to add.")); return; }
+      render();
+    });
+  };
+  m.appendChild(bx);
+  load();
+}
+
+// ---------- ZimaOS: the "↑ 2 updates" chip next to Widget layout ----------
+var updList = [], updAt = 0;
+function checkUpdates(force){
+  var b = document.getElementById("updb");
+  if (!b) {
+    b = h("button", "lay upd", "");
+    b.id = "updb";
+    b.onclick = function(){ if (Date.now() >= ign) openUpdates(); };
+    var head = document.querySelector(".sechead");
+    head.insertBefore(b, document.getElementById("layb"));
+  }
+  if (!isZima() || !st.hasLogin) { b.style.display = "none"; return; }
+  if (!force && Date.now() - updAt < 60000) return;
+  updAt = Date.now();
+  rpc({ op: "zUpdates", force: !!force }, function(r){
+    updList = r.list || [];
+    b.textContent = "↑ " + updList.length + (updList.length === 1 ? " update" : " updates");
+    b.style.display = updList.length ? "" : "none";
+  });
+}
+function openUpdates(){
+  var m = xOpen("APP UPDATES");
+  var shown = updList.slice();
+  if (!shown.length) m.appendChild(h("div", "cnote", "Everything is up to date."));
+  shown.forEach(function(a){
+    var row = h("div", "pfr");
+    var tx = h("div", "pft");
+    tx.appendChild(h("b", "", a.name));
+    var sub = h("span", "", "New version in the App Store");
+    tx.appendChild(sub);
+    row.appendChild(tx);
+    var ub = h("button", "chip", "Update");
+    ub.onclick = function(){
+      if (ub.disabled) return;
+      ub.disabled = true;
+      ub.textContent = "Updating...";
+      rpc({ op: "ctrAction", cid: a.id, action: "update" }, function(r){
+        ub.textContent = r.ok ? "Updating" : "Failed";
+        sub.textContent = r.msg || "";
+        checkUpdates(true);
+      });
+    };
+    row.appendChild(ub);
+    m.appendChild(row);
+  });
+  var bx = h("div", "btns");
+  hbtn(bx, "Close", "ok", xClose);
+  m.appendChild(bx);
+}
+
+// ---------- Auto logo: asks Scriptable (the dashboard-icons list, loose matching) ----------
+guessLogo = function(nid, uid, iid, hid){
+  var n = document.getElementById(nid).value.trim();
+  var hh = document.getElementById(hid);
+  if (!n) { hh.textContent = "Type a name first."; return; }
+  hh.textContent = "Looking for a logo ...";
+  rpc({ op: "logo", name: n }, function(r){
+    if (r.url) {
+      var im = document.getElementById(iid);
+      document.getElementById(uid).value = r.url;
+      im.className = "lp";
+      im.src = r.url;
+      hh.textContent = "Found " + r.url.split("/").pop();
+    } else hh.textContent = 'No logo found for "' + n + '". Paste a URL instead.';
+  });
+};
+
+// the hold menu and the + popup get the new parts
+(function(){
+  var sm = showMenu;
+  showMenu = function(sv){ sm(sv); if (sv && sv.kind !== "group") menuCtr(sv); };
+  var oa = openAdd;
+  openAdd = function(sv){
+    oa(sv);
+    var w = pickFromRow();
+    w.style.display = !sv && ctrOn() && (isZima() ? st.hasLogin : true) ? "" : "none";
+    document.getElementById("pfb").textContent = pickLabel();
+  };
+  var rs = renderServices;
+  renderServices = function(p){ rs(p); checkUpdates(false); };
+})();
+
+// ================= Dashboard: reboot follow-through, pull to refresh, old figures =================
+// REBOOTING... / SHUTTING DOWN... in the status pill until the server is back (or off)
+var watching = null, reachOk = null;
+(function(){
+  var ss = setStatus;
+  setStatus = function(ok){
+    reachOk = !!ok;
+    ss(ok);
+    if (watching) {
+      document.getElementById("dot").className = "dot wait";
+      document.getElementById("st").textContent = watching === "off" ? "SHUTTING DOWN…" : "REBOOTING…";
+    }
+  };
+})();
+function watchState(a){
+  watching = a || null;
+  setStatus(reachOk === null ? true : reachOk);
+}
+
+// Monitoring bar: one line of figures while folded; old figures are dimmed with "updated 40 s ago"
+var statsAt = 0, glFail = false;
+function agoText(ms){
+  var t = Math.max(0, Math.floor(ms / 1000));
+  return "updated " + (t < 60 ? t + " s" : t < 3600 ? Math.floor(t / 60) + " m" : Math.floor(t / 3600) + " h") + " ago";
+}
+function pctTxt(v){ return Math.round(v) + "%"; }
+function monLine(){
+  var b = document.getElementById("monb"), m = document.getElementById("monst");
+  if (!b || !m) return;
+  var stale = last && statsAt && (glFail || Date.now() - statsAt > Math.max((UI.liveSeconds || 3) * 3, 15) * 1000);
+  document.body.classList.toggle("stale", !!stale);
+  if (!last) { b.classList.remove("line"); m.textContent = glFail ? "NO DATA" : ""; return; }
+  if (stale) { b.classList.remove("line"); m.textContent = agoText(Date.now() - statsAt); return; }
+  if (monOpen) { b.classList.remove("line"); m.textContent = ""; return; }
+  var parts = ["CPU " + pctTxt(last.cpu), "RAM " + pctTxt(last.ram)];
+  if (last.storage) parts.push("DISK " + pctTxt(last.storage.percent));
+  if (last.net) parts.push("↓" + fmt(last.net.down));
+  b.classList.add("line");
+  m.textContent = parts.join(" · ");
+}
+(function(){
+  var up = update, off = offline, gs = glancesState, tm = toggleMon;
+  update = function(s){ statsAt = Date.now(); glFail = false; up(s); monLine(); refreshDone(); };
+  offline = function(setup){ if (!setup) glFail = true; off(setup); monLine(); refreshDone(); };
+  glancesState = function(ok){ gs(ok); monLine(); };
+  toggleMon = function(){ tm(); monLine(); };
+  setInterval(monLine, 1000);
+})();
+
+// Pull to refresh: drag the dashboard down from the top
+var pr = null, prOn = false, prBusy = false;
+function ptrEl(){
+  var e = document.getElementById("ptr");
+  if (!e) { e = h("div", "", ""); e.id = "ptr"; document.body.appendChild(e); }
+  return e;
+}
+function anyPopup(){
+  return !!document.querySelector("#ov.show,#mv.show,#rv.show,#gv.show,#pv.show,#cv.show,#av.show,#dv.show,#sv.show,#xv.show");
+}
+function refreshDone(){
+  if (!prBusy) return;
+  prBusy = false;
+  var e = ptrEl();
+  e.textContent = "Updated";
+  setTimeout(function(){ if (!prBusy) e.className = ""; }, 500);
+}
+document.addEventListener("touchstart", function(e){
+  pr = null;
+  if (prBusy || anyPopup() || (document.scrollingElement || document.body).scrollTop > 0) return;
+  pr = { y: e.touches[0].clientY, x: e.touches[0].clientX, d: 0 };
+}, { passive: true });
+document.addEventListener("touchmove", function(e){
+  if (!pr || dragging) { if (pr) { pr = null; ptrEl().className = ""; } return; }
+  var t = e.touches[0], dy = t.clientY - pr.y;
+  if (Math.abs(t.clientX - pr.x) > 30 && dy < 30) { pr = null; ptrEl().className = ""; return; }
+  pr.d = dy;
+  var e2 = ptrEl();
+  if (dy > 12) {
+    e2.className = "show";
+    e2.style.setProperty("--pd", Math.min(dy, 110) + "px");
+    e2.textContent = dy > 80 ? "Release to refresh" : "Pull to refresh";
+  } else e2.className = "";
+}, { passive: true });
+document.addEventListener("touchend", function(){
+  if (!pr) return;
+  var d = pr.d;
+  pr = null;
+  var e = ptrEl();
+  if (d > 80 && !dragging) {
+    prBusy = true;
+    e.className = "show busy";
+    e.textContent = "Refreshing…";
+    rpc({ op: "refresh" }, function(){});
+    setTimeout(refreshDone, 8000);
+  } else e.className = "";
+}, { passive: true });
+`;
 
 // ---------- Run ----------
 if (config.runsInWidget) {
