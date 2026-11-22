@@ -4,13 +4,13 @@
 - **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
-  **The latest is `android-1.8/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
+  **The latest is `android-1.9/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
   `board-android-source/android/...` and the manual and README).
 
 ## How the user works
 - Requests come as bullet lists of fixes, ending with "build me the new source code and apk file as vX.Y and update
   the android user manual and send them here". For that:
-  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.8 = versionCode 9);
+  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (1.9 = versionCode 10);
   2. make the changes, build, run the unit tests;
   3. update the manual (add the new version's items to the "What's new in 1.3 to X.Y" section, set the date/version
      line under the title, fix every section the change touches) and the README's "New in Android X.Y" section;
@@ -61,7 +61,7 @@
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
-  name. ZimaOS keeps its own code in `Zima.kt`. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
+  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). ZimaOS keeps its own code in `Zima.kt`. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
 - `Widget.kt` + `WidgetSnap.kt`: Glance widget; uses the dashboard's snapshot when it's under 3 minutes old and was
   taken with the same settings; otherwise asks Glances first and probes LIVE only if Glances doesn't answer.
 - `ui/Look.kt`: press feedback (`pressScale`, `squish`, `glint`): Liquid Glass squish, Classic shrink + dim.
