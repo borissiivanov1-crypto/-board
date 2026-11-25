@@ -1,7 +1,7 @@
 # -board
 
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
-The whole app is one file: `board_Blank.js`.
+The whole app is one file, released in numbered folders: the latest is [`ios-2.4/-board-ios-2.4.js`](ios-2.4/-board-ios-2.4.js).
 
 **iPhone app (work in progress):** a real app (Swift, with a home screen widget) to install for free with SideStore or
 AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
@@ -10,12 +10,12 @@ AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 [`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
 [Android user manual](board_User_Manual_Android.docx). See also [Android app](#android-app) below.
 
-The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
+The full step-by-step guide is the [iOS user manual](ios-2.4/board_User_Manual_iOS.docx) (Word document).
 
 ## New in the Scriptable script 2.4 (the same features as Android 2.4)
 
 - **Odd symbols fixed**: some iPhones showed `Â·`, `â€º` or broken emoji (`ð...`) in the dashboard and Settings because
-  the script file was read with the wrong text encoding. `board_Blank.js` is now plain ASCII (every other character is a
+  the script file was read with the wrong text encoding. The script is now plain ASCII (every other character is a
   `\u` escape), so it shows the same however it reaches the phone. Text saved garbled by an older copy (button icons,
   names) is repaired when the data file is read (`unGarble`).
 - **ZimaOS App Store** (+ > ZimaOS App Store): search, category chips, app details, Install (the app's compose file is
@@ -115,7 +115,7 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 
 ## 2. Install the script
 
-1. In Scriptable tap **+**, paste `board_Blank.js` and give it a name.
+1. In Scriptable tap **+**, paste `-board-ios-2.4.js` and give it a name.
 2. Run it. Settings opens on **This server**: give it a name, pick your **server type**, and type the **server address**:
    an http / https list plus the IP or name, with a port only if it isn't the usual one for that type
    (e.g. `192.168.1.10` or `192.168.1.10:90`). This one address is used for LIVE / OFFLINE, Reboot / Shut down and logins.

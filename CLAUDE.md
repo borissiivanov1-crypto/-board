@@ -1,7 +1,11 @@
 # -board: notes for Claude sessions
 
 -board is a home-server dashboard and home screen widget. Two versions:
-- **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
+- **iOS / Scriptable**: released as numbered folders `ios-X.Y/`, each with `-board-ios-X.Y.js` (the whole script) and
+  `board_User_Manual_iOS.docx`. **The latest is `ios-2.4/`.** For a new iOS version: copy the latest folder to
+  `ios-X.Y/`, rename the script to `-board-ios-X.Y.js`, set `BOARD_VERSION`, update the manual's date/version line,
+  "What's new" and the file name in "Copy the script" and the requirements table, and the README's iOS paths; commit,
+  push, send both files. (Before 2.4 the script was the unnumbered `board_Blank.js`.)
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
   **The latest is `android-2.4/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
@@ -74,11 +78,11 @@
 - Unit tests in `app/src/test/java/app/board` (DataFileTest, NetTest, FailoverTest, LogicTest, ZimaTest, CtrTest, CertTest, AutoLogoTest).
 
 ## iOS script
-- `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
+- The script (`ios-X.Y/-board-ios-X.Y.js`) saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
-- **Keep `board_Blank.js` pure ASCII** (a copy read as Latin-1 showed `Â·` / `â€º`): write other characters as
+- **Keep the iOS script pure ASCII** (a copy read as Latin-1 showed `Â·` / `â€º`): write other characters as
   `\u00B7` escapes (`\\u00B7` inside `LIVE_HTML`, a template literal; plain `\u00B7` in `LIVE_EXTRA` and the script).
-  Check with `grep -nP "[^\x00-\x7F]" board_Blank.js`. `unGarble` repairs saved text from such a copy.
+  Check with `grep -nP "[^\x00-\x7F]" ios-X.Y/-board-ios-X.Y.js`. `unGarble` repairs saved text from such a copy.
 - Since the 2.4 port it has the same features as Android 2.4 (`BOARD_VERSION`), except trust-on-first-use
   certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
