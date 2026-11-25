@@ -2528,6 +2528,58 @@ async function loadCtrs(force) {
   return CTRS;
 }
 const ctrSupported = () => SET.platform === "zimaos" || CTR_TYPES.includes(SET.platform);
+// The app / container each button was last linked to, kept in board-ctr-links.json. A stopped one can drop out of the
+// server's list (Glances on Unraid lists only running containers) or lose the published port it was matched by, and
+// without this its menu would have no Start.
+let CTR_SEEN = null;
+function ctrSeenPath() {
+  const fm = FileManager.local();
+  return fm.joinPath(fm.documentsDirectory(), "board-ctr-links.json");
+}
+function ctrSeen() {
+  if (CTR_SEEN) return CTR_SEEN;
+  try {
+    const fm = FileManager.local();
+    CTR_SEEN = fm.fileExists(ctrSeenPath()) ? JSON.parse(fm.readString(ctrSeenPath())) || {} : {};
+  } catch (e) {
+    CTR_SEEN = {};
+  }
+  return CTR_SEEN;
+}
+function ctrSeenSave() {
+  try { FileManager.local().writeString(ctrSeenPath(), JSON.stringify(CTR_SEEN || {})); } catch (e) {}
+}
+const ctrSeenKey = (svId) => CUR + "|" + SET.platform + "|" + svId;
+// the button's app / container: matched in the list, else the one it was linked to last (shown as stopped)
+function ctrForButton(sv, cache) {
+  if (!sv) return null;
+  const seen = ctrSeen();
+  const key = ctrSeenKey(sv.id);
+  const c = ctrForService(sv, cache);
+  if (c) {
+    if (JSON.stringify(seen[key]) !== JSON.stringify(c)) { seen[key] = c; ctrSeenSave(); }
+    return c;
+  }
+  const old = seen[key];
+  if (!old || (sv.ctr && sv.ctr !== old.id && sv.ctr !== old.name) || (sv.zima && sv.zima !== old.id)) return null;
+  return { ...old, status: "stopped", gone: true };
+}
+// an app / container by id: in the list, else one a button was linked to (it may be stopped and not listed)
+function ctrById(cache, cid) {
+  const c = (cache.list || []).find((x) => x.id === cid);
+  if (c) return c;
+  const pre = CUR + "|" + SET.platform + "|";
+  const seen = ctrSeen();
+  for (const k of Object.keys(seen)) if (k.startsWith(pre) && seen[k] && seen[k].id === cid) return { ...seen[k], status: "stopped", gone: true };
+  return null;
+}
+function ctrForget(cid) {
+  const seen = ctrSeen();
+  const pre = CUR + "|" + SET.platform + "|";
+  let changed = false;
+  for (const k of Object.keys(seen)) if (k.startsWith(pre) && seen[k] && seen[k].id === cid) { delete seen[k]; changed = true; }
+  if (changed) ctrSeenSave();
+}
 function serviceById(id) {
   return getServices(true).find((s) => s.id === id) || null;
 }
@@ -2606,9 +2658,10 @@ async function rpcOp(d) {
     // the hold menu: the app / container behind a button
     case "ctrFor": {
       if (!ctrSupported()) return { ok: true, none: true };
-      const cache = await loadCtrs(!!d.force);
+      // always the current state: the list may be from before a Stop or Start
+      const cache = await loadCtrs(true);
       if (cache.err) return { ok: false, err: cache.err };
-      return { ok: true, c: ctrOut(ctrForService(serviceById(d.id), cache), cache.updates) };
+      return { ok: true, c: ctrOut(ctrForButton(serviceById(d.id), cache), cache.updates) };
     }
     // + > Pick from ..., and Pick its container: everything on the server
     case "ctrList": {
@@ -2621,7 +2674,7 @@ async function rpcOp(d) {
     }
     case "ctrAction": {
       const cache = await loadCtrs(false);
-      const c = (cache.list || []).find((x) => x.id === d.cid);
+      const c = ctrById(cache, d.cid);
       if (!c) return { ok: false, msg: "It's no longer on the server. Try again." };
       const name = SET.platform === "zimaos" ? c.title : c.name;
       try {
@@ -2633,13 +2686,21 @@ async function rpcOp(d) {
         return { ok: false, msg: e.message || String(e) };
       }
       statusDirty = true;
-      await sleepMs(1500);
-      await loadCtrs(true);
+      // wait (up to 20 s) until the server shows the new state, so the menu shows the right buttons next time
+      const zima = SET.platform === "zimaos";
+      const isOn = (x) => !!x && !x.gone && (zima ? zRunning(x) : ctrRunning(x));
+      for (let i = 0; i < (d.action === "update" ? 1 : 10); i++) {
+        await sleepMs(i === 0 ? 1500 : 2000);
+        const now = await loadCtrs(true);
+        if (d.action === "update" || now.err) break;
+        const x = (now.list || []).find((y) => y.id === c.id);
+        if (d.action === "stop" || d.action === "kill" ? !isOn(x) : isOn(x)) break;
+      }
       return { ok: true, msg: name + " " + ({ start: "started", stop: "stopped", kill: "force stopped", update: "is updating" }[d.action] || "restarted") };
     }
     case "ctrLogs": {
       const cache = await loadCtrs(false);
-      const c = (cache.list || []).find((x) => x.id === d.cid);
+      const c = ctrById(cache, d.cid);
       if (!c) return { ok: false, text: "It's no longer on the server." };
       try {
         const text = SET.platform === "zimaos"
@@ -2712,6 +2773,7 @@ async function rpcOp(d) {
       if (!c) return { ok: false, msg: "It's no longer on the server." };
       try {
         await zUninstall(c.id, !!d.data);
+        ctrForget(c.id);
       } catch (e) {
         return { ok: false, msg: e.message || "ZimaOS didn't uninstall " + c.title };
       }
