@@ -4,13 +4,13 @@
 - **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
-  **The latest is `android-2.5/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
+  **The latest is `android-2.6/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
   `board-android-source/android/...` and the manual and README).
 
 ## How the user works
 - Requests come as bullet lists of fixes, ending with "build me the new source code and apk file as vX.Y and update
   the android user manual and send them here". For that:
-  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (2.5 = versionCode 16);
+  1. bump `versionCode` (+1) and `versionName` in `android/app/build.gradle.kts` (2.6 = versionCode 17);
   2. make the changes, build, run the unit tests;
   3. update the manual (add the new version's items to the "What's new in 1.3 to X.Y" section, set the date/version
      line under the title, fix every section the change touches) and the README's "New in Android X.Y" section;
@@ -66,7 +66,11 @@
   System / Storage / Shares / Apps / Alerts, one `Part` per API call (404/405 -> `ZimaMore.NOT_OFFERED`), changes via
   `BoardVM.zTry` / `zDo`. Hold menu "Details and settings" -> `ZAppDetailDialog` -> `ZComposeDialog` (edit the compose
   YAML, PUT as exactly application/yaml). Endpoints are the open-source CasaOS ones (map in README "New in Android
-  2.5"); ZimaOS-only APIs (OS update, RAID, fans, network settings) are closed and not included. Not ported to iOS.
+  2.5"); not ported to iOS. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
+  (`v2or1`, `Part(hideMissing)`): OTA `/v2/installer/*`, storage `/v2/local_storage/storages|raid|disk`, shares
+  `/v2_1/files/share|connect`, alerts `/v2/message_bus/ysk`, compose edit `/zimaapp/v2app/files/compose` with Etag /
+  If-Match. On 1.8.0 these older ones 404: /v1/storage, /v1/disks/usb, /v1/samba/*, /v2/casaos/health|zt, /v1/sys/logs,
+  /v2/users/events. Sources for 1.8 APIs: npm `@icewhale/*-openapi` packages, `zimaos-mcp`, github.com/HSinghHira/IceDash.
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
