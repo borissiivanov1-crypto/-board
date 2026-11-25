@@ -65,7 +65,7 @@
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
-  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); not ported to iOS yet. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
+  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); ported to iOS in 2.4. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
 - `Widget.kt` + `WidgetSnap.kt`: Glance widget; uses the dashboard's snapshot when it's under 3 minutes old and was
   taken with the same settings; otherwise asks Glances first and probes LIVE only if Glances doesn't answer.
 - `ui/Look.kt`: press feedback (`pressScale`, `squish`, `glint`): Liquid Glass squish, Classic shrink + dim.
@@ -76,7 +76,10 @@
 ## iOS script
 - `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
-- Since the 2.2 port it has the same features as Android 2.2 (`BOARD_VERSION`), except trust-on-first-use
+- **Keep `board_Blank.js` pure ASCII** (a copy read as Latin-1 showed `Â·` / `â€º`): write other characters as
+  `\u00B7` escapes (`\\u00B7` inside `LIVE_HTML`, a template literal; plain `\u00B7` in `LIVE_EXTRA` and the script).
+  Check with `grep -nP "[^\x00-\x7F]" board_Blank.js`. `unGarble` repairs saved text from such a copy.
+- Since the 2.4 port it has the same features as Android 2.4 (`BOARD_VERSION`), except trust-on-first-use
   certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
   (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`

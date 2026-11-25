@@ -112,9 +112,9 @@ const PLATFORMS = {
 };
 const PLATFORM_KEYS = Object.keys(PLATFORMS);
 
-// Temperatures (°C) where the number turns orange (warm) and red (hot) in the enlarged cards.
-// Typical limits: most desktop CPUs throttle around 95-100°C, NVMe drives around 70-85°C,
-// and hard drives are usually rated to about 55-60°C. Adjust them in Settings for your hardware.
+// Temperatures (C) where the number turns orange (warm) and red (hot) in the enlarged cards.
+// Typical limits: most desktop CPUs throttle around 95-100C, NVMe drives around 70-85C,
+// and hard drives are usually rated to about 55-60C. Adjust them in Settings for your hardware.
 const TEMP_DEFAULTS = {
   cpu: { warm: 70, hot: 85 },
   nvme: { warm: 60, hot: 70 },
@@ -379,7 +379,7 @@ let SET = onFailover(SAVED) ? viaFailover(SAVED) : SAVED;
 let HOST = serverHostOf(SAVED) || "localhost"; // built-in buttons use the (main) server address
 const LOGO_CDN = "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/";
 // Built-in buttons. Empty on purpose: add your own with the + button in the dashboard.
-// You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "🎬", logo: LOGO_CDN + "jellyfin.png" }
+// You can also list them here, e.g. { name: "Jellyfin", port: 8096, icon: "\u{1F3AC}", logo: LOGO_CDN + "jellyfin.png" }
 // (optional: path: "/admin", https: true). They use the server address from Settings.
 const BUILTIN = [];
 function buildServices() {
@@ -416,7 +416,7 @@ function dataPath() {
 //  - a storage error while reading: nothing is saved this run, so the file stays as it is.
 let LOAD_NOTE = null;
 // the feature level of this script: the same as the Android app's version it matches
-const BOARD_VERSION = "2.2";
+const BOARD_VERSION = "2.4";
 let DATA_READONLY = false;
 
 function validData(raw) {
@@ -508,11 +508,43 @@ function safeWrite(fm, p, raw) {
 // the shared and the server's own settings come merged in .settings.
 // A file from before there were several servers becomes server 1 ("s1").
 
+// Text that was read with the wrong encoding ("\u00C2\u00B7" for a middle dot, "\u00F0\u009F\u0093\u00A6" for an emoji),
+// e.g. button icons saved by a copy of the script that was opened as Latin-1: put back as it was meant.
+const CP1252 = { 0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97, 0x02DC: 0x98,
+  0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C, 0x017E: 0x9E, 0x0178: 0x9F };
+function unGarble(t) {
+  if (typeof t !== "string" || !/[\u00C2-\u00F4]/.test(t)) return t;
+  let hex = "";
+  for (const ch of t) {
+    let c = ch.codePointAt(0);
+    if (c > 0xff) c = CP1252[c];
+    if (c == null) return t;
+    hex += "%" + (c < 16 ? "0" : "") + c.toString(16);
+  }
+  try {
+    const u = decodeURIComponent(hex);
+    return u !== t && /[^\u0000-\u007F]/.test(u) ? u : t;
+  } catch (e) {
+    return t;
+  }
+}
+function unGarbleAll(x) {
+  if (typeof x === "string") return unGarble(x);
+  if (Array.isArray(x)) return x.map(unGarbleAll);
+  if (isObj(x)) {
+    const o = {};
+    for (const k of Object.keys(x)) o[k] = unGarbleAll(x[k]);
+    return o;
+  }
+  return x;
+}
+
 function readStore() {
   let d = {};
   try {
     const raw = readDataFile();
-    d = raw ? JSON.parse(raw) : {};
+    d = raw ? unGarbleAll(JSON.parse(raw)) : {};
   } catch (e) {
     d = {};
   }
@@ -615,7 +647,7 @@ function loadData() {
   d.order = Array.isArray(d.order) ? d.order : [];
   d.widgetOrder = Array.isArray(d.widgetOrder) ? d.widgetOrder : [];
   d.widgetHidden = Array.isArray(d.widgetHidden) ? d.widgetHidden : [];
-  // stacks: { id: "g:…", name, logo, expand (show members on the widget), members: [button ids] }
+  // stacks: { id: "g:...", name, logo, expand (show members on the widget), members: [button ids] }
   d.groups = (Array.isArray(d.groups) ? d.groups : [])
     .filter((g) => g && typeof g.id === "string")
     .map((g) => ({
@@ -714,7 +746,7 @@ function getServices(forDashboard, via) {
 }
 
 // ---------- Stacks (groups of connected services) ----------
-const STACK_ICON = "🗂️";
+const STACK_ICON = "\uD83D\uDDC2\uFE0F";
 
 // Top level = buttons not in a stack, plus stacks (each stack carries its member buttons).
 // dash: dashboard order. widget / hidden: large widget order and the entries hidden from it.
@@ -1609,7 +1641,7 @@ async function testPower(s) {
 }
 
 // ---------- Apps and containers (hold a button: Start / Stop / Restart / Logs; + > Pick from ...) ----------
-// The same features as the Android app (2.2), with the same saved fields on buttons ("zima", "ctr"), so exports
+// The same features as the Android app (2.4), with the same saved fields on buttons ("zima", "ctr"), so exports
 // move between the two:
 // ZimaOS:  its App Management API with the ZimaOS login (apps, logs, updates), plus CPU power draw and drive health
 // Proxmox: LXC containers and VMs (Proxmox API, saved login); Force stop pulls the plug
@@ -1679,12 +1711,13 @@ async function zToken(s = SET) {
 }
 // One call with the saved login; an expired token is renewed once.
 // dropOk: a dropped connection counts as done (an update recreates the app and can cut the answer off)
-async function zCall(path, method = "GET", body = null, timeout = 10, dropOk = false) {
+// headers: added to (or replacing) the usual ones
+async function zCall(path, method = "GET", body = null, timeout = 10, dropOk = false, headers = null) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const t = await zToken();
     let r;
     try {
-      r = await http(zBase() + path, { method, headers: { Authorization: t, "Content-Type": "application/json" }, body, timeout });
+      r = await http(zBase() + path, { method, headers: { Authorization: t, "Content-Type": "application/json", ...(headers || {}) }, body, timeout });
     } catch (e) {
       if (dropOk) return null;
       throw CtrErr("Can't reach ZimaOS at " + zBase());
@@ -1738,6 +1771,64 @@ async function zUpdates() {
   const d = zData(await zCall("/v2/app_management/apps/upgradable"));
   return (Array.isArray(d) ? d : []).filter((o) => o.status !== "updating").map((o) => String(o.store_app_id || "").toLowerCase()).filter(Boolean);
 }
+
+// ---------- ZimaOS App Store (+ > App Store; Uninstall in the hold menu) ----------
+// GET /v2/app_management/apps: { list: { "<store id>": { title, tagline, icon, category, ... } }, installed: [ids] }
+// (some versions send list as an array with store_app_id in each item)
+function zStoreParse(d) {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return [];
+  const inst = new Set((Array.isArray(d.installed) ? d.installed : []).map((x) => String(x).toLowerCase()));
+  const l = d.list;
+  const items = Array.isArray(l)
+    ? l.filter((v) => v && typeof v === "object").map((v) => [v.store_app_id || v.name || "", v])
+    : l && typeof l === "object" ? Object.keys(l).filter((k) => l[k] && typeof l[k] === "object").map((k) => [k, l[k]]) : [];
+  const seen = {};
+  const out = [];
+  for (const [k, v] of items) {
+    const id = String(k || v.store_app_id || "");
+    if (!id || seen[id.toLowerCase()]) continue;
+    seen[id.toLowerCase()] = true;
+    out.push({
+      id, title: zText(v.title) || id.charAt(0).toUpperCase() + id.slice(1),
+      tagline: zText(v.tagline).trim(), description: zText(v.description).trim(), icon: typeof v.icon === "string" ? v.icon : "",
+      category: String(v.category || "").trim(), author: String(v.author || v.developer || "").trim(),
+      port: String(v.port_map == null ? "" : v.port_map).replace(/\D/g, "").slice(0, 5), installed: inst.has(id.toLowerCase()),
+    });
+  }
+  return out.sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+}
+async function zStore() {
+  return zStoreParse(zData(await zCall("/v2/app_management/apps", "GET", null, 20)));
+}
+// Installs a store app: its compose file from the store, sent back to ZimaOS (as ZimaOS's own App Store does).
+// ZimaOS installs in the background; the app then shows in the app list.
+async function zInstall(storeId) {
+  const r = await zCall(`/v2/app_management/apps/${enc(storeId)}/compose`, "GET", null, 20, false, { Accept: "application/yaml" });
+  if (r.code >= 400) zData(r);
+  let yaml = r.body || "";
+  let json = null;
+  // an answer in JSON: { data: { compose: "..." } } or the compose app as JSON
+  if (yaml.trim().startsWith("{")) {
+    const j = jparse(yaml);
+    const d = j && j.data;
+    if (typeof d === "string") yaml = d;
+    else if (d && typeof d.compose === "string") yaml = d.compose;
+    else if (d && d.compose && typeof d.compose === "object") yaml = json = JSON.stringify(d.compose);
+  }
+  if (!yaml.trim()) throw CtrErr("ZimaOS didn't send the app's setup");
+  // ZimaOS only takes the type exactly "application/yaml" (no charset), else it answers 415
+  const p = await zCall("/v2/app_management/compose", "POST", yaml, 60, false, { "Content-Type": "application/yaml" });
+  if (p && p.code === 415 && json != null) {
+    zData(await zCall("/v2/app_management/compose", "POST", json, 60));
+    return;
+  }
+  zData(p);
+}
+// Removes an installed app; deleteData also removes its folder in /DATA/AppData
+async function zUninstall(app, deleteData) {
+  zData(await zCall(`/v2/app_management/compose/${enc(app)}?delete_config_folder=${!!deleteData}`, "DELETE", null, 120, true));
+}
+
 function zAppUrl(a, host) {
   const h = a.host || host || "localhost";
   const usual = a.scheme === "https" ? "443" : "80";
@@ -1752,7 +1843,7 @@ function zAppFor(sv, apps, host) {
   const m = apps.filter((a) => a.port === port);
   return m.length === 1 ? m[0] : null;
 }
-// CPU power: two readings of the CPU's energy counter (Intel RAPL, µJ) make watts; also ZimaOS's CPU temperature
+// CPU power: two readings of the CPU's energy counter (Intel RAPL, microjoules) make watts; also ZimaOS's CPU temperature
 async function zSys() {
   const key = CUR + "|" + zBase();
   const p = ZPOW[key] || (ZPOW[key] = {});
@@ -2055,7 +2146,7 @@ async function tnLogs(c, lines) {
       if (!r.connected) throw CtrErr("Logs need TrueNAS 25.04 or newer (its WebSocket API).");
       tnErr(r, "show the logs");
     }
-    if (sub.length > 1) s += `── container ${cid.slice(0, 12)} ──\n`;
+    if (sub.length > 1) s += `\u2500\u2500 container ${cid.slice(0, 12)} \u2500\u2500\n`;
     s += r.events.map((x) => (x.endsWith("\n") ? x : x + "\n")).join("");
   }
   return s;
@@ -2452,7 +2543,7 @@ function ctrOut(c, updates) {
       update: c.controllable && (updates || []).includes(String(c.storeId || c.id).toLowerCase()), zima: true, icon: c.icon, port: c.port };
   }
   return { id: c.id, name: c.name, title: ctrTitle(c), label: ctrLabel(c), running: ctrRunning(c), known: !!c.status, status: c.status, controllable: true,
-    kind: c.kind, where: SET.platform === "proxmox" ? (c.kind === "qemu" ? "VM" : "LXC") + " · " + (ownAddr(c) || "address not known") : webPort(c) ? "port " + webPort(c) : "no port known" };
+    kind: c.kind, where: SET.platform === "proxmox" ? (c.kind === "qemu" ? "VM" : "LXC") + " \u00B7 " + (ownAddr(c) || "address not known") : webPort(c) ? "port " + webPort(c) : "no port known" };
 }
 
 async function addPicked(ids) {
@@ -2469,11 +2560,11 @@ async function addPicked(ids) {
     const logo = logos[n] || "";
     let item;
     if (zima) {
-      item = { name: uniqueName(c.title, used), port: c.port, icon: "📦", logo, custom: true, zima: c.id, app: c.id, url: zAppUrl(c, host), auto: !c.host };
+      item = { name: uniqueName(c.title, used), port: c.port, icon: "\uD83D\uDCE6", logo, custom: true, zima: c.id, app: c.id, url: zAppUrl(c, host), auto: !c.host };
     } else {
       const guest = c.kind === "lxc" || c.kind === "qemu";
       const port = guest ? "" : webPort(c);
-      item = { ...makeCustom({ name: uniqueName(ctrTitle(c), used), scheme: webScheme(port), addr: guest ? ownAddr(c) || c.name : "", port, logo }), icon: "📦", ctr: c.id };
+      item = { ...makeCustom({ name: uniqueName(ctrTitle(c), used), scheme: webScheme(port), addr: guest ? ownAddr(c) || c.name : "", port, logo }), icon: "\uD83D\uDCE6", ctr: c.id };
     }
     used.add(item.name.toLowerCase());
     item.id = `c:${t}-${n}`;
@@ -2483,6 +2574,22 @@ async function addPicked(ids) {
   saveData(data);
   return items.length;
 }
+
+function deleteButton(id) {
+  const data = loadData();
+  if (id.startsWith("b:")) {
+    delete data.edits[id];
+    if (!data.hidden.includes(id)) data.hidden.push(id);
+  } else {
+    data.custom = data.custom.filter((c) => c.id !== id);
+  }
+  data.groups.forEach((g) => (g.members = g.members.filter((x) => x !== id)));
+  saveData(data);
+  statusDirty = true;
+}
+
+// ZimaOS App Store: the installed app for a store id
+const zFromStore = (list, sid) => (list || []).find((a) => String(a.storeId).toLowerCase() === String(sid).toLowerCase() || String(a.id).toLowerCase() === String(sid).toLowerCase()) || null;
 
 function linkCtr(id, ctr) {
   const data = loadData();
@@ -2559,8 +2666,63 @@ async function rpcOp(d) {
       const list = cache.list.filter((a) => a.controllable && cache.updates.includes(String(a.storeId || a.id).toLowerCase())).map((a) => ctrOut(a, cache.updates));
       return { ok: true, list };
     }
+    // ZimaOS App Store: the list, Install (then wait for it and add a button), Uninstall
+    case "zStore": {
+      if (SET.platform !== "zimaos") return { ok: false, err: { msg: "The App Store needs the server type ZimaOS (Settings > Server)." } };
+      try {
+        const list = await zStore();
+        const cache = await loadCtrs(false);
+        for (const a of list) if (zFromStore(cache.list, a.id)) a.installed = true;
+        return { ok: true, list };
+      } catch (e) {
+        return { ok: false, err: { msg: e.message || "ZimaOS didn't list its App Store.", fix: e.fix || null } };
+      }
+    }
+    case "zInstall": {
+      try {
+        await zInstall(d.sid);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, msg: e.message || String(e) };
+      }
+    }
+    // checks the app list every 5 s (up to 10 minutes) until the app runs
+    case "zWait": {
+      const until = Date.now() + 10 * 60 * 1000;
+      let app = null;
+      while (Date.now() < until) {
+        await sleepMs(5000);
+        const cache = await loadCtrs(true);
+        app = zFromStore(cache.list, d.sid);
+        if (app && zRunning(app)) break;
+      }
+      if (!app) return { ok: false, msg: d.title + " isn't installed yet. Check the ZimaOS App Store." };
+      const cache = await loadCtrs(false);
+      const taken = new Set(getServices(true).map((s) => ctrForService(s, cache)).filter(Boolean).map((c) => c.id));
+      if (d.add && !taken.has(app.id)) {
+        await addPicked([app.id]);
+        statusDirty = true;
+        return { ok: true, msg: d.title + " installed and added as a button", reload: true };
+      }
+      return { ok: true, msg: d.title + " installed" };
+    }
+    case "zUninstall": {
+      const cache = await loadCtrs(false);
+      const c = (cache.list || []).find((x) => x.id === d.cid);
+      if (!c) return { ok: false, msg: "It's no longer on the server." };
+      try {
+        await zUninstall(c.id, !!d.data);
+      } catch (e) {
+        return { ok: false, msg: e.message || "ZimaOS didn't uninstall " + c.title };
+      }
+      if (d.id) deleteButton(d.id);
+      statusDirty = true;
+      await sleepMs(1500);
+      await loadCtrs(true);
+      return { ok: true, msg: c.title + " uninstalled", reload: !!d.id };
+    }
     case "logo": {
-      return { ok: true, url: await autoLogo([d.name]) };
+      return { ok: true, url: await autoLogo(d.names || [d.name], d.icon || "") };
     }
     case "refresh": {
       statusDirty = true;
@@ -2905,7 +3067,7 @@ function buildCustom(d) {
   return {
     name: String(d.name).trim().slice(0, 24),
     port,
-    icon: "🔗",
+    icon: "\uD83D\uDD17",
     logo: String(d.logo || "").trim(),
     custom: true,
     url: `${scheme}://${addr}${port ? ":" + port : ""}${path}`,
@@ -3645,7 +3807,7 @@ async function buildWidget() {
   pill.setPadding(3, 8, 3, 8);
   const time = new DateFormatter();
   time.dateFormat = "HH:mm";
-  const dot = pill.addText("●");
+  const dot = pill.addText("\u25CF");
   dot.font = Font.systemFont(8);
   dot.textColor = reach ? new Color("#34e0a1") : new Color("#ff5d73");
   pill.addSpacer(4);
@@ -4476,7 +4638,7 @@ function renderDetail(id){
       h += '<div class="dgrid">' + stats.join("") + '</div>';
     }
     h += '<div><div class="dh">HISTORY</div>' + graph("ram") + '</div>';
-    if (d) h += toplist("TOP MEMORY USERS", d.top.map(function(t){ return { name: t.name, v: t.bytes, txt: sz(t.bytes) + " · " + t.pct.toFixed(1) + "%" }; }));
+    if (d) h += toplist("TOP MEMORY USERS", d.top.map(function(t){ return { name: t.name, v: t.bytes, txt: sz(t.bytes) + " \\u00B7 " + t.pct.toFixed(1) + "%" }; }));
   } else {
     var sm = last.storage, drv = last.disks || [];
     if (sm) {
@@ -4877,7 +5039,7 @@ function makeGroupPill(g){
   var n = g.members.length;
   a.dataset.slots = g.expand ? n : (n ? 1 : 0);
   a.innerHTML = iconHtml(g) + '<span class="nm"></span><span class="pt"></span><span class="sd"></span>';
-  a.querySelector(".nm").textContent = g.name + (g.expand ? " \u00d7" + n : "");
+  a.querySelector(".nm").textContent = g.name + (g.expand ? " \\u00d7" + n : "");
   bindPress(a, g, true);
   return a;
 }
@@ -5339,7 +5501,7 @@ function openStack(g, member){
   document.getElementById("gok").textContent = g ? "Save" : "Create";
   document.getElementById("gnm").value = g ? g.name : "";
   document.getElementById("gl").value = g && g.logo ? g.logo : "";
-  document.getElementById("glh").textContent = "Empty = \ud83d\uddc2\ufe0f. Auto guesses from the name.";
+  document.getElementById("glh").textContent = "Empty = \\ud83d\\uddc2\\ufe0f. Auto guesses from the name.";
   previewLogo("gl", "glp");
   document.getElementById("gdw").style.display = g ? "" : "none";
   document.getElementById("gdel").textContent = "Ungroup";
@@ -5653,7 +5815,7 @@ function sUrl(parent, label, key, o, hint){
 var PLATFORM_ORDER = ["zimaos", "proxmox", "truenas", "unraid", "synology", "omv", "linux"];
 var TYPE_HINT = {
   none: "Pick the system your server runs. It decides how Reboot / Shut down reach the server; until you pick one there is no Reboot / Shut down menu. Not sure? Debian, Ubuntu and similar are Linux.",
-  zimaos: "ZimaOS: Reboot / Shut down use your ZimaOS login. Nothing to install.",
+  zimaos: "ZimaOS: your ZimaOS login is used for Reboot / Shut down, the app controls (hold a button: Start / Stop / Restart / Logs / Update / Uninstall), app updates, adding apps from ZimaOS and installing apps from the ZimaOS App Store. Nothing to install.",
   proxmox: "Proxmox VE: Reboot / Shut down use the Proxmox API with your Proxmox login (e.g. root@pam). Nothing to install. Its self-signed certificate is accepted.",
   truenas: "TrueNAS: Reboot / Shut down use your TrueNAS login (the admin account, e.g. truenas_admin, or root on older versions). Nothing to install. With https, TrueNAS needs a certificate the iPhone trusts; plain http on your home network or VPN is fine.",
   unraid: "Unraid: Reboot / Shut down log in with your Unraid login (root) and send what Unraid's own Reboot / Shut down buttons send. Nothing to install.",
@@ -5905,7 +6067,7 @@ function sRender(){
   }
   var bk = document.createElement("div");
   bk.className = "sback";
-  sChip(bk, "‹ All settings", function(){ S.page = null; S.animated = false; sRender(); sTopReset(); });
+  sChip(bk, "\\u2039 All settings", function(){ S.page = null; S.animated = false; sRender(); sTopReset(); });
   b.appendChild(bk);
 
   if (PG === "server") {
@@ -6073,7 +6235,7 @@ function sRender(){
         if (!shown.some(function(x){ return x.mnt === m; })) shown.push({ mnt: m, missing: true });
       });
       shown.forEach(function(m){
-        var sub = m.missing ? "Not found in Glances right now" : sSize(m.size) + (m.dev ? " · " + m.dev : "") + (m.size ? " · " + Math.round(m.used / m.size * 100) + "% used" : "");
+        var sub = m.missing ? "Not found in Glances right now" : sSize(m.size) + (m.dev ? " \\u00B7 " + m.dev : "") + (m.size ? " \\u00B7 " + Math.round(m.used / m.size * 100) + "% used" : "");
         var row = sRow(dl, m.mnt, sub);
         row.appendChild(sSwitch(f.diskMounts.indexOf(m.mnt) >= 0, function(on){
           f.diskMounts = f.diskMounts.filter(function(x){ return x !== m.mnt; });
@@ -6095,7 +6257,7 @@ function sRender(){
     sToggle(c, "OPEN MONITORING ON START", "monitoringOpen");
     sToggle(c, "KEEP MONITORING ALWAYS OPEN", "monitoringFixed", "Removes the Monitoring button, so the cards and network speed always show.");
     sNum(c, "DASHBOARD UPDATES EVERY (SECONDS)", "liveSeconds", "3", "Lower = smoother graphs, more battery while the dashboard is open.");
-    var tl = sLabel(c, "TEMPERATURE COLOURS (°C)");
+    var tl = sLabel(c, "TEMPERATURE COLOURS (\\u00B0C)");
     var th = document.createElement("div");
     th.className = "trow th";
     th.innerHTML = "<span></span><span>ORANGE FROM</span><span>RED FROM</span>";
@@ -6307,7 +6469,7 @@ function sPages(b){
     }
     var row = document.createElement("div");
     row.className = "spage";
-    row.innerHTML = "<div><b></b><span></span></div><i>›</i>";
+    row.innerHTML = "<div><b></b><span></span></div><i>\\u203A</i>";
     row.querySelector("b").textContent = pg[1];
     row.querySelector("span").textContent = pg[2];
     row.onclick = function(){ if (Date.now() < ign || S.busy) return; S.page = pg[0]; S.animated = false; sRender(); sTopReset(); };
@@ -6620,17 +6782,7 @@ async function showLiveDashboard(openStackId) {
     if (req.url.startsWith("del://")) {
       (async () => {
         try {
-          const id = decodeURIComponent(req.url.slice(req.url.indexOf("?id=") + 4));
-          const data = loadData();
-          if (id.startsWith("b:")) {
-            delete data.edits[id];
-            if (!data.hidden.includes(id)) data.hidden.push(id);
-          } else {
-            data.custom = data.custom.filter((c) => c.id !== id);
-          }
-          data.groups.forEach((g) => (g.members = g.members.filter((x) => x !== id)));
-          saveData(data);
-          statusDirty = true;
+          deleteButton(decodeURIComponent(req.url.slice(req.url.indexOf("?id=") + 4)));
           await pushServices(wv);
         } catch (e) {}
       })();
@@ -6958,7 +7110,7 @@ async function showLiveDashboard(openStackId) {
 
 // The apps / containers part of the dashboard page (added to LIVE_HTML when it's loaded)
 const LIVE_EXTRA = String.raw`
-// ================= Apps and containers (same features as the Android app 2.2) =================
+// ================= Apps and containers (same features as the Android app 2.4) =================
 // The page asks Scriptable over rpc:// and gets the answer in rpcReply.
 var rq2 = 0, rcb = {};
 function rpc(d, cb){
@@ -7089,7 +7241,7 @@ function menuCtr(sv, force){
       return;
     }
     var nm = c.name && c.name.toLowerCase() !== String(sv.name).toLowerCase() ? " " + c.name : "";
-    box.appendChild(h("div", "cnote", c.label + nm + " · " + (c.running ? "running" : c.status || "stopped") + (c.update ? " · update available" : "")));
+    box.appendChild(h("div", "cnote", c.label + nm + " \u00B7 " + (c.running ? "running" : c.status || "stopped") + (c.update ? " \u00B7 update available" : "")));
     var bx = h("div", "btns col");
     if (c.controllable) {
       if (!c.known || c.running) {
@@ -7103,6 +7255,7 @@ function menuCtr(sv, force){
     hbtn(bx, "Logs", "", function(){ closeMenu(); openLogs(c); });
     if (c.update) hbtn(bx, "Update", "gtxt", function(){ ctrRun(c, "update", "Updating"); });
     box.appendChild(bx);
+    if (isZima() && c.controllable) zUninstallRow(box, c, sv);
     if (!isZima()) {
       var ch = h("div", "cctr");
       var k = h("button", "chip", sv.ctr ? "Change container" : "Not this one? Pick another");
@@ -7159,7 +7312,7 @@ function openCtrPick(sv){
       if (!r.ok) { ctrProblem(list, r.err, "Start, Stop and Logs", xClose, load); return; }
       if (!r.list.length) list.appendChild(h("div", "cnote", "The server lists no containers."));
       r.list.forEach(function(c){
-        hbtn(list, c.name + (c.known ? "  ·  " + (c.running ? "running" : c.status) : ""), sv.ctr === c.id ? "ok" : "", function(){
+        hbtn(list, c.name + (c.known ? "  \u00B7  " + (c.running ? "running" : c.status) : ""), sv.ctr === c.id ? "ok" : "", function(){
           rpc({ op: "ctrLink", id: sv.id, cid: c.id }, function(){ sv.ctr = c.id; back(); });
         });
       });
@@ -7182,6 +7335,10 @@ function pickFromRow(){
     b.id = "pfb";
     b.onclick = function(){ if (Date.now() < ign) return; closeAdd(); openPickFrom(); };
     w.appendChild(b);
+    var sb = h("button", "", "ZimaOS App Store");
+    sb.id = "pfs";
+    sb.onclick = function(){ if (Date.now() < ign) return; closeAdd(); openStore(); };
+    w.appendChild(sb);
     var mod = document.querySelector("#ov .modal");
     mod.insertBefore(w, mod.querySelector(".f"));
   }
@@ -7231,7 +7388,7 @@ function openPickFrom(){
       var row = h("div", "pfr" + (c.has ? " has" : ""));
       var tx = h("div", "pft");
       tx.appendChild(h("b", "", c.title || c.name));
-      tx.appendChild(h("span", "", c.has ? "Already a button" : (zima ? (c.port ? "port " + c.port : "") : c.where) + (c.known ? " · " + (c.running ? "running" : c.status) : "")));
+      tx.appendChild(h("span", "", c.has ? "Already a button" : (zima ? (c.port ? "port " + c.port : "") : c.where) + (c.known ? " \u00B7 " + (c.running ? "running" : c.status) : "")));
       row.appendChild(tx);
       if (!c.has) {
         var sw = h("div", picked[c.id] ? "sw on" : "sw");
@@ -7259,7 +7416,7 @@ function openPickFrom(){
   load();
 }
 
-// ---------- ZimaOS: the "↑ 2 updates" chip next to Widget layout ----------
+// ---------- ZimaOS: the "^ 2 updates" (up arrow) chip next to Widget layout ----------
 var updList = [], updAt = 0;
 function checkUpdates(force){
   var b = document.getElementById("updb");
@@ -7275,7 +7432,7 @@ function checkUpdates(force){
   updAt = Date.now();
   rpc({ op: "zUpdates", force: !!force }, function(r){
     updList = r.list || [];
-    b.textContent = "↑ " + updList.length + (updList.length === 1 ? " update" : " updates");
+    b.textContent = "\u2191 " + updList.length + (updList.length === 1 ? " update" : " updates");
     b.style.display = updList.length ? "" : "none";
   });
 }
@@ -7309,6 +7466,198 @@ function openUpdates(){
   m.appendChild(bx);
 }
 
+// ---------- ZimaOS App Store (+ > App Store): browse, search and install ----------
+(function(){
+  var css = document.createElement("style");
+  css.textContent = ".zcats{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:2px;scrollbar-width:none}.zcats::-webkit-scrollbar{display:none}" +
+    ".zcats .chip{margin:0;flex:none}.zcats .chip.on{background:var(--acc,#34e0a1);color:#06121f}" +
+    ".zic{width:40px;height:40px;border-radius:10px;flex:none;object-fit:contain}.zic.big{width:56px;height:56px}.zic.none{visibility:hidden}" +
+    ".pfr.tap:active{opacity:.6}.zarr{font-size:20px;opacity:.4;flex:none}.zsub{font-size:14px;font-weight:700;opacity:.85}" +
+    ".zdesc{font-size:13px;opacity:.7;line-height:1.4;max-height:34vh;overflow:auto;-webkit-overflow-scrolling:touch;white-space:pre-wrap}" +
+    "#pfw button{flex:none}";
+  document.head.appendChild(css);
+})();
+var zStoreList = null, zStoreKey = "", zInstalling = {}, zIcons = {}, zStoreView = null;
+// the store's icon; none, or one that doesn't load: the dashboard-icons logo for that name
+function zIcon(a, big){
+  var im = h("img", "zic" + (big ? " big" : ""));
+  im.alt = "";
+  var fallback = function(){
+    im.onerror = function(){ im.className += " none"; };
+    if (zIcons[a.id] === "") { im.className += " none"; return; }
+    if (zIcons[a.id]) { im.src = zIcons[a.id]; return; }
+    rpc({ op: "logo", names: [a.title, a.id] }, function(r){
+      zIcons[a.id] = r.url || "";
+      if (r.url) im.src = r.url; else im.className += " none";
+    });
+  };
+  if (/^https?:/i.test(a.icon || "")) { im.onerror = fallback; im.src = a.icon; } else fallback();
+  return im;
+}
+function zIsInstalled(a){ return !!a.installed; }
+function openStore(){
+  var key = st.cur + "|" + st.host;
+  if (zStoreKey !== key) { zStoreList = null; zStoreKey = key; }
+  var q = "", cat = "", body, cats;
+  var showList = function(){
+    zStoreView = "list";
+    var m = xOpen("ZIMAOS APP STORE");
+    var f = h("div", "f"), inw = h("div", "in"), inp = h("input");
+    inp.type = "text"; inp.placeholder = "Search apps"; inp.maxLength = 40; inp.value = q;
+    inp.setAttribute("autocomplete", "off"); inp.setAttribute("autocorrect", "off"); inp.setAttribute("autocapitalize", "none");
+    inp.oninput = function(){ q = inp.value; render(); };
+    inw.appendChild(inp); f.appendChild(inw); m.appendChild(f);
+    cats = h("div", "zcats");
+    m.appendChild(cats);
+    body = h("div", "pfl");
+    m.appendChild(body);
+    var bx = h("div", "btns");
+    hbtn(bx, "Close", "", function(){ zStoreView = null; xClose(); });
+    m.appendChild(bx);
+    if (zStoreList) render(); else load();
+  };
+  var load = function(){
+    body.innerHTML = "";
+    cats.innerHTML = "";
+    body.appendChild(h("div", "cnote", "Loading the App Store..."));
+    rpc({ op: "zStore" }, function(r){
+      if (zStoreView !== "list") return;
+      body.innerHTML = "";
+      if (!r.ok) { ctrProblem(body, r.err, "The App Store and app controls", xClose, load); return; }
+      zStoreList = r.list || [];
+      render();
+    });
+  };
+  var render = function(){
+    if (zStoreView !== "list" || !zStoreList) return;
+    var all = zStoreList;
+    cats.innerHTML = "";
+    var cl = [];
+    all.forEach(function(a){ if (a.category && cl.indexOf(a.category) < 0) cl.push(a.category); });
+    cl.sort();
+    if (cl.length) {
+      [""].concat(cl).forEach(function(c){
+        var ch = h("button", "chip" + (c === cat ? " on" : ""), c || "All");
+        ch.onclick = function(){ cat = cat === c ? "" : c; render(); };
+        cats.appendChild(ch);
+      });
+    }
+    var words = q.trim().toLowerCase().split(/\s+/).filter(function(w){ return w; });
+    var list = all.filter(function(a){
+      return (!cat || a.category === cat) && words.every(function(w){
+        return a.title.toLowerCase().indexOf(w) >= 0 || a.id.toLowerCase().indexOf(w) >= 0 || a.tagline.toLowerCase().indexOf(w) >= 0;
+      });
+    });
+    body.innerHTML = "";
+    if (!all.length) { body.appendChild(h("div", "cnote", "The App Store is empty. Check the app sources in ZimaOS.")); return; }
+    if (!list.length) { body.appendChild(h("div", "cnote", "No apps match.")); return; }
+    // the same app from two app sources: say who made each
+    var count = {};
+    all.forEach(function(a){ var k = a.title.toLowerCase(); count[k] = (count[k] || 0) + 1; });
+    var max = 80;
+    list.slice(0, max).forEach(function(a){
+      var row = h("div", "pfr tap");
+      row.appendChild(zIcon(a, false));
+      var tx = h("div", "pft");
+      tx.appendChild(h("b", "", a.title));
+      var who = count[a.title.toLowerCase()] > 1 ? (a.author || a.id) + " \u00B7 " : "";
+      tx.appendChild(h("span", "", who + (zInstalling[a.id] ? "Installing..." : zIsInstalled(a) ? "Installed" : a.tagline || a.category)));
+      row.appendChild(tx);
+      row.appendChild(h("span", "zarr", "\u203A"));
+      row.onclick = function(){ if (Date.now() >= ign) showApp(a); };
+      body.appendChild(row);
+    });
+    if (list.length > max) body.appendChild(h("div", "cnote", "Showing " + max + " of " + list.length + ". Search to find the rest."));
+  };
+  // one app: what it is and Install
+  var showApp = function(a){
+    zStoreView = "app";
+    var m = xOpen("ZIMAOS APP STORE");
+    var top = h("div", "pfr");
+    top.appendChild(zIcon(a, true));
+    var tx = h("div", "pft");
+    tx.appendChild(h("b", "", a.title));
+    tx.appendChild(h("span", "", [a.category, a.author].filter(function(x){ return x; }).join(" \u00B7 ")));
+    top.appendChild(tx);
+    m.appendChild(top);
+    if (a.tagline) m.appendChild(h("div", "zsub", a.tagline));
+    if (a.description) m.appendChild(h("div", "zdesc", a.description.slice(0, 1500)));
+    if (a.port) m.appendChild(h("div", "fh", "Web page on port " + a.port));
+    var addBtn = true;
+    if (zIsInstalled(a)) m.appendChild(h("div", "cnote", "Already installed. Hold its button for Start / Stop / Update / Uninstall."));
+    else {
+      var tg = h("div", "tg");
+      tg.appendChild(h("label", "", "ADD IT AS A BUTTON"));
+      var sw = h("div", "sw on");
+      sw.appendChild(h("i"));
+      sw.onclick = function(){ addBtn = !addBtn; sw.className = addBtn ? "sw on" : "sw"; };
+      tg.appendChild(sw);
+      m.appendChild(tg);
+      m.appendChild(h("div", "fh", "ZimaOS downloads and starts it in the background. It uses the App Store's usual settings; change them later in ZimaOS."));
+    }
+    var bx = h("div", "btns");
+    hbtn(bx, "Back", "", showList);
+    if (!zIsInstalled(a)) hbtn(bx, zInstalling[a.id] ? "Installing..." : "Install", "ok", function(){
+      if (zInstalling[a.id]) return;
+      zStoreInstall(a, addBtn);
+      showList();
+    });
+    m.appendChild(bx);
+  };
+  window.zStoreRender = function(){ if (zStoreView === "list") render(); };
+  showList();
+}
+// Installs a store app, waits (up to 10 minutes) until ZimaOS runs it, then adds it as a button if asked
+function zStoreInstall(a, addBtn){
+  zInstalling[a.id] = true;
+  toast("Installing " + a.title + "...", 6000);
+  var done = function(msg){
+    delete zInstalling[a.id];
+    toast(msg, 6000);
+    if (window.zStoreRender) zStoreRender();
+  };
+  rpc({ op: "zInstall", sid: a.id }, function(r){
+    if (!r.ok) { done("Couldn't install " + a.title + (r.msg ? ": " + r.msg : "")); return; }
+    toast(a.title + ": installing. ZimaOS downloads it in the background; this can take a few minutes.", 6000);
+    rpc({ op: "zWait", sid: a.id, title: a.title, add: !!addBtn }, function(w){
+      if (w.ok) a.installed = true;
+      done(w.msg || (w.ok ? a.title + " installed" : a.title + " isn't installed yet. Check the ZimaOS App Store."));
+      checkUpdates(true);
+    });
+  });
+}
+// hold menu: Uninstall (removes the app from ZimaOS and deletes the button)
+function zUninstallRow(box, c, sv){
+  var wrap = h("div");
+  wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "10px";
+  var bx = h("div", "btns col");
+  var on = false, delData = false;
+  hbtn(bx, "Uninstall", "rtxt", function(b){
+    if (!on) {
+      on = true;
+      b.textContent = "Tap again to uninstall";
+      wrap.insertBefore(h("div", "cnote", "Removes " + c.name + " from ZimaOS and deletes this button."), bx);
+      var tg = h("div", "tg");
+      tg.appendChild(h("label", "", "ALSO DELETE ITS DATA"));
+      var sw = h("div", "sw");
+      sw.appendChild(h("i"));
+      sw.onclick = function(){ delData = !delData; sw.className = delData ? "sw on" : "sw"; };
+      tg.appendChild(sw);
+      wrap.insertBefore(tg, bx);
+      return;
+    }
+    closeMenu();
+    toast("Uninstalling " + c.name + "...", 120000);
+    rpc({ op: "zUninstall", cid: c.id, data: delData, id: sv.id }, function(r){
+      toast(r.msg || (r.ok ? c.name + " uninstalled" : "ZimaOS didn't uninstall " + c.name), 4000);
+      if (r.ok && zStoreList) zStoreList.forEach(function(x){ if (x.id.toLowerCase() === String(c.storeId || c.id).toLowerCase() || x.id.toLowerCase() === c.id.toLowerCase()) x.installed = false; });
+      checkUpdates(true);
+    });
+  });
+  wrap.appendChild(bx);
+  box.appendChild(wrap);
+}
+
 // ---------- Auto logo: asks Scriptable (the dashboard-icons list, loose matching) ----------
 guessLogo = function(nid, uid, iid, hid){
   var n = document.getElementById(nid).value.trim();
@@ -7336,6 +7685,7 @@ guessLogo = function(nid, uid, iid, hid){
     var w = pickFromRow();
     w.style.display = !sv && ctrOn() && (isZima() ? st.hasLogin : true) ? "" : "none";
     document.getElementById("pfb").textContent = pickLabel();
+    document.getElementById("pfs").style.display = isZima() && st.hasLogin ? "" : "none";
   };
   var rs = renderServices;
   renderServices = function(p){ rs(p); checkUpdates(false); };
@@ -7351,7 +7701,7 @@ var watching = null, reachOk = null;
     ss(ok);
     if (watching) {
       document.getElementById("dot").className = "dot wait";
-      document.getElementById("st").textContent = watching === "off" ? "SHUTTING DOWN…" : "REBOOTING…";
+      document.getElementById("st").textContent = watching === "off" ? "SHUTTING DOWN\u2026" : "REBOOTING\u2026";
     }
   };
 })();
@@ -7377,9 +7727,9 @@ function monLine(){
   if (monOpen) { b.classList.remove("line"); m.textContent = ""; return; }
   var parts = ["CPU " + pctTxt(last.cpu), "RAM " + pctTxt(last.ram)];
   if (last.storage) parts.push("DISK " + pctTxt(last.storage.percent));
-  if (last.net) parts.push("↓" + fmt(last.net.down));
+  if (last.net) parts.push("\u2193" + fmt(last.net.down));
   b.classList.add("line");
-  m.textContent = parts.join(" · ");
+  m.textContent = parts.join(" \u00B7 ");
 }
 (function(){
   var up = update, off = offline, gs = glancesState, tm = toggleMon;
@@ -7432,7 +7782,7 @@ document.addEventListener("touchend", function(){
   if (d > 80 && !dragging) {
     prBusy = true;
     e.className = "show busy";
-    e.textContent = "Refreshing…";
+    e.textContent = "Refreshing\u2026";
     rpc({ op: "refresh" }, function(){});
     setTimeout(refreshDone, 8000);
   } else e.className = "";

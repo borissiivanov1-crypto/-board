@@ -12,6 +12,18 @@ AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
+## New in the Scriptable script 2.4 (the same features as Android 2.4)
+
+- **Odd symbols fixed**: some iPhones showed `Â·`, `â€º` or broken emoji (`ð...`) in the dashboard and Settings because
+  the script file was read with the wrong text encoding. `board_Blank.js` is now plain ASCII (every other character is a
+  `\u` escape), so it shows the same however it reaches the phone. Text saved garbled by an older copy (button icons,
+  names) is repaired when the data file is read (`unGarble`).
+- **ZimaOS App Store** (+ > ZimaOS App Store): search, category chips, app details, Install (the app's compose file is
+  sent back to ZimaOS as exactly `application/yaml`), then the app list is checked every 5 s for up to 10 minutes and
+  the app is added as a button. Store icons that don't load fall back to the dashboard-icons logo; apps with the same
+  title show their author.
+- **Uninstall** in a ZimaOS app's hold menu (tap twice; optionally deletes its data), which also deletes the button.
+
 ## New in the Scriptable script 2.2 (the same features as Android 2.2)
 
 - **Containers on every server type** (hold a button): Start, Stop (tap twice), Restart and Logs for ZimaOS apps,
