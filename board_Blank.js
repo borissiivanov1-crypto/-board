@@ -4369,29 +4369,28 @@ body:where(.glass):not(.ready) .enter,body:where(.glass):not(.ready) .intro{anim
 @media (prefers-reduced-motion:reduce){body:where(.glass) .blob,body:where(.glass) .b3{animation:none}body:where(.glass) .enter,body:where(.glass) .intro{animation-duration:.01s}}
 /* ---------- startup screen (Settings > Theme & look > Startup animation; works with either style) ---------- */
 #splash{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;background:var(--bg);overflow:hidden;
-  transition:opacity .7s var(--soft),transform .9s var(--soft),filter .7s var(--soft)}
-#splash.out{opacity:0;transform:scale(1.25);filter:blur(16px);pointer-events:none}
+  transition:opacity .6s var(--soft),transform .8s var(--soft)}
+#splash.out{opacity:0;transform:scale(1.15);pointer-events:none}
 .sp-glow{position:absolute;width:120vmax;height:120vmax;border-radius:50%;opacity:calc(var(--glowop) * 1.3);animation:spglow 2.4s var(--soft) both}
 .sp-g1{background:radial-gradient(circle,rgba(var(--g1),.7),rgba(var(--g1),0) 60%);top:-60vmax;left:-50vmax}
 .sp-g2{background:radial-gradient(circle,rgba(var(--g2),.7),rgba(var(--g2),0) 60%);bottom:-60vmax;right:-50vmax}
 @keyframes spglow{from{transform:scale(.4);opacity:0}}
 .sp-orb{position:relative;width:138px;height:138px;border-radius:42px;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(160deg,rgba(255,255,255,.22),rgba(255,255,255,.04) 55%,rgba(255,255,255,.1));
-  -webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(255,255,255,.08),0 30px 60px -12px rgba(0,0,0,.6);
-  animation:orbin 1s var(--spring) both;overflow:hidden}
+  animation:orbin .9s var(--spring) both;overflow:hidden;-webkit-mask-image:-webkit-radial-gradient(white,black);will-change:transform,opacity}
 .sp-orb::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.2px;background:linear-gradient(140deg,rgba(255,255,255,.8),rgba(255,255,255,.1) 35%,rgba(255,255,255,0) 55%,rgba(255,255,255,.45));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
 .sp-orb::after{content:"";position:absolute;top:-50%;left:-80%;width:60%;height:200%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);transform:rotate(20deg);animation:sweep 1.1s .55s var(--soft) both}
 @keyframes sweep{from{left:-80%}to{left:150%}}
-@keyframes orbin{0%{transform:scale(.2) rotate(-25deg);opacity:0;border-radius:69px}100%{transform:none;opacity:1}}
-.sp-orb svg{position:absolute;inset:13px;width:auto;height:auto;overflow:visible}
+@keyframes orbin{0%{transform:scale(.3);opacity:0}100%{transform:scale(1);opacity:1}}
+.sp-orb svg{position:absolute;left:13px;top:13px;width:112px;height:112px;overflow:visible}
 .sp-tr{fill:none;stroke:rgba(255,255,255,.12);stroke-width:8}
-.sp-arc{fill:none;stroke:var(--acc);stroke-width:8;stroke-linecap:round;stroke-dasharray:301.6;stroke-dashoffset:301.6;transform:rotate(-90deg);transform-origin:60px 60px;filter:drop-shadow(0 0 8px var(--acc));animation:spdraw 1s .2s var(--soft) forwards}
+.sp-arc{fill:none;stroke:var(--acc);stroke-width:8;stroke-linecap:round;stroke-dasharray:301.6;stroke-dashoffset:301.6;transform:rotate(-90deg);transform-origin:60px 60px;animation:spdraw 1s .2s var(--soft) forwards}
 @keyframes spdraw{to{stroke-dashoffset:52}}
 .sp-b{position:relative;font-size:40px;font-weight:900;letter-spacing:-.05em;animation:spb .7s .4s var(--spring) both}
 @keyframes spb{from{opacity:0;transform:scale(.4)}}
 .sp-name{font-size:14px;font-weight:800;letter-spacing:.34em;opacity:.85;animation:spname 1s .45s var(--soft) both;padding-left:.34em}
-@keyframes spname{from{opacity:0;letter-spacing:1.1em;filter:blur(8px)}}
+@keyframes spname{from{opacity:0;transform:scale(1.25)}}
 body:not(.boot) #splash,body:not(.boot) #splash *{animation-play-state:paused!important}
 body:not(.splashon) #splash{display:none}
 </style></head><body>
@@ -6641,11 +6640,20 @@ document.addEventListener("touchend", function(){ setTimeout(clearPress, 70); },
 document.addEventListener("touchcancel", clearPress, { passive: true });
 // startup screen (Settings > Theme & look > Startup animation)
 var booted = false, splashDone = false;
+// it starts on the first frame actually drawn: the page is loaded before it's on screen, and an animation started
+// then would be seen half-way through (or frozen)
 function boot(){
   if (booted) return;
   booted = true;
-  document.body.classList.add("boot");
-  setTimeout(endSplash, 1350);
+  var started = false;
+  var go = function(){
+    if (started) return;
+    started = true;
+    document.body.classList.add("boot");
+    setTimeout(endSplash, 1350);
+  };
+  requestAnimationFrame(function(){ requestAnimationFrame(go); });
+  setTimeout(go, 2500); // in case no frame is drawn
 }
 function endSplash(now){
   if (splashDone) return;
