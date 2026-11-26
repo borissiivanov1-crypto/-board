@@ -12,6 +12,18 @@ AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 
 The full step-by-step guide is the [iOS user manual](board_User_Manual_iOS.docx) (Word document).
 
+## New in the Scriptable script 2.6 (the same features as Android 2.6)
+
+- **ZimaOS panel** (the *ZimaOS* chip next to *Widget layout*, ZimaOS servers with the login saved): System (device,
+  version, memory, network, **ZimaOS update** with What's new and beta versions), Storage (every storage, RAID state,
+  each drive's health and temperature), Shares (shared folders, network drives), Apps (Update all, ZimaOS modules as
+  buttons, app sources, app settings) and Alerts (ZimaOS's notices). ZimaOS 1.8 paths first, the older CasaOS ones as
+  a fallback; parts a ZimaOS version lacks are left out. Script side: `zPanelOp` (rpc op `zp`); page: `openZPanel`.
+- **App Store** in the + popup (browse, search, install; the button is added once the app runs), **Details and
+  settings** and **Uninstall** in an app's hold menu. Edit settings changes the app's compose file (ZimaOS 1.8:
+  `/zimaapp/v2app/files/compose` with its Etag).
+- Tried in Chromium with a mock Scriptable against a fake ZimaOS 1.8 server, not on an iPhone.
+
 ## New in the Scriptable script 2.2 (the same features as Android 2.2)
 
 - **Containers on every server type** (hold a button): Start, Stop (tap twice), Restart and Logs for ZimaOS apps,

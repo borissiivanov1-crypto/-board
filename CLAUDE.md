@@ -66,7 +66,7 @@
   System / Storage / Shares / Apps / Alerts, one `Part` per API call (404/405 -> `ZimaMore.NOT_OFFERED`), changes via
   `BoardVM.zTry` / `zDo`. Hold menu "Details and settings" -> `ZAppDetailDialog` -> `ZComposeDialog` (edit the compose
   YAML, PUT as exactly application/yaml). Endpoints are the open-source CasaOS ones (map in README "New in Android
-  2.5"); not ported to iOS. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
+  2.5"); ported to iOS in Scriptable 2.6. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
   (`v2or1`, `Part(hideMissing)`): OTA `/v2/installer/*`, storage `/v2/local_storage/storages|raid|disk`, shares
   `/v2_1/files/share|connect`, alerts `/v2/message_bus/ysk`, compose edit `/zimaapp/v2app/files/compose` with Etag /
   If-Match. On 1.8.0 these older ones 404: /v1/storage, /v1/disks/usb, /v1/samba/*, /v2/casaos/health|zt, /v1/sys/logs,
@@ -74,7 +74,7 @@
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
-  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); not ported to iOS yet. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
+  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); ported to iOS in Scriptable 2.6. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
 - `Widget.kt` + `WidgetSnap.kt`: Glance widget; uses the dashboard's snapshot when it's under 3 minutes old and was
   taken with the same settings; otherwise asks Glances first and probes LIVE only if Glances doesn't answer.
 - `ui/Look.kt`: press feedback (`pressScale`, `squish`, `glint`): Liquid Glass squish, Classic shrink + dim.
@@ -85,7 +85,8 @@
 ## iOS script
 - `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
-- Since the 2.2 port it has the same features as Android 2.2 (`BOARD_VERSION`), except trust-on-first-use
+- Since the 2.6 port it has the same features as Android 2.6 (`BOARD_VERSION`; ZimaOS panel = `zPanelOp` / rpc op `zp`
+  on the script side, `openZPanel`, `openZStore`, `openZDetail`, `openZCompose` in `LIVE_EXTRA`), except trust-on-first-use
   certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
   (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`

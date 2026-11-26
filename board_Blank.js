@@ -416,7 +416,7 @@ function dataPath() {
 //  - a storage error while reading: nothing is saved this run, so the file stays as it is.
 let LOAD_NOTE = null;
 // the feature level of this script: the same as the Android app's version it matches
-const BOARD_VERSION = "2.2";
+const BOARD_VERSION = "2.6";
 let DATA_READONLY = false;
 
 function validData(raw) {
@@ -865,6 +865,7 @@ function getPayload() {
       // the Reboot / Shut down menu needs a known server type
       power: SET.showPower && !!PLATFORMS[SET.platform],
       platform: SET.platform,
+      host: serverHostOf(SET),
       // hold menu Start / Stop / Logs and + > Pick from (ZimaOS apps, or containers on the other types)
       ctr: ctrSupported(),
       liveSeconds: SET.liveSeconds,
@@ -1679,12 +1680,12 @@ async function zToken(s = SET) {
 }
 // One call with the saved login; an expired token is renewed once.
 // dropOk: a dropped connection counts as done (an update recreates the app and can cut the answer off)
-async function zCall(path, method = "GET", body = null, timeout = 10, dropOk = false) {
+async function zCall(path, method = "GET", body = null, timeout = 10, dropOk = false, extra = null) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const t = await zToken();
     let r;
     try {
-      r = await http(zBase() + path, { method, headers: { Authorization: t, "Content-Type": "application/json" }, body, timeout });
+      r = await http(zBase() + path, { method, headers: { Authorization: t, "Content-Type": "application/json", ...(extra || {}) }, body, timeout });
     } catch (e) {
       if (dropOk) return null;
       throw CtrErr("Can't reach ZimaOS at " + zBase());
@@ -1796,6 +1797,483 @@ function zDriveFor(device, drives) {
     if (n && dev.startsWith(n) && (!best || z.path.length > best.path.length)) best = z;
   }
   return best;
+}
+
+// ---------- ZimaOS panel (the "ZimaOS" chip; same as Android 2.6) ----------
+// ZimaOS 1.8 paths first, the older CasaOS ones as a fallback. A part this ZimaOS lacks (HTTP 404 / 405)
+// answers NOT_OFFERED and the page leaves it out or says so.
+const Z_NOT = "This ZimaOS doesn't offer this.";
+// one call: 404 / 405 -> Z_NOT; extra headers on top of the login
+async function zGet(path, method = "GET", body = null, timeout = 12, extra = null, dropOk = false) {
+  const r = await zCall(path, method, body, timeout, dropOk, extra);
+  if (r && (r.code === 404 || r.code === 405)) throw CtrErr(Z_NOT);
+  return zData(r);
+}
+async function zOpt(path) {
+  try {
+    return await zGet(path, "GET", null, 8);
+  } catch (e) {
+    if (e.fix) throw e;
+    return null;
+  }
+}
+async function zV2or1(v2, v1) {
+  try {
+    return await v2();
+  } catch (e) {
+    if (e.message !== Z_NOT) throw e;
+    return v1();
+  }
+}
+const zArr = (d, ...keys) => (Array.isArray(d) ? d : d && typeof d === "object" ? keys.map((k) => d[k]).find(Array.isArray) || [] : typeof d === "string" ? jparse(d) || [] : []);
+const zStr = (o, ...k) => {
+  for (const key of k) if (o && o[key] != null && String(o[key]).trim()) return String(o[key]).trim();
+  return "";
+};
+const zNum = (x) => (typeof x === "number" ? x : typeof x === "string" && x.trim() && !isNaN(Number(x)) ? Number(x) : null);
+const zCap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+// ZimaOS on a PC sends the error of reading the board name ("cat: /proc/device-tree/model: No such file ...")
+function zCleanModel(m) {
+  const x = String(m || "").replace(/\u0000/g, "").trim();
+  return !x || x.startsWith("cat:") || /no such file|not found/i.test(x) ? "" : x;
+}
+
+// ----- System -----
+async function zInfo() {
+  const i = { version: "", deviceName: "", model: "", arch: "", cpuPct: null, cores: 0, memTotal: 0, memUsed: 0, nets: [], extra: [] };
+  const u = await zGet("/v1/sys/utilization", "GET", null, 8);
+  if (u && typeof u === "object") {
+    const cpu = u.cpu || {}, mem = u.mem || {};
+    i.cpuPct = zNum(cpu.percent);
+    i.cores = zNum(cpu.num) || 0;
+    i.memTotal = zNum(mem.total) || 0;
+    i.memUsed = zNum(mem.used) || 0;
+    i.nets = zArr(u.net).map((n) => ({ name: n.name || "", state: n.state || "", sent: zNum(n.bytesSent) || 0, recv: zNum(n.bytesRecv) || 0 })).filter((n) => n.name);
+    const t = zNum(cpu.temperature);
+    if (t > 0 && t < 150) i.cpuTemp = t;
+  }
+  const v = await zOpt("/v1/sys/version");
+  i.version = typeof v === "string" ? v.trim() : v && typeof v === "object" ? zStr(v, "current_version", "version_name") || (v.version && typeof v.version === "object" ? zStr(v.version, "version") : zStr(v, "version")) : "";
+  const hw = await zOpt("/v1/sys/hardware");
+  if (hw && typeof hw === "object") { i.model = zCleanModel(zStr(hw, "drive_model", "model")); i.arch = zStr(hw, "arch"); }
+  const dv = await zOpt("/v2/zimaos/device/info");
+  if (dv && typeof dv === "object" && !Array.isArray(dv)) {
+    const skip = ["device_name", "name", "hash", "device_image_path", "image", "icon", "token", "password", "arch", "os_version", "version", "device_model", "model", "device_code", "serial", "serial_number", "uuid", "id"];
+    i.deviceName = zStr(dv, "device_name", "name");
+    i.model = zCleanModel(zStr(dv, "device_model", "model")) || i.model;
+    i.version = i.version || zStr(dv, "os_version", "version");
+    i.extra = Object.keys(dv).filter((k) => !skip.includes(k) && !k.startsWith("can_")).map((k) => {
+      const x = dv[k];
+      if (x == null || typeof x === "object") return null;
+      const t = typeof x === "boolean" ? (x ? "Yes" : "No") : String(x).trim();
+      return t && t.length <= 60 ? [zCap(k.replace(/_/g, " ")), t] : null;
+    }).filter(Boolean).slice(0, 12);
+  }
+  // CPU power: the same reading the CPU card uses
+  try {
+    const p = await zimaCpu(null);
+    if (p && p.watts != null) i.watts = p.watts;
+  } catch (e) {}
+  return i;
+}
+async function zHealth() {
+  const d = (await zGet("/v2/casaos/health/services")) || {};
+  const l = (k) => zArr(d[k]).map((x) => String(x).replace(/\.service$/, "")).filter(Boolean);
+  return { running: l("running"), stopped: l("not_running") };
+}
+async function zZt() {
+  const d = await zGet("/v2/casaos/zt/info");
+  const o = Array.isArray(d) ? d[0] : d;
+  const id = o ? zStr(o, "id", "network_id", "nwid") : "";
+  return id ? { id, name: zStr(o, "name"), status: zStr(o, "status"), online: /^(online|ok)$/i.test(zStr(o, "status")) } : { id: "" };
+}
+async function zLog() {
+  const d = await zGet("/v1/sys/logs?line=200", "GET", null, 15);
+  return cleanLog(Array.isArray(d) ? d.join("\n") : d == null ? "" : typeof d === "object" ? JSON.stringify(d) : String(d)).replace(/\s+$/, "");
+}
+
+// ----- ZimaOS updates: /v2/installer (ZimaOS's OTA service) -----
+function zRelease(d) {
+  if (!d || typeof d !== "object") return { version: typeof d === "string" ? d.trim() : "", notes: "", important: false };
+  return { version: zStr(d, "version"), notes: String(d.release_note || "").replace(/\\n/g, "\n").trim(), important: !!d.important };
+}
+async function zOta() {
+  const cur = zRelease(await zGet("/v2/installer/release/current"));
+  const notice = String((await zOpt("/v2/installer/web/notice")) || "").trim();
+  let latest = { version: "", notes: "", important: false };
+  try {
+    latest = zRelease(await zGet("/v2/installer/release/latest", "GET", null, 20));
+  } catch (e) {
+    if (e.fix) throw e;
+  }
+  const s = await zOpt("/v2/installer/status");
+  const b = await zOpt("/v2/installer/beta-subscription");
+  const status = s && typeof s === "object" ? zStr(s, "status") : "";
+  const strip = (x) => x.replace(/^v/i, "");
+  const available = (/-update$/.test(notice) && notice !== "no-update") || (!!latest.version && !!cur.version && strip(latest.version) !== strip(cur.version) && notice !== "no-update");
+  return { current: cur.version, latest: latest.version, notes: latest.notes, important: latest.important, status,
+    installing: /^installing$/i.test(status), failed: /^installError$/i.test(status), available,
+    beta: b && typeof b === "object" && zStr(b, "status") ? /^enabled$/i.test(zStr(b, "status")) : null };
+}
+
+// ----- Storage: ZimaOS 1.8's list (/v2/local_storage), else the older volumes (/v1/storage) -----
+const Z_RANK = { "": 0, ok: 1, busy: 2, warn: 3, bad: 4 };
+const zWorst = (a, b) => ((Z_RANK[b] || 0) > (Z_RANK[a] || 0) ? b : a);
+const zHealthy = (h) => !(h === false || (typeof h === "string" && /^false$/i.test(h)));
+function zRaidHealth(st) {
+  st = String(st || "").toLowerCase();
+  return !st || st === "ok" ? "ok" : ["rebuilding", "resyncing", "reshape", "recovering", "creating"].includes(st) ? "busy" : ["degraded", "inactive"].includes(st) ? "warn" : ["fail", "urge"].includes(st) ? "bad" : "";
+}
+function zBuildStorages(storages, raids, disks) {
+  const dl = zArr(disks, "list", "disks").map((o) => {
+    const t = zNum(o.temperature), hrs = zNum(o.power_on_hours);
+    return { d: { name: zStr(o, "name") || String(o.path || "").split("/").pop(), model: o.model === "System" ? "" : zStr(o, "model"), size: zNum(o.size) || 0,
+      healthy: zHealthy(o.health), missing: false, temp: t > 0 && t < 150 ? t : null, hours: hrs > 0 ? Math.round(hrs) : null }, o };
+  });
+  const diskFor = (path, name) => (dl.find((x) => path && x.o.path === path) || dl.find((x) => name && x.d.name === name) || {}).d || null;
+  const rl = zArr(raids, "list", "raids");
+  const used = new Set();
+  const raidFor = (name, dir) => {
+    for (let i = 0; i < rl.length; i++) {
+      const r = rl[i];
+      if (used.has(i)) continue;
+      if ((name && (zStr(r, "name") === name || zStr(r, "storage_name") === name)) || (dir && zStr(r, "mount_point") === dir)) { used.add(i); return r; }
+    }
+    return null;
+  };
+  const withRaid = (p, r) => {
+    const st = zStr(r, "raid_status") || "ok";
+    const pct = zNum(r.percentage);
+    const drives = zArr(r.devices).map((dv) => {
+      const nm = zStr(dv, "name") || String(dv.path || "").replace(/^\/dev\//, "");
+      const k = diskFor(dv.path, nm);
+      return { name: nm, model: zStr(dv, "model") || (k ? k.model : ""), size: zNum(dv.size) || (k ? k.size : 0),
+        healthy: zHealthy(dv.health) && !dv.faulty && (k ? k.healthy : true), missing: !!dv.missing, temp: k ? k.temp : null, hours: k ? k.hours : null };
+    });
+    let hl = zWorst(p.health, zRaidHealth(st));
+    for (const x of drives) hl = zWorst(hl, x.missing ? "warn" : !x.healthy ? "bad" : "");
+    const lv = zNum(r.raid_level);
+    return { ...p, kind: "raid", state: st, level: lv == null ? null : Math.round(lv), progress: st !== "ok" && pct > 0 && pct < 100 ? pct : null, drives, health: hl,
+      size: p.size || zNum(r.size) || 0, used: p.size ? p.used : zNum(r.used) || 0 };
+  };
+  const out = [];
+  for (const o of zArr(storages, "list", "storages")) {
+    const ext = o.extensions || {};
+    const h = ext.health;
+    let p = { name: zStr(o, "name"), dir: zStr(o, "path"), kind: zStr(o, "type").toLowerCase(), size: zNum(ext.size) || zNum(o.size) || 0, used: zNum(ext.used) || zNum(o.used) || 0,
+      health: h === true || /^true$/i.test(String(h)) ? "ok" : h === false || /^false$/i.test(String(h)) ? "bad" : "", state: "", level: null, progress: null, drives: [] };
+    const r = raidFor(p.name, p.dir);
+    if (r) p = withRaid(p, r);
+    else {
+      // the drives it is on: a partition mounted at its folder, or named after it; the system storage is /DATA
+      p.drives = dl.filter((x) => (p.kind === "system" && x.o.model === "System") || zArr(x.o.children).some((ch) => {
+        const mp = ch.mount_point || "";
+        return (mp && (mp === p.dir || (p.kind === "system" && mp === "/DATA"))) || (ch.storage_name && ch.storage_name === p.name);
+      })).map((x) => x.d);
+      for (const x of p.drives) if (!x.healthy) p.health = zWorst(p.health, "bad");
+    }
+    if (p.name || p.dir) out.push(p);
+  }
+  // a RAID ZimaOS has but doesn't list as a storage (not mounted yet)
+  rl.forEach((r, i) => { if (!used.has(i)) out.push(withRaid({ name: zStr(r, "name"), dir: zStr(r, "mount_point"), kind: "raid", size: 0, used: 0, health: "" }, r)); });
+  return out;
+}
+async function zStorages() {
+  let st;
+  try {
+    st = await zGet("/v2/local_storage/storages", "GET", null, 15);
+  } catch (e) {
+    if (e.message !== Z_NOT) throw e;
+    // older ZimaOS: volumes and the storage pool
+    const drives = await zDrives().catch(() => []);
+    const vols = zArr(await zGet("/v1/storage?system=show", "GET", null, 15), "list").flatMap((disk) => {
+      const dn = zStr(disk, "disk_name", "model") || String(disk.path || "").split("/").pop();
+      return zArr(disk.children).map((c) => ({ label: zStr(c, "label") || String(c.mount_point || "").split("/").pop() || "Volume", mount: c.mount_point || "", path: c.path || "", fs: c.type || "",
+        size: zNum(c.size) || 0, used: zNum(c.used) || 0, disk: dn }));
+    }).filter((v) => v.mount && v.fs !== "swap" && v.mount !== "/boot/efi");
+    let pools = [];
+    try { pools = zArr(await zGet("/v2/local_storage/merge"), "list").filter((m) => m.mount_point); } catch (e2) { if (e2.fix) throw e2; }
+    return vols.map((v) => {
+      const d = zDriveFor(v.path, drives);
+      return { name: v.label, dir: v.mount, kind: v.fs, size: v.size, used: v.used, health: !d ? "" : d.ok ? "ok" : "bad", state: "", drives: d ? [{ name: d.name, model: d.model, size: d.size, healthy: d.ok, missing: false, temp: d.temp, hours: null }] : [] };
+    }).concat(pools.map((m) => ({ name: "Storage pool", dir: m.mount_point, kind: "pool", size: 0, used: 0, health: "", state: zArr(m.source_volume_uuids).length ? zArr(m.source_volume_uuids).length + " drives" : "", drives: [] })));
+  }
+  return zBuildStorages(st, await zOpt("/v2/local_storage/raid?all=true"), await zOpt("/v2/local_storage/disk"));
+}
+async function zUsb() {
+  const list = zArr(await zGet("/v1/disks/usb"), "list").map((u) => ({ name: u.name || "", model: String(u.model || "").trim(), size: zNum(u.size) || 0,
+    parts: zArr(u.children).map((c) => ({ name: c.name || "", mount: c.mount_point || "", size: zNum(c.size) || 0, avail: zNum(c.avail) || 0 })).filter((p) => p.mount) }));
+  let auto = null;
+  try { auto = /^true$/i.test(String(await zGet("/v1/usb/usb-auto-mount"))); } catch (e) { if (e.fix) throw e; }
+  return { list, auto };
+}
+
+// ----- Shares: ZimaOS 1.8's Files service (/v2_1/files), else /v1/samba -----
+const zShares = async () => zV2or1(() => zGet("/v2_1/files/share"), () => zGet("/v1/samba/shares")).then((d) =>
+  zArr(d, "list", "shares").map((o) => ({ id: zStr(o, "id"), path: o.path || "", anonymous: o.anonymous !== false, name: zStr(o, "name") })).filter((x) => x.path));
+const zConns = async () => zV2or1(() => zGet("/v2_1/files/connect"), () => zGet("/v1/samba/connections")).then((d) =>
+  zArr(d, "list").map((o) => ({ id: zStr(o, "id"), host: o.host || "", port: zStr(o, "port") || "445", user: o.username || "", mount: o.mount_point || "" })).filter((x) => x.host));
+
+// ----- Alerts: ZimaOS's dashboard cards (/v2/message_bus/ysk), plus /v2/users/events where it exists -----
+function zYsk(d) {
+  return zArr(d, "list", "cards").map((c) => {
+    const ct = c.content || {};
+    const iw = ct.bodyIconWithText ? zStr(ct.bodyIconWithText, "description") : "";
+    const list = zArr(ct.bodyList).map((li) => [zStr(li, "description"), zStr(li, "rightText")].filter(Boolean).join(": ")).filter(Boolean);
+    const pr = ct.bodyProgress || null;
+    const msg = [iw, list.slice(0, 6).join("\n"), pr ? zStr(pr, "label") : ""].filter(Boolean).join("\n");
+    const id = zStr(c, "id"), title = zStr(ct, "titleText", "title");
+    return id || title ? { uuid: id, source: "", title: title || "ZimaOS", message: msg, time: 0, ysk: true, progress: pr ? zNum(pr.progress) : null } : null;
+  }).filter(Boolean);
+}
+function zEventsOld(d) {
+  return zArr(d, "list", "events").map((e) => {
+    const props = {};
+    let p = e.properties;
+    if (typeof p === "string") p = jparse(p);
+    if (Array.isArray(p)) p.forEach((x) => { if (x) props[x.name] = String(x.value == null ? "" : x.value); });
+    else if (p && typeof p === "object") Object.keys(p).forEach((k) => (props[k] = String(p[k])));
+    const name = zStr(e, "name");
+    const title = props["casaos-ui:title"] || props.title || zCap(name.replace(/^[^:]*:/, "").replace(/[:_-]/g, " ").trim());
+    const msg = props["casaos-ui:message-1"] || props.message || Object.keys(props).filter((k) => !k.startsWith("casaos-ui:")).slice(0, 3).map((k) => props[k]).join(" · ");
+    let t = zNum(e.timestamp) || 0;
+    if (t > 0 && t < 1e11) t *= 1000;
+    return { uuid: zStr(e, "uuid", "event_uuid"), source: zStr(e, "source_id", "sourceID"), title, message: msg, time: t, ysk: false, progress: null };
+  }).filter((x) => x.uuid || x.title).sort((a, b) => b.time - a.time);
+}
+async function zEvents() {
+  let cards = null;
+  try { cards = zYsk(await zGet("/v2/message_bus/ysk")); } catch (e) { if (e.message !== Z_NOT) throw e; }
+  let old = [];
+  try { old = zEventsOld(await zGet("/v2/users/events")); } catch (e) { if (e.message !== Z_NOT || cards == null) throw e; }
+  return (cards || []).concat(old);
+}
+
+// ----- Apps tab -----
+const zMods = async () => zArr(await zGet("/v2/mod_management/modules"), "list").map((m) => {
+  const ui = m.ui || {};
+  const name = zStr(m, "name");
+  return name ? { name, title: zText(ui.title) || zText(m.title) || zCap(name), icon: ui.icon || "", entry: ui.entry || "" } : null;
+}).filter(Boolean);
+const zAbs = (x, base) => (!x ? "" : /^https?:\/\//i.test(x) ? x : base.replace(/\/+$/, "") + (x.startsWith("/") ? "" : "/") + x);
+async function zAddModules(names) {
+  const base = zBase();
+  const mods = (await zMods()).filter((m) => names.includes(m.name) && m.entry);
+  const logos = await Promise.all(mods.map((m) => autoLogo([m.title, m.name], zAbs(m.icon, base))));
+  const data = loadData();
+  const used = new Set(getServices(true).map((s) => s.name.trim().toLowerCase()));
+  const t = Date.now();
+  mods.forEach((m, n) => {
+    const url = zAbs(m.entry, base);
+    const um = url.match(/^https?:\/\/[^/:]+(?::(\d+))?/i);
+    const item = { id: `c:${t}-m${n}`, name: uniqueName(m.title, used), port: (um && um[1]) || "", icon: "🧩", logo: logos[n] || "", custom: true, url };
+    used.add(item.name.toLowerCase());
+    data.custom.push(item);
+    clearLogoFail(item.logo);
+  });
+  saveData(data);
+  return mods.length;
+}
+
+// ----- One app: details and its compose file -----
+function zDetail(d, ctrs) {
+  const o = d && typeof d === "object" ? d : {};
+  const comp = o.compose || {};
+  const sv = comp.services;
+  const svcs = Array.isArray(sv) ? sv : sv && typeof sv === "object" ? Object.keys(sv).map((k) => ({ name: k, ...sv[k] })) : [];
+  const uniq = (a) => a.filter((x, i) => x && a.indexOf(x) === i);
+  const ports = uniq(svcs.flatMap((s) => zArr(s.ports).map((p) => {
+    if (typeof p === "string") return p;
+    if (!p || typeof p !== "object") return "";
+    const pub = zStr(p, "published"), tgt = zStr(p, "target"), pr = zStr(p, "protocol") || "tcp";
+    return tgt ? (pub ? pub + " → " + tgt : tgt) + (pr !== "tcp" ? "/" + pr : "") : "";
+  })));
+  const folders = uniq(svcs.flatMap((s) => zArr(s.volumes).map((v) => {
+    if (typeof v === "string") return v.replace(":", " → ");
+    const src = v ? zStr(v, "source") : "", tgt = v ? zStr(v, "target") : "";
+    return tgt ? (src ? src + " → " + tgt : tgt) : "";
+  })));
+  const env = [];
+  svcs.forEach((s) => {
+    const e = s.environment;
+    const pairs = Array.isArray(e) ? e.map((x) => [String(x).split("=")[0], String(x).includes("=") ? String(x).slice(String(x).indexOf("=") + 1) : ""]) : e && typeof e === "object" ? Object.keys(e).map((k) => [k, e[k] == null ? "" : String(e[k])]) : [];
+    pairs.forEach((p) => { if (!env.some((q) => q[0] === p[0])) env.push(p); });
+  });
+  const co = ctrs && typeof ctrs === "object" && !Array.isArray(ctrs) ? ctrs : null;
+  const list = co && co.containers && typeof co.containers === "object" && !Array.isArray(co.containers) ? Object.values(co.containers) : zArr(ctrs, "containers");
+  return { status: zStr(o, "status"), update: !!o.update_available, images: uniq(svcs.map((s) => zStr(s, "image"))), ports, folders,
+    env: env.map((p) => [p[0], /KEY|TOKEN|SECRET|PASS/i.test(p[0]) && p[1] ? "••••••" : p[1]]),
+    containers: list.map((c) => ({ name: zStr(c, "Name", "name", "Service").replace(/^\//, ""), image: zStr(c, "Image", "image"), state: zStr(c, "State", "state"), health: zStr(c, "Health", "health") })) };
+}
+const zComposePath = (app) => "/v2/app_management/zimaapp/v2app/files/compose?zimaapp_id=" + enc("zimaapp://v2app/" + app);
+// a compose answer to text: YAML as is; JSON (the file itself, or { data: ... }) pretty-printed (JSON is valid YAML too)
+function zComposeText(body) {
+  const b = String(body || "").trim();
+  if (!b.startsWith("{")) return String(body || "").replace(/\r/g, "");
+  const j = jparse(b);
+  if (!j) return String(body);
+  const d = "data" in j && !("services" in j) ? j.data : j;
+  if (typeof d === "string") return d.replace(/\r/g, "");
+  if (d && typeof d.compose === "string") return d.compose.replace(/\r/g, "");
+  if (d && d.compose && typeof d.compose === "object") return JSON.stringify(d.compose, null, 2);
+  return JSON.stringify(d, null, 2);
+}
+async function zCompose(app) {
+  const r = await zCall(zComposePath(app), "GET", null, 15, false, { Accept: "application/yaml" });
+  if (r.code >= 200 && r.code < 300 && r.body.trim()) return { text: zComposeText(r.body), etag: headerOf(r.headers, "Etag"), v2: true };
+  const o = await zCall(`/v2/app_management/compose/${enc(app)}`, "GET", null, 15, false, { Accept: "application/yaml" });
+  if (o.code === 404) throw CtrErr(Z_NOT);
+  if (o.code >= 400) zData(o);
+  return { text: zComposeText(o.body), etag: "", v2: false };
+}
+// saves a changed compose file: ZimaOS recreates the app with it (its data stays)
+async function zSaveCompose(app, c) {
+  const h = { "Content-Type": "application/yaml" };
+  if (c.v2 && c.etag) h["If-Match"] = c.etag;
+  const path = c.v2 ? zComposePath(app) + "&sync=false" : `/v2/app_management/compose/${enc(app)}?check_port_conflict=false`;
+  const r = await zCall(path, "PUT", c.text, 300, true, h);
+  if (!r) return;
+  if (r.code === 404 || r.code === 405) throw CtrErr(Z_NOT);
+  if (r.code === 412) throw CtrErr("The app's settings changed in ZimaOS meanwhile. Open Edit settings again.");
+  try {
+    zData(r);
+  } catch (e) {
+    if (/invalid user override/.test(e.message)) throw CtrErr("ZimaOS can't apply changes to this app's file. Change it in ZimaOS's app settings.");
+    throw e;
+  }
+}
+
+// ----- App Store: GET /v2/app_management/apps = { list: { "<store id>": { title, tagline, icon, category ... } }, installed: [ids] } -----
+async function zStore() {
+  const o = (await zGet("/v2/app_management/apps", "GET", null, 20)) || {};
+  const inst = new Set(zArr(o.installed).map((x) => String(x).toLowerCase()));
+  const l = o.list;
+  const items = Array.isArray(l) ? l.map((v) => [v.store_app_id || v.name || "", v]) : l && typeof l === "object" ? Object.keys(l).map((k) => [k, l[k]]) : [];
+  const seen = new Set();
+  return items.map(([k, v]) => {
+    const id = k || (v && v.store_app_id) || "";
+    if (!id || !v || seen.has(id.toLowerCase())) return null;
+    seen.add(id.toLowerCase());
+    return { id, title: zText(v.title) || zCap(id), tagline: zText(v.tagline).trim(), description: zText(v.description).trim().slice(0, 1500), icon: v.icon || "",
+      category: String(v.category || "").trim(), author: String(v.author || v.developer || "").trim(), port: String(v.port_map == null ? "" : v.port_map).replace(/\D/g, "").slice(0, 5),
+      installed: inst.has(id.toLowerCase()) };
+  }).filter(Boolean).sort((a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase()));
+}
+// installs a store app: its compose file from the store, sent back to ZimaOS (as ZimaOS's own App Store does)
+async function zInstall(storeId) {
+  const r = await zCall(`/v2/app_management/apps/${enc(storeId)}/compose`, "GET", null, 20, false, { Accept: "application/yaml" });
+  if (r.code >= 400) zData(r);
+  let yaml = r.body, json = null;
+  if (yaml.trim().startsWith("{")) {
+    const j = jparse(yaml);
+    const d = j && j.data;
+    if (typeof d === "string") yaml = d;
+    else if (d && typeof d.compose === "string") yaml = d.compose;
+    else if (d && d.compose && typeof d.compose === "object") { json = JSON.stringify(d.compose); yaml = json; }
+  }
+  if (!yaml.trim()) throw CtrErr("ZimaOS didn't send the app's setup");
+  // ZimaOS only takes the type exactly "application/yaml", else it answers 415
+  const p = await zCall("/v2/app_management/compose", "POST", yaml, 60, false, { "Content-Type": "application/yaml" });
+  if (p.code === 415 && json) { zData(await zCall("/v2/app_management/compose", "POST", json, 60)); return { ok: true }; }
+  zData(p);
+  return { ok: true };
+}
+
+// The page's ZimaOS panel asks here (rpc op "zp"); the answer: { ok, v } or { ok: false, msg, missing }
+async function zPanelOp(d) {
+  const a = d.a || {};
+  const bodyJ = (o) => JSON.stringify(o);
+  switch (d.what) {
+    case "info": return zInfo();
+    case "ota": return zOta();
+    case "otaInstall": return zGet("/v2/installer/install", "POST", "", 60);
+    case "otaReset": return zGet("/v2/installer/reset", "PUT", "", 20);
+    case "otaBeta": return zGet("/v2/installer/beta-subscription?status=" + (a.on ? "enable" : "disable"), "PUT", "", 20);
+    case "health": return zHealth();
+    case "zt": return zZt();
+    case "ztSet": return zGet(`/v2/casaos/zt/${enc(a.id)}/status`, "PUT", bodyJ({ status: a.on ? "online" : "offline" }), 20);
+    case "log": return zLog();
+    case "storage": return zStorages();
+    case "usb": return zUsb();
+    case "eject": return zGet("/v1/disks/usb", "DELETE", bodyJ({ mount_point: a.mount }), 30);
+    case "usbAuto": return zGet("/v1/usb/usb-auto-mount", "PUT", bodyJ({ state: a.on ? "on" : "off" }));
+    case "shares": return zShares();
+    case "shareAdd": return zV2or1(
+      () => zGet("/v2_1/files/share", "POST", bodyJ({ name: String(a.path).replace(/\/+$/, "").split("/").pop(), path: a.path, anonymous: true }), 20),
+      () => zGet("/v1/samba/shares", "POST", bodyJ([{ path: a.path, anonymous: true }]), 20));
+    case "shareDel": return zV2or1(() => zGet(`/v2_1/files/share/${enc(a.id)}`, "DELETE", null, 20), () => zGet(`/v1/samba/shares/${enc(a.id)}`, "DELETE", null, 20));
+    case "conns": return zConns();
+    case "connAdd": {
+      const b = bodyJ({ host: a.host, port: a.port || "445", username: a.user, password: a.pass });
+      return zV2or1(() => zGet("/v2_1/files/connect", "POST", b, 30), () => zGet("/v1/samba/connections", "POST", b, 30));
+    }
+    case "connDel": return zV2or1(() => zGet(`/v2_1/files/connect/${enc(a.id)}`, "DELETE", null, 20), () => zGet(`/v1/samba/connections/${enc(a.id)}`, "DELETE", null, 20));
+    case "events": return zEvents();
+    case "eventDel": return a.ysk ? zGet(`/v2/message_bus/ysk/${enc(a.uuid)}`, "DELETE") : zGet(`/v2/users/event/${enc(a.uuid)}`, "DELETE");
+    case "mods": {
+      const base = zBase();
+      const taken = new Set(getServices(true).map((s) => String(s.url || "").replace(/\/+$/, "")));
+      return (await zMods()).filter((m) => m.entry).map((m) => ({ ...m, url: zAbs(m.entry, base), has: taken.has(zAbs(m.entry, base).replace(/\/+$/, "")) }));
+    }
+    case "modsAdd": { statusDirty = true; return { n: await zAddModules(a.names || []), reload: true }; }
+    case "sources": return zArr(await zGet("/v2/app_management/appstore"), "list").map((o) => ({ id: zStr(o, "id"), url: zStr(o, "url") })).filter((x) => x.url);
+    case "sourceAdd": return zGet("/v2/app_management/appstore?url=" + enc(a.url), "POST", "", 120);
+    case "sourceDel": return zGet(`/v2/app_management/appstore/${enc(a.id)}`, "DELETE", null, 30);
+    case "globals": return zArr(await zGet("/v2/app_management/global"), "list").map((o) => ({ key: zStr(o, "key"), value: o.value == null ? "" : String(o.value), desc: zStr(o, "description") })).filter((x) => x.key);
+    case "globalSet": return zGet(`/v2/app_management/global/${enc(a.key)}`, "PUT", bodyJ({ key: a.key, value: a.value }));
+    case "updateAll": {
+      const cache = await loadCtrs(true);
+      if (cache.err) throw CtrErr(cache.err.msg);
+      const list = cache.list.filter((x) => x.controllable && cache.updates.includes(String(x.storeId || x.id).toLowerCase()));
+      let ok = 0;
+      const failed = [];
+      for (const x of list) {
+        try { zData(await zCall(`/v2/app_management/compose/${enc(x.id)}`, "PATCH", "", 300, true)); ok++; } catch (e) { failed.push(x.title); }
+      }
+      statusDirty = true;
+      await loadCtrs(true);
+      return { msg: !list.length ? "No app updates waiting" : failed.length ? "Started " + ok + ". Couldn't update: " + failed.join(", ") : ok + " update" + (ok === 1 ? "" : "s") + " started. ZimaOS pulls the new versions in the background." };
+    }
+    // the App Store (+ > App Store), install and uninstall
+    case "store": return zStore();
+    case "install": return zInstall(a.id);
+    case "uninstall": {
+      zData(await zCall(`/v2/app_management/compose/${enc(a.app)}?delete_config_folder=${!!a.del}`, "DELETE", null, 120, true));
+      if (a.button) {
+        const data = loadData();
+        if (String(a.button).startsWith("b:")) { delete data.edits[a.button]; if (!data.hidden.includes(a.button)) data.hidden.push(a.button); }
+        else data.custom = data.custom.filter((c) => c.id !== a.button);
+        (data.groups || []).forEach((g) => { g.members = (g.members || []).filter((m) => m !== a.button); });
+        saveData(data);
+      }
+      statusDirty = true;
+      await sleepMs(1500);
+      await loadCtrs(true);
+      return { msg: (a.title || a.app) + " uninstalled", reload: true };
+    }
+    // the installed apps right now (the page asks every 5 s while an install runs)
+    case "installed": {
+      const cache = await loadCtrs(true);
+      if (cache.err) throw CtrErr(cache.err.msg);
+      const x = cache.list.find((c) => String(c.storeId).toLowerCase() === String(a.id).toLowerCase() || String(c.id).toLowerCase() === String(a.id).toLowerCase());
+      const taken = new Set(getServices(true).map((s) => ctrForService(s, cache)).filter(Boolean).map((c) => c.id));
+      return x ? { id: x.id, running: zRunning(x), has: taken.has(x.id) } : null;
+    }
+    case "detail": {
+      const det = await zGet(`/v2/app_management/compose/${enc(a.app)}`, "GET", null, 15);
+      const c = await zOpt(`/v2/app_management/compose/${enc(a.app)}/containers`);
+      return zDetail(det, c);
+    }
+    case "compose": return zCompose(a.app);
+    case "composeSave": {
+      await zSaveCompose(a.app, a.c);
+      statusDirty = true;
+      await sleepMs(2000);
+      await loadCtrs(true);
+      return { msg: (a.title || a.app) + ": new settings saved. ZimaOS recreates the app; its data stays." };
+    }
+  }
+  throw CtrErr("Unknown request");
 }
 
 // ---------- Containers on the other server types ----------
@@ -2561,6 +3039,16 @@ async function rpcOp(d) {
     }
     case "logo": {
       return { ok: true, url: await autoLogo([d.name]) };
+    }
+    // the ZimaOS panel, an app's details and its compose file
+    case "zp": {
+      if (SET.platform !== "zimaos") return { ok: false, msg: "This needs the server type ZimaOS (Settings > This server)." };
+      try {
+        const v = await zPanelOp(d);
+        return { ok: true, v: v === undefined ? null : v, reload: !!(v && v.reload) };
+      } catch (e) {
+        return { ok: false, msg: e.message || String(e), missing: e.message === Z_NOT };
+      }
     }
     case "refresh": {
       statusDirty = true;
@@ -7101,7 +7589,9 @@ function menuCtr(sv, force){
       if (!c.running) hbtn(bx, "Start", "gtxt", function(){ ctrRun(c, "start", "Starting"); });
     }
     hbtn(bx, "Logs", "", function(){ closeMenu(); openLogs(c); });
+    if (c.zima) hbtn(bx, "Details and settings", "", function(){ closeMenu(); openZDetail(c); });
     if (c.update) hbtn(bx, "Update", "gtxt", function(){ ctrRun(c, "update", "Updating"); });
+    if (c.zima && c.controllable) zUninstallRow(box, bx, c, sv);
     box.appendChild(bx);
     if (!isZima()) {
       var ch = h("div", "cctr");
@@ -7437,6 +7927,733 @@ document.addEventListener("touchend", function(){
     setTimeout(refreshDone, 8000);
   } else e.className = "";
 }, { passive: true });
+
+// ================= ZimaOS panel (same as the Android app 2.6) =================
+// The "ZimaOS" chip next to Widget layout: System, Storage, Shares, Apps, Alerts.
+(function(){
+  var s = document.createElement("style");
+  s.textContent = "#xv.top{align-items:flex-start}" +
+    "#xm.zp{width:min(94vw,460px)}" +
+    ".zcard{background:rgba(255,255,255,.05);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:6px}" +
+    ".zcap{font-size:11px;font-weight:700;letter-spacing:.12em;opacity:.6;margin:4px 2px 0}" +
+    ".zkv{display:flex;gap:10px;font-size:13px}.zkv span{opacity:.55;width:104px;flex:none}.zkv b{flex:1;min-width:0;word-break:break-word}" +
+    ".zbar{height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}.zbar i{display:block;height:100%;border-radius:3px}" +
+    ".zsub{font-size:11px;opacity:.55;word-break:break-all}.zrow{display:flex;align-items:center;gap:10px}.zrow>div{flex:1;min-width:0}.zrow>div.sw{flex:none}" +
+    ".zrow .chip{margin:0}.zg{color:#34e0a1}.zo{color:#ffb454}.zr{color:#ff5d73}.zh{font-size:11px;opacity:.45;margin:0 4px}" +
+    ".zpart{display:flex;flex-direction:column;gap:8px}.zt{font-size:14px;font-weight:700}" +
+    "textarea.zed{width:100%;height:52vh;box-sizing:border-box;background:rgba(0,0,0,.35);color:#fff;border:0;border-radius:12px;padding:10px;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre;overflow:auto;outline:0}" +
+    ".zseg{flex-wrap:wrap}.zseg button{flex:1 0 30%}";
+  document.head.appendChild(s);
+})();
+var Z_NOT = "This ZimaOS doesn't offer this.";
+var zEvN = 0, zEvAt = 0, zTab = "sys";
+function zp(what, a, cb){ rpc({ op: "zp", what: what, a: a || {} }, cb); }
+function zFmt(b){
+  b = Number(b) || 0;
+  var u = ["B", "KB", "MB", "GB", "TB"], i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return (b >= 100 || i === 0 ? Math.round(b) : b.toFixed(1)) + " " + u[i];
+}
+function zKV(p, k, v, cls){
+  if (v == null || v === "") return;
+  var r = h("div", "zkv");
+  r.appendChild(h("span", "", k));
+  r.appendChild(h("b", cls || "", String(v)));
+  p.appendChild(r);
+}
+function zBar(p, f){
+  f = Math.max(0, Math.min(1, f || 0));
+  var b = h("div", "zbar"), i = h("i");
+  i.style.width = (f * 100) + "%";
+  i.style.background = f >= .85 ? "#ff5d73" : f >= .6 ? "#ffb454" : "#34e0a1";
+  b.appendChild(i);
+  p.appendChild(b);
+}
+function zChip(p, text, fn){
+  var c = h("button", "chip", text);
+  c.onclick = function(){ if (Date.now() >= ign) fn(c); };
+  p.appendChild(c);
+  return c;
+}
+function zArmChip(p, text, again, fn){
+  var on = false;
+  return zChip(p, text, function(c){ if (!on) { on = true; c.textContent = again; return; } fn(c); });
+}
+function zSw(p, on, fn){
+  var s = h("div", on ? "sw on" : "sw");
+  s.appendChild(h("i"));
+  s.onclick = function(){ if (Date.now() >= ign) fn(!s.classList.contains("on")); };
+  p.appendChild(s);
+  return s;
+}
+function zField(p, ph, val, type){
+  var w = h("div", "in"), i = h("input");
+  i.placeholder = ph || "";
+  i.value = val || "";
+  i.type = type || "text";
+  i.autocapitalize = "off";
+  i.setAttribute("autocorrect", "off");
+  w.appendChild(i);
+  p.appendChild(w);
+  return i;
+}
+// a part of the panel: heading, then the answer (or Loading / the problem with Try again); hide: left out when missing
+function zPart(parent, title, what, a, hide, render){
+  var box = h("div", "zpart");
+  parent.appendChild(box);
+  var load = function(){
+    if (!box.firstChild) { box.appendChild(h("div", "zcap", title)); box.appendChild(h("div", "zh", "Loading...")); }
+    zp(what, a, function(r){
+      box.innerHTML = "";
+      if (!r.ok && r.missing && hide) { box.style.display = "none"; return; }
+      box.style.display = "";
+      box.appendChild(h("div", "zcap", title));
+      if (!r.ok) {
+        if (r.missing) { box.appendChild(h("div", "zh", Z_NOT)); return; }
+        var e = h("div", "zr", r.msg || "ZimaOS didn't answer.");
+        e.style.fontSize = "12px";
+        box.appendChild(e);
+        var rw = h("div", "zrow");
+        zChip(rw, "Try again", load);
+        box.appendChild(rw);
+        return;
+      }
+      render(r.v, box, load);
+    });
+  };
+  load();
+}
+// a change: a toast while busy, the result after, then the part loads again
+function zAct(what, a, busy, done, reload){
+  toast(busy, 60000);
+  zp(what, a, function(r){
+    toast(r.ok ? (r.v && r.v.msg) || done : r.msg || "ZimaOS didn't accept that.", 4000);
+    if (reload) reload();
+  });
+}
+
+// ---------- the chip ----------
+function zChipBtn(){
+  var b = document.getElementById("zpb");
+  if (!b) {
+    b = h("button", "lay upd", "ZimaOS");
+    b.id = "zpb";
+    b.onclick = function(){ if (Date.now() >= ign) openZPanel(); };
+    var head = document.querySelector(".sechead");
+    head.insertBefore(b, document.getElementById("updb") || document.getElementById("layb"));
+  }
+  return b;
+}
+function zChipCheck(force){
+  var b = zChipBtn();
+  if (!isZima() || !st.hasLogin) { b.style.display = "none"; return; }
+  b.style.display = "";
+  b.textContent = zEvN ? "ZimaOS · " + zEvN : "ZimaOS";
+  if (!force && Date.now() - zEvAt < 60000) return;
+  zEvAt = Date.now();
+  zp("events", {}, function(r){
+    zEvN = r.ok && r.v ? r.v.length : 0;
+    b.textContent = zEvN ? "ZimaOS · " + zEvN : "ZimaOS";
+  });
+}
+
+// ---------- the panel ----------
+function openZPanel(tab){
+  if (tab) zTab = tab;
+  var m = xOpen("ZIMAOS");
+  m.className = "modal zp";
+  document.getElementById("xv").classList.add("top");
+  var seg = h("div", "seg zseg");
+  [["sys", "System"], ["disk", "Storage"], ["share", "Shares"], ["apps", "Apps"], ["alerts", "Alerts"]].forEach(function(t){
+    var b = h("button", t[0] === zTab ? "on" : "");
+    b.appendChild(h("i"));
+    b.appendChild(document.createTextNode(t[1] + (t[0] === "alerts" && zEvN ? " " + zEvN : "")));
+    b.onclick = function(){ if (Date.now() >= ign && t[0] !== zTab) openZPanel(t[0]); };
+    seg.appendChild(b);
+  });
+  m.appendChild(seg);
+  var body = h("div", "zpart");
+  m.appendChild(body);
+  ({ sys: zSys, disk: zDisk, share: zShare, apps: zAppsTab, alerts: zAlerts })[zTab](body);
+  var bx = h("div", "btns col");
+  hbtn(bx, "Close", "", zClose);
+  m.appendChild(bx);
+}
+function zClose(){
+  var m = document.getElementById("xm");
+  if (m) m.className = "modal";
+  var v = document.getElementById("xv");
+  if (v) v.classList.remove("top");
+  xClose();
+}
+
+// ---------- System ----------
+function zSys(p){
+  zPart(p, "DEVICE", "info", {}, false, function(i, box){
+    var c = h("div", "zcard");
+    zKV(c, "Name", i.deviceName);
+    zKV(c, "Model", i.model);
+    zKV(c, "ZimaOS", i.version);
+    zKV(c, "Type", i.arch);
+    if (i.cpuPct != null) zKV(c, "CPU", (i.cpuPct >= 10 ? Math.round(i.cpuPct) : Number(i.cpuPct).toFixed(1)) + "%" + (i.cores ? " of " + i.cores + " cores" : ""));
+    if (i.watts != null) zKV(c, "CPU power", Number(i.watts).toFixed(1) + " W");
+    if (i.cpuTemp != null) zKV(c, "CPU temp", Math.round(i.cpuTemp) + "°C");
+    if (i.memTotal > 0) { zKV(c, "Memory", zFmt(i.memUsed) + " of " + zFmt(i.memTotal)); zBar(c, i.memUsed / i.memTotal); }
+    (i.extra || []).forEach(function(x){ zKV(c, x[0], x[1]); });
+    box.appendChild(c);
+    if (i.nets && i.nets.length) {
+      var n = h("div", "zcard");
+      i.nets.forEach(function(x){
+        var up = !x.state || /^up$/i.test(x.state);
+        zKV(n, x.name, (x.state ? x.state + " · " : "") + "↓ " + zFmt(x.recv) + " ↑ " + zFmt(x.sent), up ? "" : "zr");
+      });
+      n.appendChild(h("div", "zh", "Totals since ZimaOS started."));
+      box.appendChild(n);
+    }
+  });
+  zPart(p, "ZIMAOS UPDATE", "ota", {}, true, function(o, box, reload){
+    var c = h("div", "zcard");
+    zKV(c, "Installed", o.current);
+    if (o.installing) zKV(c, "Status", "installing...", "zo");
+    else if (o.failed) zKV(c, "Status", "the last update failed", "zr");
+    else if (o.available) zKV(c, "New", (o.latest || "available") + (o.important ? " (important)" : ""), "zg");
+    else zKV(c, "Status", "up to date", "zg");
+    if (o.available && o.notes) {
+      var nt = h("div", "zsub", o.notes.replace(/<[^>]+>/g, "").replace(/^#+\s*/gm, "").slice(0, 3000));
+      nt.style.display = "none";
+      nt.style.whiteSpace = "pre-wrap";
+      nt.style.wordBreak = "normal";
+      var rw0 = h("div", "zrow");
+      zChip(rw0, "What's new", function(ch){ var on = nt.style.display === "none"; nt.style.display = on ? "" : "none"; ch.textContent = on ? "Hide what's new" : "What's new"; });
+      c.appendChild(rw0);
+      c.appendChild(nt);
+    }
+    box.appendChild(c);
+    var bx = h("div", "btns col");
+    if (o.failed) hbtn(bx, "Clear the failed update", "", function(){ zAct("otaReset", {}, "Clearing...", "Cleared. Check for updates again.", reload); });
+    if (o.available && !o.installing) {
+      var note = h("div", "cnote", "ZimaOS downloads " + (o.latest || "the update") + ", installs it and restarts. Apps stop for a few minutes.");
+      note.style.display = "none";
+      box.appendChild(note);
+      armed(bx, "Update ZimaOS", "Tap again to update ZimaOS", "gtxt", function(){ zAct("otaInstall", {}, "Starting the ZimaOS update...", "ZimaOS is updating. It restarts when it's done.", reload); });
+      bx.lastChild.addEventListener("click", function(){ note.style.display = ""; });
+    }
+    if (bx.firstChild) box.appendChild(bx);
+    var rw = h("div", "zrow");
+    zChip(rw, o.installing ? "Check progress" : "Check again", reload);
+    rw.appendChild(h("div"));
+    if (o.beta != null) {
+      var lb = h("span", "", "Beta versions");
+      lb.style.fontSize = "13px";
+      lb.style.opacity = ".75";
+      rw.appendChild(lb);
+      zSw(rw, o.beta, function(on){ zAct("otaBeta", { on: on }, "Saving...", on ? "Beta versions on" : "Beta versions off", reload); });
+    }
+    box.appendChild(rw);
+  });
+  zPart(p, "SERVICES", "health", {}, true, function(hh, box, reload){
+    var c = h("div", "zcard");
+    c.appendChild(h("div", "zt " + (hh.stopped.length ? "zo" : "zg"), hh.running.length + " running" + (hh.stopped.length ? ", " + hh.stopped.length + " stopped" : "")));
+    hh.stopped.forEach(function(x){ var e = h("div", "zr", "Stopped: " + x); e.style.fontSize = "12px"; c.appendChild(e); });
+    box.appendChild(c);
+    var rw = h("div", "zrow");
+    zChip(rw, "Check again", reload);
+    box.appendChild(rw);
+  });
+  zPart(p, "REMOTE ACCESS (ZEROTIER)", "zt", {}, true, function(z, box, reload){
+    if (!z.id) { box.appendChild(h("div", "zh", "Remote access isn't set up on this ZimaOS.")); return; }
+    var c = h("div", "zcard");
+    zKV(c, "Network", z.name || "ZimaOS");
+    zKV(c, "ID", z.id);
+    zKV(c, "Status", z.status || "unknown", z.online ? "zg" : "zo");
+    box.appendChild(c);
+    var bx = h("div", "btns col");
+    if (z.online) armed(bx, "Turn off remote access", "Tap again: this cuts remote access, also -board's when you're away", "rtxt", function(){ zAct("ztSet", { id: z.id, on: false }, "Changing remote access...", "Remote access turned off", reload); });
+    else hbtn(bx, "Turn on remote access", "gtxt", function(){ zAct("ztSet", { id: z.id, on: true }, "Changing remote access...", "Remote access turned on", reload); });
+    box.appendChild(bx);
+  });
+  var lb = h("div", "btns col");
+  hbtn(lb, "Show ZimaOS log", "", function(){
+    lb.innerHTML = "";
+    zPart(lb, "ZIMAOS LOG", "log", {}, false, function(t, box, reload){
+      var pre = h("pre", "logs", t || "(no log lines)");
+      box.appendChild(pre);
+      setTimeout(function(){ pre.scrollTop = pre.scrollHeight; }, 50);
+      var rw = h("div", "zrow");
+      zChip(rw, "Refresh", reload);
+      box.appendChild(rw);
+    });
+  });
+  p.appendChild(lb);
+}
+
+// ---------- Storage ----------
+function zDisk(p){
+  zPart(p, "STORAGE", "storage", {}, false, function(list, box, reload){
+    if (!list.length) box.appendChild(h("div", "zh", "No storage listed."));
+    list.forEach(function(s){
+      var c = h("div", "zcard");
+      var top = h("div", "zrow");
+      var nm = h("div", "zt", s.name || (s.dir || "").split("/").pop() || "Storage");
+      top.appendChild(nm);
+      if (s.size > 0) { var fr = h("span", "", zFmt(Math.max(0, s.size - s.used)) + " free"); fr.style.fontSize = "12px"; fr.style.opacity = ".65"; top.appendChild(fr); }
+      c.appendChild(top);
+      var kind = { system: "System", usb: "USB", disk: "Disk", pool: "Storage pool" }[s.kind] || (s.kind === "raid" ? "RAID" + (s.level == null ? "" : s.level === -1 ? " (JBOD)" : " " + s.level) : s.kind);
+      c.appendChild(h("div", "zsub", [kind, s.dir].filter(Boolean).join(" · ")));
+      if (s.size > 0) { zBar(c, s.used / s.size); c.appendChild(h("div", "zsub", zFmt(s.used) + " of " + zFmt(s.size) + " used")); }
+      var raid = s.kind === "raid", st0 = s.state || "";
+      var hl = { ok: [raid ? "RAID OK" : "Healthy", "zg"], busy: [st0.charAt(0).toUpperCase() + st0.slice(1) + (s.progress != null ? " " + Math.round(s.progress) + "%" : ""), "zo"],
+        warn: [raid ? "RAID " + (st0 || "degraded") : "Check it", "zo"], bad: [raid ? "RAID " + (st0 || "failing") : "Drive FAILING", "zr"] }[s.health] || [s.kind === "pool" ? st0 : "", ""];
+      if (hl[0]) { var he = h("div", "zt " + hl[1], hl[0]); he.style.fontSize = "12px"; c.appendChild(he); }
+      (s.drives || []).forEach(function(d){
+        var rw = h("div", "zrow");
+        var bits = [d.name, d.model, d.size > 0 ? zFmt(d.size) : "", d.temp != null ? Math.round(d.temp) + "°C" : "", d.hours != null ? Math.floor(d.hours / 24) + " days on" : ""].filter(Boolean).join(" · ");
+        rw.appendChild(h("div", "zsub", bits));
+        var ok = h("b", d.missing ? "zo" : d.healthy ? "zg" : "zr", d.missing ? "MISSING" : d.healthy ? "OK" : "FAILING");
+        ok.style.fontSize = "11px";
+        rw.appendChild(ok);
+        c.appendChild(rw);
+      });
+      box.appendChild(c);
+    });
+    var rw = h("div", "zrow");
+    zChip(rw, "Refresh", reload);
+    box.appendChild(rw);
+  });
+  zPart(p, "USB DRIVES", "usb", {}, true, function(u, box, reload){
+    if (!u.list.length) box.appendChild(h("div", "zh", "No USB drive plugged in."));
+    u.list.forEach(function(d){
+      var c = h("div", "zcard");
+      c.appendChild(h("div", "zt", d.name || d.model || "USB drive"));
+      c.appendChild(h("div", "zsub", [d.model, d.size > 0 ? zFmt(d.size) : ""].filter(Boolean).join(" · ")));
+      d.parts.forEach(function(pt){
+        var rw = h("div", "zrow"), tx = h("div");
+        tx.appendChild(h("div", "", pt.name || pt.mount));
+        tx.appendChild(h("div", "zsub", pt.mount + (pt.size > 0 ? " · " + zFmt(pt.avail) + " free" : "")));
+        rw.appendChild(tx);
+        zArmChip(rw, "Eject", "Tap again", function(){ zAct("eject", { mount: pt.mount }, "Ejecting...", "Ejected. You can unplug it now.", reload); });
+        c.appendChild(rw);
+      });
+      box.appendChild(c);
+    });
+    if (u.auto != null) {
+      var rw = h("div", "zrow"), l = h("div", "", "Mount USB drives when plugged in");
+      l.style.fontSize = "14px";
+      rw.appendChild(l);
+      zSw(rw, u.auto, function(on){ zAct("usbAuto", { on: on }, "Saving...", "USB auto-mount " + (on ? "on" : "off"), reload); });
+      box.appendChild(rw);
+    }
+  });
+}
+
+// ---------- Shares ----------
+function zShare(p){
+  var host = UI.host || "server";
+  zPart(p, "SHARED FOLDERS (SMB)", "shares", {}, false, function(list, box, reload){
+    if (!list.length) box.appendChild(h("div", "zh", "No folders shared."));
+    list.forEach(function(s){
+      var c = h("div", "zcard"), rw = h("div", "zrow"), tx = h("div");
+      var nm = s.name || s.path.split("/").pop() || s.path;
+      tx.appendChild(h("div", "zt", nm));
+      tx.appendChild(h("div", "zsub", "smb://" + host + "/" + nm + (s.anonymous ? " · no login" : "")));
+      tx.appendChild(h("div", "zsub", s.path));
+      rw.appendChild(tx);
+      zArmChip(rw, "Stop sharing", "Tap again", function(){ zAct("shareDel", { id: s.id }, "Removing the share...", "Not shared any more. The folder and its files stay.", reload); });
+      c.appendChild(rw);
+      box.appendChild(c);
+    });
+    var f = zField(box, "/DATA/Media", "");
+    var bx = h("div", "btns col");
+    hbtn(bx, "Share this folder", "gtxt", function(){
+      var v = f.value.trim().replace(/\/+$/, "");
+      if (v.charAt(0) !== "/") { toast("Type a folder on ZimaOS, e.g. /DATA/Media", 3000); return; }
+      zAct("shareAdd", { path: v }, "Sharing...", "Shared as smb://" + host + "/" + v.split("/").pop(), reload);
+    });
+    box.appendChild(bx);
+    box.appendChild(h("div", "zh", "A folder on ZimaOS, e.g. /DATA/Media. Shared without a login on your home network."));
+  });
+  zPart(p, "NETWORK DRIVES ON ZIMAOS", "conns", {}, false, function(list, box, reload){
+    if (!list.length) box.appendChild(h("div", "zh", "None. Add a share from another computer and it shows in ZimaOS's Files."));
+    list.forEach(function(c0){
+      var c = h("div", "zcard"), rw = h("div", "zrow"), tx = h("div");
+      tx.appendChild(h("div", "zt", c0.host + (c0.port !== "445" ? ":" + c0.port : "")));
+      tx.appendChild(h("div", "zsub", [c0.user, c0.mount].filter(Boolean).join(" · ")));
+      rw.appendChild(tx);
+      zArmChip(rw, "Remove", "Tap again", function(){ zAct("connDel", { id: c0.id }, "Removing...", "Network drive removed", reload); });
+      c.appendChild(rw);
+      box.appendChild(c);
+    });
+    var bx = h("div", "btns col");
+    hbtn(bx, "Add a network drive", "", function(){
+      bx.innerHTML = "";
+      var fh = zField(box, "Computer, e.g. 192.168.1.20", "");
+      var fp = zField(box, "Port", "445", "number");
+      var fu = zField(box, "User name", "");
+      var fw = zField(box, "Password", "", "password");
+      var b2 = h("div", "btns");
+      hbtn(b2, "Cancel", "", reload);
+      hbtn(b2, "Add", "ok", function(){
+        var hs = fh.value.trim().replace(/^smb:\/\//, "").replace(/^\\\\/, "");
+        if (!hs || !fu.value.trim()) { toast("Type the computer and the user name", 3000); return; }
+        zAct("connAdd", { host: hs, port: fp.value.trim() || "445", user: fu.value.trim(), pass: fw.value }, "Connecting...", "Network drive added", reload);
+      });
+      box.appendChild(b2);
+      box.appendChild(h("div", "zh", "ZimaOS mounts every share of that computer it can see with this login."));
+    });
+    box.appendChild(bx);
+  });
+}
+
+// ---------- Apps ----------
+function zAppsTab(p){
+  var ub = h("div", "zpart");
+  ub.appendChild(h("div", "zcap", "APP UPDATES"));
+  var n = (updList || []).length;
+  if (!n) ub.appendChild(h("div", "zh", "All apps are up to date."));
+  else { var bx = h("div", "btns col"); hbtn(bx, "Update all " + n, "gtxt", function(){ zClose(); zUpdateAll(); }); ub.appendChild(bx); }
+  p.appendChild(ub);
+  zPart(p, "ZIMAOS MODULES", "mods", {}, false, function(list, box){
+    var picked = {};
+    if (!list.length) box.appendChild(h("div", "zh", "No modules with a page."));
+    var add = h("div", "btns col");
+    var count = function(){
+      var k = Object.keys(picked).filter(function(x){ return picked[x]; });
+      add.innerHTML = "";
+      if (k.length) hbtn(add, "Add " + k.length + " as button" + (k.length === 1 ? "" : "s"), "ok", function(){
+        add.innerHTML = "";
+        toast("Adding...", 30000);
+        zp("modsAdd", { names: k }, function(r){ toast(r.ok ? r.v.n + " added" : "Couldn't add them" + (r.msg ? ": " + r.msg : ""), 3500); });
+      });
+    };
+    list.forEach(function(m){
+      var rw = h("div", "pfr" + (m.has ? " has" : "")), tx = h("div", "pft");
+      tx.appendChild(h("b", "", m.title));
+      tx.appendChild(h("span", "", m.has ? "Already a button" : m.entry));
+      rw.appendChild(tx);
+      if (!m.has) zSw(rw, false, function(on){ picked[m.name] = on; rw.lastChild.classList.toggle("on", on); count(); });
+      box.appendChild(rw);
+    });
+    box.appendChild(add);
+  });
+  zPart(p, "APP SOURCES", "sources", {}, false, function(list, box, reload){
+    list.forEach(function(s){
+      var c = h("div", "zcard"), rw = h("div", "zrow"), tx = h("div", "zsub", s.url.replace(/^https?:\/\//, ""));
+      tx.style.opacity = ".85";
+      tx.style.fontSize = "12px";
+      rw.appendChild(tx);
+      if (list.length > 1) zArmChip(rw, "Remove", "Tap again", function(){ zAct("sourceDel", { id: s.id }, "Removing...", "App source removed", reload); });
+      c.appendChild(rw);
+      box.appendChild(c);
+    });
+    var f = zField(box, "https://.../appstore.zip", "", "url");
+    var bx = h("div", "btns col");
+    hbtn(bx, "Add app source", "gtxt", function(){
+      var u = f.value.trim();
+      if (!/^https?:\/\/\S+$/.test(u)) { toast("Type the address of the store's .zip file", 3000); return; }
+      zAct("sourceAdd", { url: u }, "Adding the source (ZimaOS downloads it)...", "App source added. Its apps are in the App Store.", reload);
+    });
+    box.appendChild(bx);
+    box.appendChild(h("div", "zh", "Extra app stores for ZimaOS: the address of the store's .zip file."));
+  });
+  zPart(p, "APP SETTINGS", "globals", {}, false, function(list, box, reload){
+    if (!list.length) box.appendChild(h("div", "zh", "None set."));
+    list.forEach(function(g){
+      var c = h("div", "zcard");
+      c.appendChild(h("div", "zt", g.key));
+      if (g.desc && g.desc !== g.key) c.appendChild(h("div", "zsub", g.desc));
+      var f = zField(c, "Value", g.value, /KEY|TOKEN|SECRET|PASS/i.test(g.key) ? "password" : "text");
+      var rw = h("div", "zrow");
+      zChip(rw, "Save", function(){ zAct("globalSet", { key: g.key, value: f.value }, "Saving...", g.key + " saved", reload); });
+      c.appendChild(rw);
+      box.appendChild(c);
+    });
+    box.appendChild(h("div", "zh", "Values ZimaOS gives to the apps that ask for them (e.g. an API key)."));
+  });
+}
+function zUpdateAll(){
+  toast("Updating " + updList.length + " app" + (updList.length === 1 ? "" : "s") + "...", 120000);
+  zp("updateAll", {}, function(r){ toast(r.ok ? r.v.msg : r.msg || "ZimaOS didn't accept that.", 6000); checkUpdates(true); });
+}
+
+// ---------- Alerts ----------
+function zAlerts(p){
+  zPart(p, "NOTIFICATIONS", "events", {}, false, function(list, box, reload){
+    zEvN = list.length;
+    zChipCheck(false);
+    if (!list.length) box.appendChild(h("div", "zh", "No notifications."));
+    list.slice(0, 60).forEach(function(e){
+      var c = h("div", "zcard"), rw = h("div", "zrow"), tx = h("div");
+      tx.appendChild(h("div", "zt", e.title));
+      if (e.message) { var mm = h("div", "", e.message); mm.style.fontSize = "12px"; mm.style.opacity = ".7"; mm.style.whiteSpace = "pre-wrap"; tx.appendChild(mm); }
+      if (e.progress != null) zBar(tx, e.progress > 1 ? e.progress / 100 : e.progress);
+      var when = e.time ? agoText(Date.now() - e.time).replace(/^updated /, "") : "";
+      var sub = [e.ysk ? "" : e.source, when].filter(Boolean).join(" · ");
+      if (sub) tx.appendChild(h("div", "zsub", sub));
+      rw.appendChild(tx);
+      if (e.uuid) zChip(rw, "Dismiss", function(){
+        c.remove();
+        zp("eventDel", { uuid: e.uuid, ysk: !!e.ysk }, function(r){ if (!r.ok) toast(r.msg || "ZimaOS didn't dismiss it", 4000); zEvAt = 0; zChipCheck(true); });
+      });
+      c.appendChild(rw);
+      box.appendChild(c);
+    });
+    var bx = h("div", "btns col");
+    if (list.length > 1) hbtn(bx, "Dismiss all", "", function(){
+      var left = list.filter(function(e){ return e.uuid; }), n = left.length;
+      toast("Clearing...", 30000);
+      left.forEach(function(e){ zp("eventDel", { uuid: e.uuid, ysk: !!e.ysk }, function(){ if (--n <= 0) { toast("Notifications cleared", 3000); zChipCheck(true); reload(); } }); });
+      if (!n) reload();
+    });
+    hbtn(bx, "Refresh", "", reload);
+    box.appendChild(bx);
+  });
+}
+
+// ---------- One app: Details and settings (hold menu) ----------
+function openZDetail(c){
+  var m = xOpen(String(c.name).toUpperCase());
+  m.className = "modal zp";
+  document.getElementById("xv").classList.add("top");
+  var body = h("div", "zpart");
+  m.appendChild(body);
+  zPart(body, "DETAILS", "detail", { app: c.id }, false, function(x, box){
+    var k = h("div", "zcard");
+    zKV(k, "Status", x.status || c.status, c.running ? "zg" : "zo");
+    if (x.update || c.update) zKV(k, "Update", "available", "zg");
+    x.images.forEach(function(i){ zKV(k, "Image", i); });
+    box.appendChild(k);
+    var sec = function(title, items, f){
+      if (!items.length) return;
+      var cc = h("div", "zcard");
+      cc.appendChild(h("div", "zcap", title));
+      items.forEach(function(it){ f(cc, it); });
+      box.appendChild(cc);
+    };
+    sec("CONTAINERS", x.containers, function(cc, t){ zKV(cc, t.name || "container", [t.state, t.health].filter(Boolean).join(" · "), /^running$/i.test(t.state) ? "" : "zo"); });
+    sec("PORTS (SERVER → APP)", x.ports, function(cc, t){ cc.appendChild(h("div", "", t)); });
+    sec("FOLDERS (SERVER → APP)", x.folders, function(cc, t){ var e = h("div", "zsub", t); e.style.opacity = ".9"; cc.appendChild(e); });
+    if (x.env.length) {
+      var ev = h("div", "zcard"), rw = h("div", "zrow");
+      rw.appendChild(h("div", "zcap", "SETTINGS (" + x.env.length + ")"));
+      var lst = h("div");
+      lst.style.display = "none";
+      x.env.forEach(function(p2){ zKV(lst, p2[0], p2[1]); });
+      zChip(rw, "Show", function(ch){ var on = lst.style.display === "none"; lst.style.display = on ? "" : "none"; ch.textContent = on ? "Hide" : "Show"; });
+      ev.appendChild(rw);
+      ev.appendChild(lst);
+      box.appendChild(ev);
+    }
+  });
+  var bx = h("div", "btns col");
+  if (c.controllable) hbtn(bx, "Edit settings", "", function(){ openZCompose(c); });
+  hbtn(bx, "Close", "", zClose);
+  m.appendChild(bx);
+}
+// the app's compose file: ports, folders, settings; saving recreates the app (its data stays)
+function openZCompose(c){
+  var m = xOpen(String(c.name).toUpperCase() + " SETTINGS");
+  m.className = "modal zp";
+  document.getElementById("xv").classList.add("top");
+  var body = h("div", "zpart");
+  body.appendChild(h("div", "cnote", "Loading..."));
+  m.appendChild(body);
+  var file = null, orig = "";
+  var bx = h("div", "btns");
+  var quit = false;
+  var cancel = hbtn(bx, "Cancel", "", function(b){
+    if (file && ta.value !== orig && !quit) { quit = true; b.textContent = "Leave"; b.className = "rtxt"; return; }
+    zClose();
+  });
+  var saveOn = false;
+  var save = hbtn(bx, "Save", "ok", function(b){
+    if (!file || ta.value === orig || !ta.value.trim()) return;
+    if (!saveOn) { saveOn = true; b.textContent = "Tap again"; hint.style.display = ""; return; }
+    var cc = { text: ta.value, etag: file.etag, v2: file.v2 };
+    zClose();
+    toast("Saving " + c.name + "...", 300000);
+    zp("composeSave", { app: c.id, title: c.name, c: cc }, function(r){ toast(r.ok ? r.v.msg : r.msg || "ZimaOS didn't take the new settings.", 6000); });
+  });
+  save.style.display = "none";
+  var ta = h("textarea", "zed");
+  ta.spellcheck = false;
+  ta.setAttribute("autocapitalize", "off");
+  ta.setAttribute("autocorrect", "off");
+  ta.oninput = function(){ saveOn = false; save.textContent = "Save"; hint.style.display = "none"; quit = false; cancel.textContent = "Cancel"; cancel.className = ""; };
+  var hint = h("div", "zh", "Tap Save again: ZimaOS stops " + c.name + ", recreates it with this file and starts it.");
+  hint.style.display = "none";
+  m.appendChild(bx);
+  m.appendChild(hint);
+  zp("compose", { app: c.id }, function(r){
+    body.innerHTML = "";
+    if (!r.ok) { body.appendChild(h("div", "err", r.msg || "ZimaOS didn't send the settings.")); return; }
+    file = r.v;
+    orig = file.text;
+    ta.value = orig;
+    body.appendChild(h("div", "cnote", "The app's compose file in ZimaOS: ports, folders, settings. Saving recreates the app; its data stays."));
+    body.appendChild(ta);
+    save.style.display = "";
+  });
+}
+
+// the chip next to Widget layout, Details in the hold menu, Update all in the updates popup
+(function(){
+  var rs = renderServices;
+  renderServices = function(p){ rs(p); zChipCheck(false); };
+  var oa = openAdd;
+  openAdd = function(sv){
+    oa(sv);
+    var w = pickFromRow(), sb = document.getElementById("zsb");
+    if (!sb) {
+      sb = h("button", "", "App Store");
+      sb.id = "zsb";
+      sb.onclick = function(){ if (Date.now() < ign) return; closeAdd(); openZStore(); };
+      w.appendChild(sb);
+    }
+    sb.style.display = !sv && isZima() && st.hasLogin ? "" : "none";
+  };
+  var ou = openUpdates;
+  openUpdates = function(){
+    ou();
+    if (updList.length > 1) {
+      var m = document.getElementById("xm"), bx = m.querySelector(".btns");
+      var b = h("div", "btns col");
+      hbtn(b, "Update all " + updList.length, "gtxt", function(){ xClose(); zUpdateAll(); });
+      m.insertBefore(b, bx);
+    }
+  };
+  var xo = xOpen;
+  xOpen = function(t){ var v = document.getElementById("xv"); if (v) v.classList.remove("top"); var mm = xo(t); mm.className = "modal"; return mm; };
+})();
+
+// ---------- Uninstall (hold menu): optional data removal, deletes the button ----------
+function zUninstallRow(box, bx, c, sv){
+  var del = false, on = false;
+  var opt = h("div", "zrow");
+  opt.style.display = "none";
+  var lb = h("div", "", "Also delete its data");
+  lb.style.fontSize = "14px";
+  opt.appendChild(lb);
+  zSw(opt, false, function(v){ del = v; opt.lastChild.classList.toggle("on", v); });
+  var note = h("div", "cnote", "Removes " + c.name + " from ZimaOS and deletes this button.");
+  note.style.display = "none";
+  var ub = hbtn(bx, "Uninstall", "rtxt", function(b){
+    if (!on) { on = true; b.textContent = "Tap again to uninstall"; opt.style.display = ""; note.style.display = ""; return; }
+    closeMenu();
+    toast("Uninstalling " + c.name + "...", 120000);
+    zp("uninstall", { app: c.id, del: del, button: sv.id, title: c.name }, function(r){
+      toast(r.ok ? r.v.msg : r.msg || "ZimaOS didn't uninstall " + c.name, 4000);
+      storeCache = null;
+      checkUpdates(true);
+    });
+  });
+  bx.insertBefore(note, ub);
+  bx.insertBefore(opt, ub);
+}
+
+// ---------- + > App Store: browse, search and install ----------
+var storeCache = null, zInstalling = {};
+function openZStore(sel){
+  var m = xOpen(sel ? sel.title : "ZIMAOS APP STORE");
+  m.className = "modal zp";
+  document.getElementById("xv").classList.add("top");
+  if (sel) { zStoreApp(m, sel); return; }
+  var q = zField(m, "Search apps", "");
+  var cats = h("div", "zrow");
+  cats.style.overflowX = "auto";
+  cats.style.flexWrap = "nowrap";
+  m.appendChild(cats);
+  var body = h("div", "zpart");
+  body.appendChild(h("div", "cnote", "Loading the App Store..."));
+  m.appendChild(body);
+  var bx = h("div", "btns col");
+  hbtn(bx, "Close", "", zClose);
+  m.appendChild(bx);
+  var cat = "";
+  var render = function(){
+    var all = storeCache || [];
+    cats.innerHTML = "";
+    var cl = [];
+    all.forEach(function(a){ if (a.category && cl.indexOf(a.category) < 0) cl.push(a.category); });
+    cl.sort();
+    if (cl.length) {
+      zChip(cats, cat ? "All" : "• All", function(){ cat = ""; render(); });
+      cl.forEach(function(c){ zChip(cats, c === cat ? "• " + c : c, function(){ cat = cat === c ? "" : c; render(); }); });
+    }
+    var words = q.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    var list = all.filter(function(a){
+      return (!cat || a.category === cat) && words.every(function(w){ return a.title.toLowerCase().indexOf(w) >= 0 || a.id.toLowerCase().indexOf(w) >= 0 || a.tagline.toLowerCase().indexOf(w) >= 0; });
+    });
+    body.innerHTML = "";
+    if (!all.length) { body.appendChild(h("div", "cnote", "The App Store is empty. Check the app sources (ZimaOS panel > Apps).")); return; }
+    if (!list.length) { body.appendChild(h("div", "cnote", "No apps match.")); return; }
+    var dup = {};
+    all.forEach(function(a){ var k = a.title.toLowerCase(); dup[k] = (dup[k] || 0) + 1; });
+    list.slice(0, 80).forEach(function(a){
+      var rw = h("div", "pfr"), tx = h("div", "pft");
+      tx.appendChild(h("b", "", a.title));
+      var who = dup[a.title.toLowerCase()] > 1 ? (a.author || a.id) + " · " : "";
+      tx.appendChild(h("span", "", who + (zInstalling[a.id] ? "Installing..." : a.installed ? "Installed" : a.tagline || a.category)));
+      rw.appendChild(tx);
+      rw.appendChild(h("span", "", "›"));
+      rw.onclick = function(){ if (Date.now() >= ign) openZStore(a); };
+      body.appendChild(rw);
+    });
+    if (list.length > 80) body.appendChild(h("div", "cnote", "Showing 80 of " + list.length + ". Search to find the rest."));
+  };
+  q.oninput = render;
+  if (storeCache) render();
+  else zp("store", {}, function(r){
+    if (!r.ok) { body.innerHTML = ""; body.appendChild(h("div", "err", r.msg || "ZimaOS didn't list its App Store.")); return; }
+    storeCache = r.v;
+    render();
+  });
+}
+function zStoreApp(m, a){
+  m.appendChild(h("div", "zsub", [a.category, a.author].filter(Boolean).join(" · ")));
+  if (a.tagline) m.appendChild(h("div", "zt", a.tagline));
+  if (a.description) { var d = h("div", "", a.description); d.style.fontSize = "13px"; d.style.opacity = ".7"; d.style.lineHeight = "1.4"; m.appendChild(d); }
+  if (a.port) m.appendChild(h("div", "zsub", "Web page on port " + a.port));
+  var addBtn = true;
+  var bx = h("div", "btns");
+  hbtn(bx, "Back", "", function(){ openZStore(); });
+  if (a.installed) m.appendChild(h("div", "cnote", "Already installed. Hold its button for Start / Stop / Update / Uninstall."));
+  else {
+    var rw = h("div", "zrow"), lb = h("div", "", "Add it as a button");
+    lb.style.fontSize = "14px";
+    rw.appendChild(lb);
+    zSw(rw, true, function(v){ addBtn = v; rw.lastChild.classList.toggle("on", v); });
+    m.appendChild(rw);
+    m.appendChild(h("div", "zh", "ZimaOS downloads and starts it in the background. It uses the App Store's usual settings; change them later with Details and settings."));
+    hbtn(bx, zInstalling[a.id] ? "Installing..." : "Install", "ok", function(){ if (!zInstalling[a.id]) { zStoreInstall(a, addBtn); openZStore(); } });
+  }
+  m.appendChild(bx);
+}
+// installs, then checks every 5 s (up to 10 minutes) and adds a button once the app runs
+function zStoreInstall(a, addBtn){
+  zInstalling[a.id] = true;
+  toast("Installing " + a.title + "...", 6000);
+  zp("install", { id: a.id }, function(r){
+    if (!r.ok) { delete zInstalling[a.id]; toast("Couldn't install " + a.title + (r.msg ? ": " + r.msg : ""), 6000); return; }
+    toast(a.title + ": installing. ZimaOS downloads it in the background; this can take a few minutes.", 6000);
+    var until = Date.now() + 600000;
+    var tick = function(){
+      zp("installed", { id: a.id }, function(x){
+        var app = x.ok && x.v;
+        if (app && app.running) {
+          delete zInstalling[a.id];
+          a.installed = true;
+          if (addBtn && !app.has) rpc({ op: "ctrAdd", ids: [app.id] }, function(){ toast(a.title + " installed and added as a button", 4000); });
+          else toast(a.title + " installed", 4000);
+          checkUpdates(true);
+          return;
+        }
+        if (Date.now() > until) { delete zInstalling[a.id]; toast(a.title + " isn't installed yet. Check the ZimaOS App Store.", 6000); return; }
+        setTimeout(tick, 5000);
+      });
+    };
+    setTimeout(tick, 5000);
+  });
+}
 `;
 
 // ---------- Run ----------
