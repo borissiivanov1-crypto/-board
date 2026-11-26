@@ -1,7 +1,7 @@
 # -board
 
 A live home-server dashboard and home screen widget for [Scriptable](https://scriptable.app) on iOS.
-The whole app is one file, released in numbered folders: the latest is [`ios-2.6/-board-ios-2.6.js`](ios-2.6/-board-ios-2.6.js).
+The whole app is one file, released in numbered folders: the latest is [`ios-2.7/-board-ios-2.7.js`](ios-2.7/-board-ios-2.7.js).
 
 **iPhone app (work in progress):** a real app (Swift, with a home screen widget) to install for free with SideStore or
 AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
@@ -10,7 +10,15 @@ AltStore. Not built yet; see [`ios/README.md`](ios/README.md).
 [`android/dist/board.apk`](android/dist/board.apk); the step-by-step guide is the
 [Android user manual](board_User_Manual_Android.docx). See also [Android app](#android-app) below.
 
-The full step-by-step guide is the [iOS user manual](ios-2.6/board_User_Manual_iOS.docx) (Word document).
+The full step-by-step guide is the [iOS user manual](ios-2.7/board_User_Manual_iOS.docx) (Word document).
+
+## New in the Scriptable script 2.7
+
+- **ZimaOS panel stuck on Loading... on the iPhone**: WKWebView hands `shouldAllowRequest` only the last of several
+  `location.href` changes made in one go, so a tab that asked for several parts at once got one answer. `rpc()` now
+  queues: one request at a time, the script acks it at once (`rpcAck`) and drops repeats (`RPC_SEEN`); an unacked
+  request is sent again after 1.5 s (4 tries).
+- **Popups lower**: `#xv` starts `env(safe-area-inset-top) + 56px` down, below Scriptable's close / share buttons.
 
 ## New in the Scriptable script 2.6 (the same features as Android 2.6)
 
@@ -126,7 +134,7 @@ Without Docker (Debian, Ubuntu, Proxmox host): `sudo apt install glances`, then 
 
 ## 2. Install the script
 
-1. In Scriptable tap **+**, paste `-board-ios-2.6.js` and give it a name.
+1. In Scriptable tap **+**, paste `-board-ios-2.7.js` and give it a name.
 2. Run it. Settings opens on **This server**: give it a name, pick your **server type**, and type the **server address**:
    an http / https list plus the IP or name, with a port only if it isn't the usual one for that type
    (e.g. `192.168.1.10` or `192.168.1.10:90`). This one address is used for LIVE / OFFLINE, Reboot / Shut down and logins.

@@ -2,7 +2,7 @@
 
 -board is a home-server dashboard and home screen widget. Two versions:
 - **iOS / Scriptable**: released as numbered folders `ios-X.Y/`, each with `-board-ios-X.Y.js` (the whole script) and
-  `board_User_Manual_iOS.docx`. **The latest is `ios-2.6/`.** For a new iOS version: copy the latest folder to
+  `board_User_Manual_iOS.docx`. **The latest is `ios-2.7/`.** For a new iOS version: copy the latest folder to
   `ios-X.Y/`, rename the script to `-board-ios-X.Y.js`, set `BOARD_VERSION`, update the manual's date/version line,
   "What's new" and the file name in "Copy the script" and the requirements table, and the README's iOS paths; commit,
   push, send both files. (Before 2.4 the script was the unnumbered `board_Blank.js`.)
@@ -98,6 +98,7 @@
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
   (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`
   (`set://` Settings, `pwr://`, `rpc://` -> `rpcOp` -> `rpcReply` for apps / containers / logos / refresh); script ->
-  page: `wv.evaluateJavaScript`. Container drivers, ZimaOS, AutoLogo, `uniqueName`: the "Apps and containers" section.
+  page: `wv.evaluateJavaScript`. Since 2.7 `rpc()` sends one request at a time (`rpcAck`, `RPC_SEEN`): iOS passes on only
+  the last of several `location.href` changes in one go (the Chromium test bridge must copy that, or it hides such bugs). Container drivers, ZimaOS, AutoLogo, `uniqueName`: the "Apps and containers" section.
 - The iOS manual writes "-board" with a plain hyphen. No phone here: check with `node --check`, and run the page in
   Chromium with a mock Scriptable (keep such test scripts in the scratchpad, not the repo).
