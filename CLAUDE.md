@@ -1,7 +1,11 @@
 # -board: notes for Claude sessions
 
 -board is a home-server dashboard and home screen widget. Two versions:
-- **iOS / Scriptable**: `board_Blank.js` (one file) + `board_User_Manual_iOS.docx`.
+- **iOS / Scriptable**: released as numbered folders `ios-X.Y/`, each with `-board-ios-X.Y.js` (the whole script) and
+  `board_User_Manual_iOS.docx`. **The latest is `ios-2.6/`.** For a new iOS version: copy the latest folder to
+  `ios-X.Y/`, rename the script to `-board-ios-X.Y.js`, set `BOARD_VERSION`, update the manual's date/version line,
+  "What's new" and the file name in "Copy the script" and the requirements table, and the README's iOS paths; commit,
+  push, send both files. (Before 2.4 the script was the unnumbered `board_Blank.js`.)
 - **Android** (Kotlin, Jetpack Compose, Glance widget): released as numbered folders `android-X.Y/`, each with
   `board-X.Y.apk`, `board-android-source-X.Y.zip` and `board_User_Manual_Android.docx`.
   **The latest is `android-2.6/`. Always start from the newest zip** (unzip it into a scratch folder; it contains
@@ -66,7 +70,7 @@
   System / Storage / Shares / Apps / Alerts, one `Part` per API call (404/405 -> `ZimaMore.NOT_OFFERED`), changes via
   `BoardVM.zTry` / `zDo`. Hold menu "Details and settings" -> `ZAppDetailDialog` -> `ZComposeDialog` (edit the compose
   YAML, PUT as exactly application/yaml). Endpoints are the open-source CasaOS ones (map in README "New in Android
-  2.5"); ported to iOS in Scriptable 2.6. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
+  2.5"); ported to iOS in 2.6. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
   (`v2or1`, `Part(hideMissing)`): OTA `/v2/installer/*`, storage `/v2/local_storage/storages|raid|disk`, shares
   `/v2_1/files/share|connect`, alerts `/v2/message_bus/ysk`, compose edit `/zimaapp/v2app/files/compose` with Etag /
   If-Match. On 1.8.0 these older ones 404: /v1/storage, /v1/disks/usb, /v1/samba/*, /v2/casaos/health|zt, /v1/sys/logs,
@@ -74,7 +78,7 @@
 - `Net.kt`: two OkHttp dispatchers: main (24 per host) and checks (32 per host) used by `pingUrl`/`reachProbe`.
 - `Ctr.kt`: containers on non-ZimaOS types (hold menu Start / Stop / Restart / Logs): one driver per type (Proxmox,
   TrueNAS, Synology, Unraid, helper for OMV/Linux), `Ctrs.match` links a button by hand-picked `ctr`, address, port or
-  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); ported to iOS in Scriptable 2.6. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
+  name; a `CtrErr.fix` makes the menu show a setup button (`BoardVM.openSetup` scrolls Settings there). "Pick from ..." in the + popup (`CtrAddDialog`, `BoardVM.addCtrButtons`) adds containers as linked buttons. ZimaOS keeps its own code in `Zima.kt`. 2.3 adds the ZimaOS App Store there (`store` / `install` / `uninstall`; `ZimaStoreDialog`, `BoardVM.zInstall`, Uninstall in the hold menu); ported to iOS in 2.4. Helper v2 (`assets/helper.py`) has the `/containers` endpoints.
 - `Widget.kt` + `WidgetSnap.kt`: Glance widget; uses the dashboard's snapshot when it's under 3 minutes old and was
   taken with the same settings; otherwise asks Glances first and probes LIVE only if Glances doesn't answer.
 - `ui/Look.kt`: press feedback (`pressScale`, `squish`, `glint`): Liquid Glass squish, Classic shrink + dim.
@@ -83,10 +87,13 @@
 - Unit tests in `app/src/test/java/app/board` (DataFileTest, NetTest, FailoverTest, LogicTest, ZimaTest, ZimaMoreTest, CtrTest, CertTest, AutoLogoTest).
 
 ## iOS script
-- `board_Blank.js` saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
+- The script (`ios-X.Y/-board-ios-X.Y.js`) saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
+- **Keep the iOS script pure ASCII** (a copy read as Latin-1 showed `Â·` / `â€º`): write other characters as
+  `\u00B7` escapes (`\\u00B7` inside `LIVE_HTML`, a template literal; plain `\u00B7` in `LIVE_EXTRA` and the script).
+  Check with `grep -nP "[^\x00-\x7F]" ios-X.Y/-board-ios-X.Y.js`. `unGarble` repairs saved text from such a copy.
 - Since the 2.6 port it has the same features as Android 2.6 (`BOARD_VERSION`; ZimaOS panel = `zPanelOp` / rpc op `zp`
-  on the script side, `openZPanel`, `openZStore`, `openZDetail`, `openZCompose` in `LIVE_EXTRA`), except trust-on-first-use
+  on the script side, `openZPanel`, `openZDetail`, `openZCompose` in `LIVE_EXTRA`), except trust-on-first-use
   certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
   (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`
