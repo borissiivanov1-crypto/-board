@@ -2,7 +2,7 @@
 
 -board is a home-server dashboard and home screen widget. Two versions:
 - **iOS / Scriptable**: released as numbered folders `ios-X.Y/`, each with `-board-ios-X.Y.js` (the whole script) and
-  `board_User_Manual_iOS.docx`. **The latest is `ios-2.7/`.** For a new iOS version: copy the latest folder to
+  `board_User_Manual_iOS.docx`. **The latest is `ios-2.4/`.** For a new iOS version: copy the latest folder to
   `ios-X.Y/`, rename the script to `-board-ios-X.Y.js`, set `BOARD_VERSION`, update the manual's date/version line,
   "What's new" and the file name in "Copy the script" and the requirements table, and the README's iOS paths; commit,
   push, send both files. (Before 2.4 the script was the unnumbered `board_Blank.js`.)
@@ -70,7 +70,7 @@
   System / Storage / Shares / Apps / Alerts, one `Part` per API call (404/405 -> `ZimaMore.NOT_OFFERED`), changes via
   `BoardVM.zTry` / `zDo`. Hold menu "Details and settings" -> `ZAppDetailDialog` -> `ZComposeDialog` (edit the compose
   YAML, PUT as exactly application/yaml). Endpoints are the open-source CasaOS ones (map in README "New in Android
-  2.5"); ported to iOS in 2.6. 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
+  2.5"); not on iOS (a port in 2.6 / 2.7 was dropped: on the iPhone it stayed on Loading). 2.6 (tried on ZimaOS 1.8.0 by the user): 1.8 paths first, older CasaOS ones as fallback
   (`v2or1`, `Part(hideMissing)`): OTA `/v2/installer/*`, storage `/v2/local_storage/storages|raid|disk`, shares
   `/v2_1/files/share|connect`, alerts `/v2/message_bus/ysk`, compose edit `/zimaapp/v2app/files/compose` with Etag /
   If-Match. On 1.8.0 these older ones 404: /v1/storage, /v1/disks/usb, /v1/samba/*, /v2/casaos/health|zt, /v1/sys/logs,
@@ -87,18 +87,18 @@
 - Unit tests in `app/src/test/java/app/board` (DataFileTest, NetTest, FailoverTest, LogicTest, ZimaTest, ZimaMoreTest, CtrTest, CertTest, AutoLogoTest).
 
 ## iOS script
+- The ZimaOS panel is Android only. If it's ported again: iOS passes on only the last of several `location.href` changes
+  made in one go, so page -> script requests must be sent one at a time (the Chromium test bridge must copy that).
 - The script (`ios-X.Y/-board-ios-X.Y.js`) saves the same safe way (`safeWrite`, `readDataFile` with `.tmp` / `.bak`, `LOAD_NOTE` alert).
   Exports move between the iOS and Android versions (same JSON shape).
 - **Keep the iOS script pure ASCII** (a copy read as Latin-1 showed `Â·` / `â€º`): write other characters as
   `\u00B7` escapes (`\\u00B7` inside `LIVE_HTML`, a template literal; plain `\u00B7` in `LIVE_EXTRA` and the script).
   Check with `grep -nP "[^\x00-\x7F]" ios-X.Y/-board-ios-X.Y.js`. `unGarble` repairs saved text from such a copy.
-- Since the 2.6 port it has the same features as Android 2.6 (`BOARD_VERSION`; ZimaOS panel = `zPanelOp` / rpc op `zp`
-  on the script side, `openZPanel`, `openZDetail`, `openZCompose` in `LIVE_EXTRA`), except trust-on-first-use
+- Since the 2.4 port it has the same features as Android 2.4 (`BOARD_VERSION`), except trust-on-first-use
   certificates, haptics and autosave (Scriptable can't). Layout: Scriptable side (Request, Keychain, files) plus a
   WebView page (`LIVE_HTML`, a template literal: double every backslash) and the newer page code in `LIVE_EXTRA`
   (`String.raw`, injected at load). Page -> script: `location.href = "xxx://go?d=..."` caught in `shouldAllowRequest`
   (`set://` Settings, `pwr://`, `rpc://` -> `rpcOp` -> `rpcReply` for apps / containers / logos / refresh); script ->
-  page: `wv.evaluateJavaScript`. Since 2.7 `rpc()` sends one request at a time (`rpcAck`, `RPC_SEEN`): iOS passes on only
-  the last of several `location.href` changes in one go (the Chromium test bridge must copy that, or it hides such bugs). Container drivers, ZimaOS, AutoLogo, `uniqueName`: the "Apps and containers" section.
+  page: `wv.evaluateJavaScript`. Container drivers, ZimaOS, AutoLogo, `uniqueName`: the "Apps and containers" section.
 - The iOS manual writes "-board" with a plain hyphen. No phone here: check with `node --check`, and run the page in
   Chromium with a mock Scriptable (keep such test scripts in the scratchpad, not the repo).
